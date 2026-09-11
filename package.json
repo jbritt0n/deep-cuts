@@ -1,0 +1,38 @@
+{
+  "name": "deep-cuts-v3",
+  "private": true,
+  "version": "3.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "tauri": "tauri",
+    "dev:browser": "concurrently \"node dev-server.mjs\" \"vite --mode browser\"",
+    "check:sql": "python3 scripts/validate_sql.py"
+  },
+  "dependencies": {
+    "@fontsource/fraunces": "^5.1.0",
+    "@fontsource/ibm-plex-mono": "^5.1.0",
+    "@fontsource/outfit": "^5.1.0",
+    "@tauri-apps/api": "^2.4.0",
+    "@tauri-apps/plugin-dialog": "^2.2.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.28.0"
+  },
+  "devDependencies": {
+    "@duckdb/node-api": "^1.5.5-r.4",
+    "@tauri-apps/cli": "^2.4.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "autoprefixer": "^10.4.20",
+    "concurrently": "^9.1.0",
+    "postcss": "^8.4.49",
+    "tailwindcss": "^3.4.17",
+    "tsx": "^4.23.13",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11"
+  }
+}

@@ -1,0 +1,54 @@
+[package]
+name = "deep-cuts"
+version = "3.0.0"
+description = "Deep Cuts — your Spotify listening, annotated"
+authors = ["Deep Cuts"]
+edition = "2021"
+rust-version = "1.85.1"
+
+[lib]
+name = "deep_cuts_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-single-instance = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# DuckDB bundled with the JSON extension (read_json / json_extract). No ICU on
+# purpose: local time comes from tz_offsets filled by chrono-tz (see db.rs).
+duckdb = { version = "1.10505", features = ["bundled", "json", "parquet", "chrono"] }
+chrono = "0.4"
+chrono-tz = "0.10"
+iana-time-zone = "0.1"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+tempfile = "3"
+walkdir = "2"
+anyhow = "1"
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "macros"] }
+log = "0.4"
+# Phase 2: HTTP, secrets, PKCE
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls", "gzip"] }
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+sha2 = "0.10"
+base64 = "0.22"
+rand = "0.8"
+url = "2"
+urlencoding = "2"
+env_logger = "0.11"
+
+[features]
+# Phase 4 seam — the LLM module compiles only when explicitly enabled.
+llm = []
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true

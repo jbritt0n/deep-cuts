@@ -1,0 +1,8 @@
+node_modules/
+dist/
+dev-data/
+src-tauri/target/
+src-tauri/gen/
+*.duckdb
+*.duckdb.wal
+.DS_Store

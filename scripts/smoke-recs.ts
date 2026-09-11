@@ -1,0 +1,12 @@
+(globalThis as unknown as { window: object }).window = {};
+import * as r from '../src/lib/recQueries';
+import { setActiveFilter } from '../src/lib/filter';
+setActiveFilter({ attentiveOnly: true, fromYear: null, toYear: null });
+const t = async <T,>(l: string, f: () => Promise<T>) => { const t0 = performance.now(); try { const x = await f(); console.log(`✓ ${l.padEnd(14)} ${(performance.now() - t0).toFixed(0)} ms`); return x; } catch (e) { console.log(`✗ ${l}\n  ${String((e as Error).message).slice(0, 600)}`); throw e; } };
+const a = await t('adjacency', () => r.adjacency(8)); console.log('  ', a.slice(0, 3).map((x) => `${x.title} ${x.score.toFixed(2)} — ${x.reason}`).join('\n   '), '| dismissed filtered:', !a.some((x) => x.key === 'name:candidate 0-0'));
+const sg = await t('tagSignature', () => r.tagSignature(5)); console.log('  ', sg.map((s) => `${s.tag} ×${s.lift.toFixed(2)}`).join(', '));
+const ta = await t('tagAffinity', () => r.tagAffinity(5)); console.log('  ', ta.slice(0, 2).map((x) => `${x.title} — ${x.reason}`).join(' | '));
+const st = await t('structural', () => r.structural(8)); console.log('  ', st.slice(0, 4).map((x) => `${x.title} [${x.subtitle}] — ${x.reason}`).join('\n   '));
+const sp = await t('sideProjects', () => r.sideProjects()); console.log('  ', sp.map((x) => x.reason).slice(0, 2).join(' | '));
+const rr = await t('releaseRadar', () => r.releaseRadar()); console.log('  ', rr.map((x) => `${x.artist}: ${x.title} (${x.date})`).slice(0, 3).join(' | '));
+const ib = await t('inbox', r.inbox); console.log('  ', ib.recs.length, 'recs,', ib.releases.length, 'releases, unavailable:', ib.unavailable, 'dismissed', ib.dismissedCount);

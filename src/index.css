@@ -1,0 +1,42 @@
+@import '@fontsource/fraunces/400.css';
+@import '@fontsource/fraunces/500.css';
+@import '@fontsource/fraunces/400-italic.css';
+@import '@fontsource/outfit/300.css';
+@import '@fontsource/outfit/400.css';
+@import '@fontsource/outfit/500.css';
+@import '@fontsource/ibm-plex-mono/400.css';
+@import '@fontsource/ibm-plex-mono/500.css';
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --c-ink:#141118; --c-surface:#1E1A26; --c-raised:#272231; --c-line:#322B3E; --c-cream:#EFE9F4; --c-dust:#9C93AD; --c-amber:#F2A93B; --c-coral:#E4655F; --c-moss:#7FC8A9; --c-violet:#8A6FB0;
+  --font-display: 'Fraunces';
+  --font-body: 'Outfit';
+  --font-mono: 'IBM Plex Mono';
+  color-scheme: dark;
+}
+html, body, #root { height: 100%; }
+body { @apply bg-ink font-body text-cream antialiased; font-weight: 300; }
+::selection { background: color-mix(in srgb, var(--c-amber) 35%, transparent); }
+* { scrollbar-width: thin; scrollbar-color: var(--c-line) transparent; }
+a, button { -webkit-tap-highlight-color: transparent; }
+:focus-visible { outline: 2px solid var(--c-amber); outline-offset: 2px; border-radius: 4px; }
+
+/* Vinyl groove texture behind the hero dial (v1). */
+.groove-bg {
+  background: radial-gradient(circle at 78% 50%,
+    transparent 0 38%, color-mix(in srgb, var(--c-cream) 3%, transparent) 38.5% 39%, transparent 39.5% 44%,
+    color-mix(in srgb, var(--c-cream) 3%, transparent) 44.5% 45%, transparent 45.5% 52%, color-mix(in srgb, var(--c-cream) 2.5%, transparent) 52.5% 53%,
+    transparent 53.5% 62%, color-mix(in srgb, var(--c-cream) 2%, transparent) 62.5% 63%, transparent 63.5%);
+}
+/* Record sleeve framing for entity headers. */
+.sleeve { background: linear-gradient(180deg, color-mix(in srgb, var(--c-raised) 55%, transparent), transparent); }
+.num { font-family: var(--font-mono); font-variant-numeric: tabular-nums; }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+.spin { animation: spin 6s linear infinite; }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+}

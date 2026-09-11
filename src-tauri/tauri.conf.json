@@ -1,0 +1,56 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Deep Cuts",
+  "version": "3.0.0",
+  "identifier": "app.deepcuts.desktop",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "Deep Cuts",
+        "label": "main",
+        "width": 1280,
+        "height": 860,
+        "minWidth": 960,
+        "minHeight": 640,
+        "resizable": true,
+        "dragDropEnabled": true,
+        "backgroundColor": "#141118"
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: http://asset.localhost data: https://i.scdn.co https://*.scdn.co https://coverartarchive.org https://*.archive.org; style-src 'self' 'unsafe-inline'; font-src 'self' data:"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "appimage", "deb"],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "category": "Music",
+    "shortDescription": "Your Spotify listening, annotated",
+    "longDescription": "Local-first analytics for years of personal Spotify listening. Your data never leaves this machine.",
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "languages": ["English"]
+      },
+      "webviewInstallMode": { "type": "embedBootstrapper" }
+    },
+    "linux": {
+      "deb": { "depends": [] },
+      "appimage": { "bundleMediaFramework": false }
+    }
+  },
+  "plugins": {}
+}
