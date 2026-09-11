@@ -157,6 +157,7 @@ const commands = {
   async clear_blend() { await con.run('DELETE FROM blend_plays'); return null; },
   async lyrics_enrich_now() { throw new Error('Lyric fetching needs the desktop app.'); },
   async save_binary_file() { return null; },
+  async lastfm_wild_connect() { throw new Error('Connectors need the desktop app.'); }, async lastfm_wild_disconnect() { return null; },
   async statsfm_connect() { throw new Error('Connectors need the desktop app.'); }, async statsfm_disconnect() { return null; }, async musicbrainz_connect() { throw new Error('Connectors need the desktop app.'); }, async musicbrainz_disconnect() { return null; },
 };
 

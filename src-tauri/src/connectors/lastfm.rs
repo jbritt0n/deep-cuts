@@ -14,7 +14,8 @@ fn http() -> Result<reqwest::blocking::Client> {
     Ok(reqwest::blocking::Client::builder().timeout(Duration::from_secs(20)).user_agent("DeepCuts/3.0 (personal listening analytics)").build()?)
 }
 
-fn call(db: &Db, key: &str, method: &str, params: &[(&str, &str)]) -> Result<Value> {
+/// Shared with `lastfm_wild` (Phase 8) so both connectors honour one rate limit and one api_calls log.
+pub(crate) fn call(db: &Db, key: &str, method: &str, params: &[(&str, &str)]) -> Result<Value> {
     let h = http()?;
     let mut delay = 1u64;
     for _ in 0..4 {

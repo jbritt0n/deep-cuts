@@ -1,14 +1,48 @@
-# Builds Deep Cuts for Linux (AppImage + .deb) and Windows (NSIS installer +
-# portable .exe) on GitHub's runners. Push the repo to GitHub, open the Actions
+# Tests every push; builds Deep Cuts for Linux (AppImage + .deb) and Windows (NSIS installer +
+# portable .exe) on GitHub's runners for version tags and manual runs. Push the repo to GitHub, open the Actions
 # tab, and download the artifacts — no Windows machine needed.
 name: build
 on:
   push:
     branches: [main]
     tags: ["v*"]
+  pull_request:
+    branches: [main]
   workflow_dispatch: {}
 jobs:
+  # Phase 8 (Kimi T1): a ~2-minute test job runs on every push and PR; the
+  # 40-minute Rust builds only run for version tags and manual dispatch, and
+  # only after tests pass. Saves CI minutes and gives regression coverage for
+  # the SQL pipeline (Python fixtures), the TS layer (tsc + vitest) and the
+  # query layer end-to-end (smoke scripts against dev-server + the demo seed).
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 20, cache: npm }
+      - uses: actions/setup-python@v5
+        with: { python-version: '3.12' }
+      - run: pip install duckdb pytz
+      - run: npm ci --no-audit --no-fund
+      - name: Typecheck
+        run: npx tsc --noEmit
+      - name: Unit tests (vitest)
+        run: npm test
+      - name: SQL fixture tests
+        run: python3 scripts/test_sql_fixtures.py
+      - name: Query smoke tests against the demo record
+        run: |
+          python3 scripts/seed_dev_db.py
+          DEEPCUTS_TZ=America/Detroit node dev-server.mjs & sleep 6
+          npx tsx scripts/smoke-queries.ts
+          npx tsx scripts/smoke-insights.ts
+          npx tsx scripts/smoke-recs.ts
+          npx tsx scripts/smoke-wild.ts
+
   build:
+    needs: test
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     strategy:
       fail-fast: false
       matrix:

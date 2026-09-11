@@ -9,6 +9,9 @@ import { Importer } from '@/components/Importer';
 import { search } from '@/lib/queries';
 import type { ArtistRow } from '@/lib/types';
 import { sessionOverrides, travel } from '@/lib/phase7Queries';
+import { integrity, overrunPlays, shortTrackOutliers, stuckRepeatSessions } from '@/lib/hygieneQueries';
+import { Link } from 'react-router-dom';
+import { fmtDate, fmtPct, trackHref } from '@/lib/format';
 
 type Activity = { at: string; task: string; level: string; message: string; detail: string | null };
 type ImportRun = { import_id: string; at: string; files: number; inserted: number; duplicate: number; skipped: number };
@@ -107,6 +110,9 @@ export function SettingsPage({ status, onChanged }: { status: AppStatus; onChang
         </div>
       </div>
 
+      <div className="mt-6">
+        <ReviewOutliers busy={busy} run={run} />
+      </div>
       <div className="mt-6 grid gap-6 md:grid-cols-2">
         <Travel busy={busy} run={run} zones={zones} home={status.timezone} />
         <SessionHygiene busy={busy} run={run} />
@@ -181,6 +187,69 @@ function SessionHygiene({ busy, run }: { busy: string | null; run: (l: string, f
   return (
     <Card title="Session hygiene" subtitle="Sessions you marked by hand. Use the buttons on any session page (Sessions → open one → “Mark unattended”).">
       {o.data && o.data.length ? <ul className="divide-y divide-line/60 text-sm">{o.data.map((s) => <li key={s.startAt} className="flex items-center gap-3 py-1.5"><span className="num text-xs">{s.startAt.slice(0, 16)}</span><span className={s.attention === 'unattended' ? 'text-violet' : 'text-moss'}>{s.attention}</span><button disabled={!!busy} onClick={() => run('sess', () => invoke('set_session_attention', { startAt: s.startAt, attention: null }), 'Override removed; recomputed.')} className="ml-auto text-xs text-dust hover:text-coral">undo</button></li>)}</ul> : <p className="text-sm text-dust">None yet.</p>}
+    </Card>
+  );
+}
+
+/** Phase 8 (roadmap §3.6): the outlier classes the "So Excited" bug exposed, reviewable in one place. */
+function ReviewOutliers({ busy, run }: { busy: string | null; run: (l: string, fn: () => Promise<unknown>, ok: string) => Promise<void> }) {
+  const [tab, setTab] = useState<'stuck' | 'short' | 'overrun'>('stuck');
+  const integ = useAsync(integrity, [busy]);
+  const stuck = useAsync(stuckRepeatSessions, [busy]);
+  const short = useAsync(shortTrackOutliers, [busy]);
+  const over = useAsync(overrunPlays, [busy]);
+  const i = integ.data;
+  const pill = (k: typeof tab, l: string, n?: number) => <button key={k} onClick={() => setTab(k)} className={`rounded-full px-3 py-1.5 text-xs ${tab === k ? 'bg-raised text-cream' : 'border border-line text-dust hover:text-cream'}`}>{l}{n !== undefined ? ` · ${fmtInt(n)}` : ''}</button>;
+  return (
+    <Card title="Review outliers" subtitle="Things that inflate the numbers without being listening. Mark a session unattended and every total, streak and record recomputes; the Attentive lens then hides it everywhere.">
+      {i && (
+        <ul className="num mb-4 grid gap-2 text-xs text-dust sm:grid-cols-3 lg:grid-cols-6">
+          <li><span className="block font-display text-xl text-cream">{fmtInt(i.stuckSessions)}</span>stuck-repeat sessions · {i.stuckHours.toFixed(1)} h</li>
+          <li><span className="block font-display text-xl text-cream">{fmtPct(i.unattendedShare)}</span>of plays unattended</li>
+          <li><span className={`block font-display text-xl ${i.impossibleDays ? 'text-coral' : 'text-cream'}`}>{fmtInt(i.impossibleDays)}</span>days over 24 h of music</li>
+          <li><span className="block font-display text-xl text-cream">{fmtInt(i.overrunPlays)}</span>plays longer than the song</li>
+          <li><span className="block font-display text-xl text-cream">{fmtPct(i.enrichedShare)}</span>tracks enriched</li>
+          <li><span className="block font-display text-xl text-cream">{fmtInt(i.overriddenSessions)}</span>sessions corrected by hand</li>
+        </ul>
+      )}
+      <div className="mb-3 flex flex-wrap gap-2">{pill('stuck', 'Stuck on repeat', stuck.data?.length)}{pill('short', 'Short tracks, big counts', short.data?.length)}{pill('overrun', 'Played longer than the song', over.data?.length)}</div>
+      {tab === 'stuck' && (!stuck.data ? <p className="text-sm text-dust">Looking…</p> : stuck.data.length === 0 ? <p className="text-sm text-dust">No stuck-repeat sessions. The record is clean of this class.</p> : (
+        <ul className="divide-y divide-line/60 text-sm">
+          {stuck.data.map((s) => (
+            <li key={s.sessionId} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2">
+              <Link to={`/sessions/${s.sessionId}`} className="num w-36 shrink-0 text-xs text-dust hover:text-amber">{fmtDate(s.startAt, { month: 'short', day: 'numeric', year: 'numeric' })}</Link>
+              <span className="min-w-0 flex-1 truncate">{s.trackId ? <Link to={trackHref(s.trackId)} className="hover:text-amber">{s.track}</Link> : s.track}<span className="ml-2 text-xs text-dust">{s.artist}</span></span>
+              <span className="num shrink-0 text-xs text-dust">{fmtInt(s.plays)}× · {fmtInt(s.minutes)} min</span>
+              <span className={`num shrink-0 text-xs ${s.attention === 'unattended' ? 'text-violet' : 'text-amber'}`}>{s.attention}{s.overridden ? ' (by hand)' : ''}</span>
+              {s.attention !== 'unattended'
+                ? <button disabled={!!busy} onClick={() => run('sess', () => invoke('set_session_attention', { startAt: s.startAt, attention: 'unattended' }), 'Marked unattended; recomputed.')} className="rounded-full border border-line px-3 py-1 text-xs text-dust hover:text-cream disabled:opacity-40">Mark unattended</button>
+                : <button disabled={!!busy} onClick={() => run('sess', () => invoke('set_session_attention', { startAt: s.startAt, attention: 'active' }), 'Marked as listened; recomputed.')} className="text-xs text-dust hover:text-cream">it was me</button>}
+            </li>
+          ))}
+        </ul>
+      ))}
+      {tab === 'short' && (!short.data ? <p className="text-sm text-dust">Looking…</p> : short.data.length === 0 ? <p className="text-sm text-dust">No short tracks with suspicious play counts.</p> : (
+        <ul className="divide-y divide-line/60 text-sm">
+          {short.data.map((t) => (
+            <li key={t.trackId} className="flex flex-wrap items-center gap-x-3 gap-y-1 py-2">
+              <span className="min-w-0 flex-1 truncate"><Link to={trackHref(t.trackId)} className="hover:text-amber">{t.track}</Link><span className="ml-2 text-xs text-dust">{t.artist} · {t.durationS}s</span></span>
+              <span className="num shrink-0 text-xs text-dust">{fmtInt(t.plays)} plays · {fmtInt(t.attendedPlays)} attended</span>
+              <Link to={`/day/${t.topDay}`} className="num shrink-0 text-xs text-amber hover:underline">{fmtInt(t.topDayPlays)}× on {t.topDay}</Link>
+            </li>
+          ))}
+        </ul>
+      ))}
+      {tab === 'overrun' && (!over.data ? <p className="text-sm text-dust">Looking…</p> : over.data.length === 0 ? <p className="text-sm text-dust">Every play fits inside its song.</p> : (
+        <ul className="divide-y divide-line/60 text-sm">
+          {over.data.map((t) => (
+            <li key={t.trackId} className="flex items-center gap-3 py-2">
+              <span className="min-w-0 flex-1 truncate"><Link to={trackHref(t.trackId)} className="hover:text-amber">{t.track}</Link><span className="ml-2 text-xs text-dust">{t.artist}</span></span>
+              <span className="num shrink-0 text-xs text-dust">{fmtInt(t.plays)} play{t.plays === 1 ? '' : 's'} · worst {Math.round(t.worstMs / 1000)}s vs {Math.round(t.durationMs / 1000)}s</span>
+            </li>
+          ))}
+        </ul>
+      ))}
+      <p className="mt-3 text-xs text-dust/70">Stuck on repeat = the same track completing naturally 8+ times in a row with no clicks between. Short tracks are ranked by their single busiest day — a loop is a spike, a jingle you love is spread out. Overruns are usually a clock glitch or wrong metadata, listed so you know they exist.</p>
     </Card>
   );
 }

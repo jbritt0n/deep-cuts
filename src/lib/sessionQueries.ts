@@ -12,10 +12,11 @@ export type SessionFilters = {
   platform: string | null;   // platform family
   attention: string | null;
   minTracks: number;
-  sort: 'recent' | 'longest' | 'most_tracks' | 'skippiest';
+  q: string;                 // Phase 8 (§3.4): artist or track name contained in the session
+  sort: 'recent' | 'oldest' | 'longest' | 'most_tracks' | 'skippiest';
   page: number;
 };
-export const DEFAULT_SESSION_FILTERS: SessionFilters = { shape: null, dayPart: null, platform: null, attention: null, minTracks: 3, sort: 'recent', page: 0 };
+export const DEFAULT_SESSION_FILTERS: SessionFilters = { shape: null, dayPart: null, platform: null, attention: null, minTracks: 3, q: '', sort: 'recent', page: 0 };
 export const PAGE = 40;
 
 /** Platform strings are messy ("Windows 7 (6.1.7601; x64…)", "Partner roku_tv rca;…"). Bucket them. */
@@ -28,8 +29,8 @@ export const PLATFORM_FAMILY = `
     WHEN lower(platform) LIKE 'os x%' OR lower(platform) LIKE 'macos%' OR lower(platform) LIKE 'mac%' THEN 'Mac'
     WHEN lower(platform) LIKE 'linux%'                                     THEN 'Linux'
     WHEN lower(platform) LIKE 'web%'                                       THEN 'Web player'
+    WHEN lower(platform) LIKE '%playstation%' OR lower(platform) LIKE '%xbox%' THEN 'Console'   -- before 'partner%': consoles arrive as "Partner playstation4 …" (caught by platformFamily.test.ts)
     WHEN lower(platform) LIKE 'partner%' OR lower(platform) LIKE '%tv%' OR lower(platform) LIKE '%sonos%' OR lower(platform) LIKE '%speaker%' OR lower(platform) LIKE '%cast%' THEN 'TV / speaker'
-    WHEN lower(platform) LIKE '%playstation%' OR lower(platform) LIKE '%xbox%' THEN 'Console'
     WHEN platform IS NULL THEN 'Unknown'
     ELSE 'Other'
   END`;
@@ -50,6 +51,7 @@ export const toSessionRow = (r: Record<string, unknown>): SessionRow => ({
   repeatRate: num(r.repeatRate), noveltyRate: num(r.noveltyRate), artistEntropy: num(r.artistEntropy),
   dayPart: String(r.dayPart ?? ''), albumRide: Boolean(r.albumRide),
   attention: String(r.attention ?? 'active'), interactions: num(r.interactions), unattendedMs: num(r.unattendedMs),
+  topArtists: Array.isArray(r.topArtists) ? (r.topArtists as unknown[]).map(String) : undefined,
 });
 
 export type SessionsOverview = {
@@ -154,9 +156,21 @@ export async function listSessions(f: SessionFilters): Promise<{ rows: SessionRo
   if (f.dayPart) { params.push(f.dayPart); parts.push(`day_part = $${params.length}`); }
   if (f.attention) { params.push(f.attention); parts.push(`attention = $${params.length}`); }
   if (f.platform) { params.push(f.platform); parts.push(`${PLATFORM_FAMILY} = $${params.length}`); }
+  if (f.q && f.q.trim()) {
+    params.push(`%${f.q.trim().toLowerCase()}%`);
+    parts.push(`EXISTS (SELECT 1 FROM play_sessions ps JOIN plays_resolved p USING (play_id) WHERE ps.session_id = sessions.session_id AND (lower(p.artist_name) LIKE $${params.length} OR lower(p.track_name) LIKE $${params.length}))`);
+  }
   const where = `WHERE ${parts.join(' AND ')} ${sessionsWhere()}`;
-  const order = { recent: 'start_at DESC', longest: 'total_ms DESC', most_tracks: 'track_count DESC', skippiest: 'skip_rate DESC, track_count DESC' }[f.sort];
-  const rows = (await query(`SELECT ${SESSION_COLS} FROM sessions ${where} ORDER BY ${order} LIMIT ${PAGE} OFFSET ${f.page * PAGE}`, params)).map(toSessionRow);
+  const order = { recent: 'start_at DESC', oldest: 'start_at ASC', longest: 'total_ms DESC', most_tracks: 'track_count DESC', skippiest: 'skip_rate DESC, track_count DESC' }[f.sort];
+  // Top artists per session (by plays) for the card face — computed only for the page being shown.
+  const rows = (await query(`
+    WITH page AS (SELECT * FROM sessions ${where} ORDER BY ${order} LIMIT ${PAGE} OFFSET ${f.page * PAGE}),
+    ta AS (
+      SELECT ps.session_id, list(artist_name ORDER BY n DESC, artist_name) FILTER (WHERE rn <= 2) AS top
+      FROM (SELECT ps.session_id, p.artist_name, COUNT(*) AS n, ROW_NUMBER() OVER (PARTITION BY ps.session_id ORDER BY COUNT(*) DESC, p.artist_name) AS rn
+            FROM play_sessions ps JOIN page USING (session_id) JOIN plays_resolved p USING (play_id) WHERE p.artist_name IS NOT NULL GROUP BY 1, 2) ps
+      GROUP BY 1)
+    SELECT ${SESSION_COLS}, ta.top AS "topArtists" FROM page LEFT JOIN ta USING (session_id) ORDER BY ${order}`, params)).map(toSessionRow);
   const [c] = await query(`SELECT COUNT(*) AS n FROM sessions ${where}`, params);
   return { rows, total: num(c?.n) };
 }

@@ -251,8 +251,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     interaction_count      INTEGER,
     attended_ms            BIGINT,
     unattended_ms          BIGINT,
-    attention              VARCHAR    -- active | drifting | unattended
+    attention              VARCHAR,   -- active | drifting | unattended
+    stuck_repeat           BOOLEAN DEFAULT FALSE  -- same track ≥8× in a row naturally — likely left looping
 );
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS stuck_repeat BOOLEAN DEFAULT FALSE;
 
 CREATE TABLE IF NOT EXISTS play_sessions (
     play_id              UUID,
@@ -518,3 +520,48 @@ ALTER TABLE artists ADD COLUMN IF NOT EXISTS mbid VARCHAR;
 ALTER TABLE playlists ADD COLUMN IF NOT EXISTS public BOOLEAN;
 ALTER TABLE created_playlists ADD COLUMN IF NOT EXISTS is_public BOOLEAN DEFAULT FALSE;
 ALTER TABLE connector_state ADD COLUMN IF NOT EXISTS detail JSON;
+
+-- ------------------------------------------------------------
+-- Phase 8 — Heard in the Wild (ambient / Shazam captures via Last.fm).
+--
+-- Captures arrive as Last.fm scrobbles written by a phone-side scrobbler
+-- (Pano Scrobbler → Now Playing + Shazam). They are stored as a SEPARATE
+-- event class, `event_type = 'wild_play'`, so nothing in the core pipeline
+-- (plays_normalized → plays_resolved → sessions/insights/streaks) can ever see
+-- them: every core view filters `event_type = 'play'`. This is deliberate —
+-- a capture is "I heard this somewhere", not "I chose to play this".
+--
+-- Per-app provenance (Shazam vs. Now Playing) is NOT recoverable: the Last.fm
+-- API does not expose which client submitted a scrobble. The whole class is
+-- therefore one bucket. `occurred_at` is the scrobble timestamp (start of the
+-- moment the song was heard); captures carry no duration and no skip signal.
+--
+-- Deduplication against the owner's own Spotify playback happens at ingest
+-- (wild_insert.sql): a capture that lands inside a primary play of the same
+-- song/artist is the owner's own speakers being overheard, and is dropped.
+-- ------------------------------------------------------------
+CREATE OR REPLACE VIEW wild_plays AS
+SELECT
+    event_id                                             AS wild_id,
+    occurred_at                                          AS heard_at_utc,
+    -- local wall clock in the home zone (tz_offsets is loaded by the app)
+    CAST(occurred_at AS TIMESTAMP)
+      + COALESCE((SELECT t.offset_s FROM tz_offsets t
+                  WHERE t.zone = (SELECT value FROM app_meta WHERE key = 'timezone')
+                    AND t.from_utc <= CAST(occurred_at AS TIMESTAMP)
+                  ORDER BY t.from_utc DESC LIMIT 1), 0) * INTERVAL 1 SECOND AS heard_at,
+    json_extract_string(payload, '$.track_name')         AS track_name,
+    json_extract_string(payload, '$.artist_name')        AS artist_name,
+    json_extract_string(payload, '$.album_name')         AS album_name,
+    CAST(json_extract(payload, '$.lastfm_uts') AS BIGINT) AS lastfm_uts,
+    json_extract_string(payload, '$.mbid')               AS track_mbid,
+    json_extract_string(payload, '$.source')             AS source,
+    -- normalised keys used to match a capture back onto the owner's record
+    lower(trim(json_extract_string(payload, '$.artist_name')))                                       AS artist_key,
+    lower(trim(regexp_replace(regexp_replace(json_extract_string(payload, '$.track_name'),
+                 '\s*[\(\[].*$', ''), '\s+-\s+.*$', '')))                                                AS track_key
+FROM events
+WHERE event_type = 'wild_play';
+
+INSERT INTO connector_state (service, status) VALUES ('lastfm_wild', 'disconnected')
+ON CONFLICT (service) DO NOTHING;

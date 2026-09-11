@@ -64,6 +64,8 @@ The bundled DuckDB build needs **10–15 GB free** for `src-tauri/target/`. Opti
 If a build dies with "No space left on device", run `cargo clean` inside `src-tauri/` (or delete the target dir) before retrying; a half-written target directory wastes gigabytes.
 
 ### 3. Check your data without Rust (2 minutes)
+No export handy? `python3 scripts/seed_dev_db.py` builds the dev database from the demo seed instead. Run the whole test stack with `npx tsc --noEmit && npm test && python3 scripts/test_sql_fixtures.py` — the same thing CI runs on every push.
+
 ```bash
 python3 scripts/validate_sql.py "/path/to/Spotify Extended Streaming History"
 python3 scripts/test_sql_fixtures.py
@@ -107,6 +109,12 @@ In `src-tauri/Cargo.toml` change the duckdb line to `features = ["json", "parque
 
 **Lyric themes**: Settings → Lyric themes → enable. Free (LRCLIB), no key; only derived themes are kept.
 
+**Heard in the Wild** (Phase 8 — songs your phone recognises out in the world)
+1. On the phone: install **Pano Scrobbler**, sign it in to Last.fm, enable scrobbling for **Now Playing** (Pixel ambient recognition) and **Shazam**.
+2. **Turn Spotify off** in Pano's app list — your Spotify history is already in the record. Better: give Pano its own Last.fm account so nothing you play on purpose can ever land in this class.
+3. In Deep Cuts: Last.fm must be connected (the key is reused). Services → Heard in the Wild → enter the account Pano writes to (blank = same as Last.fm above) → keep *Since* at today unless the account is Pano-only → **Set up** → **Sync now**.
+4. Captures land on the **Heard in the Wild** page every 30 minutes. They never count toward hours, streaks or records. The card's *dropped* counter is how many captures were your own Spotify playback being overheard — it should be near zero if step 2 is right.
+
 **Local LLM (for the later phase)**: `curl -fsSL https://ollama.com/install.sh | sh`, then `ollama pull qwen2.5:1.5b` and `ollama pull llama3.2:1b`. Confirm with `curl http://127.0.0.1:11434/api/tags`. Nothing else to do until the LLM phase ships.
 
 ---
@@ -114,6 +122,7 @@ In `src-tauri/Cargo.toml` change the duckdb line to `features = ["json", "parque
 ## D. How data flows and refreshes
 - **Import** is manual: drop a newer export any time; only new plays are added (dedupe on timestamp + track + length).
 - **Live plays**: the Spotify poller runs every 20 min while the app or tray is up; each new play is checked against your export with a ±2 s tolerance, so nothing double-counts.
-- **Enrichment** trickles in the background under Spotify's quota; Last.fm/MusicBrainz/cover art/lyrics every few minutes; stats.fm every 6 h; a full rebuild + Parquet backup nightly at 03:30.
+- **Enrichment** trickles in the background under Spotify's quota; Last.fm/MusicBrainz/cover art/lyrics every few minutes; Heard in the Wild every 30 min; stats.fm every 6 h; a full rebuild + Parquet backup nightly at 03:30.
+- **Heard in the Wild** captures are a separate event class (`wild_play`). Each one is checked at import against your primary plays: if you were streaming the same artist at that moment, the capture is dropped as your own speakers being overheard. Nothing in the core record ever reads them.
 - **The UI refreshes itself**: every background job emits `data:changed`; open pages re-query. Manual: Services → *Sync now*, tray → *Check Spotify now*, Settings → *Rebuild everything*.
 - **Backups**: `backups/` inside the data folder (Settings shows the path). `events-*.parquet` files are the raw log; everything else can be rebuilt from them.

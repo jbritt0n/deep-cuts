@@ -1,6 +1,6 @@
 import { Link } from 'react-router-dom';
-import type { AppStatus } from '@/lib/types';
-import { getDashboardStats, recentMilestones, topAlbums, topArtists, topTracks } from '@/lib/queries';
+import type { AppStatus, DayCell } from '@/lib/types';
+import { getCalendar, getDashboardStats, recentMilestones, topAlbums, topArtists, topTracks } from '@/lib/queries';
 import { Collage } from '@/components/Collage';
 import { unseenInsights } from '@/lib/phase7Queries';
 import { invoke } from '@/lib/bridge';
@@ -19,8 +19,12 @@ import { MonthlySparkline } from '@/components/charts/MonthlySparkline';
 import { SessionShapes } from '@/components/charts/SessionShapes';
 
 export function Dashboard({ status }: { status: AppStatus }) {
-  const { filter } = useFilter();
+  const { filter, years } = useFilter();
   const { data: s, error, loading } = useAsync(getDashboardStats, [filter]);
+  const [calScope, setCalScope] = useState<'last365' | number>('last365');
+  const cal = useAsync(() => (calScope === 'last365' ? Promise.resolve<DayCell[] | null>(null) : getCalendar(calScope)), [calScope, filter]);
+  const calData = calScope === 'last365' ? s?.calendar ?? [] : cal.data ?? [];
+  const calPeak = calData.length ? calData.reduce((a, b) => (b.minutes > a.minutes ? b : a)) : null;
   const [n, setN] = useState(10);
   const ms = useAsync(recentMilestones, [filter]);
   const shelf = useAsync(() => topAlbums(12), [filter]);
@@ -28,7 +32,6 @@ export function Dashboard({ status }: { status: AppStatus }) {
   const more = useAsync(async () => (n === 10 ? null : { artists: await topArtists(n), tracks: await topTracks(n) }), [n, filter]);
   if (error) return <ErrorBox message={error} />;
   if (!s || loading && !s) return <Loading />;
-  const peak = s.peakDay;
   const todayLabel = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric' });
   const lensNote = filter.attentiveOnly ? 'attentive listening' : 'everything recorded';
 
@@ -64,9 +67,15 @@ export function Dashboard({ status }: { status: AppStatus }) {
       </section>
 
       <div id="year" className="mt-8">
-        <Card title="The past year, day by day" subtitle="Click a day to see its sessions and plays."
-          aside={peak && peak.minutes > 0 ? <Link to={`/day/${peak.day}`} className="num text-xs text-dust transition hover:text-amber">loudest day · {peak.day} · {fmtInt(peak.minutes)} min</Link> : undefined}>
-          <CalendarHeatmap data={s.calendar} />
+        <Card title={calScope === 'last365' ? 'The past year, day by day' : `${calScope}, day by day`} subtitle="Click a day to see its sessions and plays."
+          aside={<div className="flex items-center gap-3">
+            {calPeak && calPeak.minutes > 0 && <Link to={`/day/${calPeak.day}`} className="num text-xs text-dust transition hover:text-amber">loudest day · {calPeak.day} · {fmtInt(calPeak.minutes)} min</Link>}
+            <select value={String(calScope)} onChange={(e) => setCalScope(e.target.value === 'last365' ? 'last365' : Number(e.target.value))} className="rounded-full border border-line bg-transparent px-3 py-1 text-xs text-dust hover:text-cream">
+              <option value="last365">Last 12 months</option>
+              {[...years].sort((a, b) => b - a).map((y) => <option key={y} value={y}>{y}</option>)}
+            </select>
+          </div>}>
+          {calScope === 'last365' ? <CalendarHeatmap data={s.calendar} /> : cal.data ? <CalendarHeatmap data={cal.data} /> : <Loading label="Laying out the year…" />}
         </Card>
       </div>
 

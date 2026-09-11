@@ -1,7 +1,7 @@
 import { C } from '@/lib/theme';
 import { Link } from 'react-router-dom';
 import type { AlbumRow, ArtistRow, OnThisDayRow, PlayRow, RecordItem, SessionRow, TrackRow } from '@/lib/types';
-import { DAY_PART_LABELS, SHAPE_LABELS, albumHref, artistHref, dayHref, fmtHours, fmtInt, fmtMs, fmtPct, fmtTime, trackHref } from '@/lib/format';
+import { DAY_PART_LABELS, SHAPE_LABELS, albumHref, artistHref, dayHref, fmtHours, fmtInt, fmtMs, fmtPct, fmtTime, trackHref, fmtDate } from '@/lib/format';
 
 export function PlaysTable({ data, showDate = false, limit }: { data: PlayRow[]; showDate?: boolean; limit?: number }) {
   const rows = limit ? data.slice(0, limit) : data;
@@ -134,7 +134,7 @@ export function SessionCard({ s, href }: { s: SessionRow; href?: string }) {
   const body = (
     <>
       <div className="flex items-baseline justify-between gap-3">
-        <p className="num text-xs text-dust">{fmtTime(s.startAt)} → {fmtTime(s.endAt)} · {DAY_PART_LABELS[s.dayPart] ?? s.dayPart}</p>
+        <p className="num text-xs text-dust"><span className="text-cream/80">{fmtDate(s.startAt, { month: 'short', day: 'numeric', year: 'numeric' })}</span> · {fmtTime(s.startAt)} → {fmtTime(s.endAt)} · {DAY_PART_LABELS[s.dayPart] ?? s.dayPart}</p>
         <span className="flex items-center gap-1.5 text-xs"><ShapeDot shape={s.shape} /><span title={meta.note}>{meta.label}</span></span>
       </div>
       <p className="num mt-2 font-display text-xl">{fmtHours(s.totalMs / 3600000)}</p>
@@ -143,7 +143,8 @@ export function SessionCard({ s, href }: { s: SessionRow; href?: string }) {
         {s.noveltyRate >= 0.5 ? ` · ${fmtPct(s.noveltyRate)} new to you` : ''}
         {s.attention !== 'active' ? <span className="text-violet"> · {s.attention}</span> : ''}
       </p>
-      <p className="mt-3 truncate text-xs text-dust"><span className="text-cream/70">Opened with</span> {s.openingTrack}</p>
+      {s.topArtists && s.topArtists.length > 0 && <p className="mt-3 truncate text-sm text-cream/90">{s.topArtists.join(' · ')}</p>}
+      <p className={`${s.topArtists && s.topArtists.length ? 'mt-1' : 'mt-3'} truncate text-xs text-dust`}><span className="text-cream/70">Opened with</span> {s.openingTrack}</p>
       <p className="truncate text-xs text-dust"><span className="text-cream/70">Closed with</span> {s.closingTrack}</p>
     </>
   );

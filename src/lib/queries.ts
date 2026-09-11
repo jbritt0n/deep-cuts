@@ -92,6 +92,22 @@ const toMonthly = (rows: Record<string, unknown>[]): MonthPoint[] =>
   rows.map((r) => ({ month: String(r.month), key: String(r.key), hours: num(r.hours) }));
 
 // Dashboard -------------------------------------------------------------------
+/** Phase 8 (§3.5): the dashboard heatmap for any scope — 'last365' (default) or a calendar year. */
+export async function getCalendar(scope: 'last365' | number): Promise<DayCell[]> {
+  if (scope === 'last365') {
+    return (await query(`
+      WITH d AS (SELECT CAST(CAST($1 AS DATE) - INTERVAL 364 DAY + i * INTERVAL 1 DAY AS DATE) AS day FROM range(365) r(i))
+      SELECT CAST(d.day AS VARCHAR) AS day, COALESCE(m.minutes, 0) AS minutes, COALESCE(m.plays, 0) AS plays
+      FROM d LEFT JOIN ${DAILY()} m USING (day) ORDER BY d.day`, [localToday()])).map(toDayCell);
+  }
+  const y = Math.floor(scope);
+  const days = (y % 4 === 0 && (y % 100 !== 0 || y % 400 === 0)) ? 366 : 365;
+  return (await query(`
+    WITH d AS (SELECT CAST(DATE '${y}-01-01' + i * INTERVAL 1 DAY AS DATE) AS day FROM range(${days}) r(i))
+    SELECT CAST(d.day AS VARCHAR) AS day, COALESCE(m.minutes, 0) AS minutes, COALESCE(m.plays, 0) AS plays
+    FROM d LEFT JOIN ${DAILY()} m USING (day) ORDER BY d.day`)).map(toDayCell);
+}
+
 export async function getDashboardStats(): Promise<DashboardStats> {
   const today = localToday();
 

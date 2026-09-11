@@ -26,6 +26,7 @@ import { ComparePage } from './pages/Compare';
 import { LibraryPage } from './pages/Library';
 import { BlendPage } from './pages/Blend';
 import { NotesPage } from './pages/Notes';
+import { WildPage } from './pages/Wild';
 import { PlaylistMakerProvider } from './components/PlaylistMaker';
 import { ServicesPage } from './pages/Services';
 import { SettingsPage } from './pages/Settings';
@@ -86,6 +87,7 @@ export function App() {
             <Route path="/compare" element={<ComparePage />} />
             <Route path="/library" element={<LibraryPage />} />
             <Route path="/blend" element={<BlendPage />} />
+            <Route path="/wild" element={<WildPage />} />
             <Route path="/review" element={<ReviewPage />} />
             <Route path="/year" element={<Navigate to="/review" replace />} />
             <Route path="/sessions" element={<SessionsPage />} />

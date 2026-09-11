@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { likedAlbums, likedArtists, likedFacets, likedSongs, playlistDetail, playlistsOverview, pruneLists, type LikedFilters } from '@/lib/phase4Queries';
-import { followedPlaylists, madeByDeepCuts } from '@/lib/phase7Queries';
+import { earworms, followedPlaylists, madeByDeepCuts } from '@/lib/phase7Queries';
 import { useAsync, useFilter } from '@/lib/hooks';
 import { albumHref, artistHref, fmtDate, fmtHours, fmtInt, fmtPct, trackHref } from '@/lib/format';
 import { Card, ErrorBox, Loading, Sleeve } from '@/components/Card';
@@ -13,12 +13,12 @@ import { Histogram } from '@/components/charts/Bars';
 export function LibraryPage() {
   const [params, setParams] = useSearchParams();
   const tab = params.get('tab') ?? 'songs';
-  const tabs = [['songs', 'Liked songs'], ['albums', 'Liked albums'], ['artists', 'Liked artists'], ['playlists', 'My playlists'], ['followed', 'Followed'], ['made', 'Made by Deep Cuts'], ['prune', 'Prune']];
+  const tabs = [['songs', 'Liked songs'], ['albums', 'Liked albums'], ['artists', 'Liked artists'], ['playlists', 'My playlists'], ['followed', 'Followed'], ['made', 'Made by Deep Cuts'], ['earworms', 'Earworms'], ['prune', 'Prune']];
   return (
     <div className="mx-auto max-w-6xl">
       <Sleeve kicker="Library" title="Liked songs and playlists, with your numbers" meta="Everything Spotify knows you saved, joined to everything you actually played. Syncs daily once Spotify is connected." />
       <div className="mb-6 flex flex-wrap gap-2 text-xs">{tabs.map(([k, l]) => <button key={k} onClick={() => setParams({ tab: k })} className={`rounded-full px-3 py-1.5 ${tab === k ? 'bg-amber text-ink' : 'border border-line text-dust hover:text-cream'}`}>{l}</button>)}</div>
-      {tab === 'songs' && <LikedSongs />}{tab === 'albums' && <LikedAlbums />}{tab === 'artists' && <LikedArtists />}{tab === 'playlists' && <Playlists />}{tab === 'followed' && <Followed />}{tab === 'made' && <MadeBy />}{tab === 'prune' && <Prune />}
+      {tab === 'songs' && <LikedSongs />}{tab === 'albums' && <LikedAlbums />}{tab === 'artists' && <LikedArtists />}{tab === 'playlists' && <Playlists />}{tab === 'followed' && <Followed />}{tab === 'made' && <MadeBy />}{tab === 'earworms' && <Earworms />}{tab === 'prune' && <Prune />}
     </div>
   );
 }
@@ -141,6 +141,40 @@ function SyncNudge({ what }: { what: string }) {
       <button disabled={busy} onClick={async () => { setBusy(true); setMsg(null); try { setMsg(await invoke<string>('sync_now', { service: 'spotify' })); } catch (e) { setMsg(String(e)); } finally { setBusy(false); } }} className="mt-3 rounded-full bg-amber px-4 py-2 text-sm font-medium text-ink disabled:opacity-40">{busy ? 'Syncing…' : 'Sync Spotify now'}</button>
       {msg && <p className="mt-2 text-xs text-dust">{msg}</p>}
       {lastErr && <p className="mt-3 text-xs text-coral">Last sync error ({lastErr.at.slice(0, 16)}): {lastErr.message}{lastErr.detail ? ` — ${lastErr.detail.slice(0, 300)}` : ''}</p>}
+    </Card>
+  );
+}
+
+/** Phase 8 (roadmap §3.3): moved here from Discovery — earworms are songs you already have, not songs to find. */
+function Earworms() {
+  const { filter } = useFilter();
+  const ew = useAsync(() => earworms(60), [filter]);
+  const [hidden, setHidden] = useState<Set<string>>(new Set());
+  const [msg, setMsg] = useState<string | null>(null);
+  const rows = (ew.data ?? []).filter((e) => !hidden.has(e.trackId));
+  return (
+    <Card title="Earworms" subtitle="Songs that keep coming back: modest plays spread over many months, played on their own, never skipped. Tell it when it's right or wrong — it learns."
+      aside={rows.length ? <MakePlaylistButton small name="Earworms · Deep Cuts" tracks={rows.map((e) => ({ trackId: e.trackId, track: e.track, artistId: null, artist: e.artist, plays: e.plays, hours: 0, skipRate: e.skipRate }))} kind="insight" note="earworms" /> : undefined}>
+      {msg && <p className="mb-3 text-xs text-dust">{msg}</p>}
+      {ew.error ? <ErrorBox message={ew.error} /> : !ew.data ? <Loading label="Listening for hooks…" /> : rows.length === 0 ? (
+        <div className="text-sm text-dust">
+          <p>Nothing here yet — earworms come from the nightly insights pass, which hasn't run on this record.</p>
+          <button onClick={() => { setMsg('Rebuilding insights…'); invoke('rebuild').then(() => { setMsg('Insights rebuilt.'); ew.reload(); }).catch((e) => setMsg(String(e))); }} className="mt-2 rounded-full border border-line px-4 py-1.5 text-dust hover:text-cream">Compute insights now</button>
+        </div>
+      ) : (
+        <ul className="grid gap-2 md:grid-cols-2 lg:grid-cols-3">
+          {rows.map((e) => (
+            <li key={e.trackId} className={`rounded-xl border p-3 text-sm ${e.verdict === 'accepted' ? 'border-moss/50 bg-moss/5' : 'border-line bg-ink/40'}`}>
+              <p className="truncate"><Link to={trackHref(e.trackId)} className="hover:text-amber">{e.track}</Link><span className="ml-2 text-xs text-dust">{e.artist}</span></p>
+              <p className="num mt-0.5 text-xs text-dust">{e.plays} plays over {e.months} months in {e.years} year{e.years === 1 ? '' : 's'} · {Math.round(e.alone * 100)}% on its own</p>
+              <div className="mt-2 flex gap-3 text-xs">
+                <button onClick={() => invoke('rec_feedback', { subjectType: 'track', subjectKey: e.trackId, engine: 'earworm', verdict: 'accepted' }).then(() => ew.reload())} className="text-dust hover:text-moss">{e.verdict === 'accepted' ? 'confirmed' : 'yes, earworm'}</button>
+                <button onClick={() => invoke('rec_feedback', { subjectType: 'track', subjectKey: e.trackId, engine: 'earworm', verdict: 'dismissed' }).then(() => setHidden(new Set([...hidden, e.trackId])))} className="text-dust hover:text-coral">not really</button>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
     </Card>
   );
 }

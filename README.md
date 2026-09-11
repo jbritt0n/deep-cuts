@@ -1,8 +1,12 @@
-# Deep Cuts v3 — Phase 1
+# Deep Cuts v3 — Phase 8
 
 A local-first desktop app that turns years of Spotify listening into an explorable record. Tauri 2 + React + DuckDB. Everything stays on your machine.
 
-**Phase 7 (this drop) adds:** fixes from the first desktop run — playlists now sync on *Sync now* (followed playlists get items too), After-midnight falls back to counts, Radar is visible under *Made by Deep Cuts* (Discover and Library); **travel time zones** from Spotify's per-play country (Istanbul plays keep Istanbul time) plus manual date-range overrides in Settings; **scenes** (tag/origin clusters → scene phases, scene exports) and "also in rotation" on eras; **earworms**, calibrated against your Earwormz list, with learn-from-feedback; **Mixtape builder** with engine sliders; Library gains Followed playlists (lost gems), Made by Deep Cuts, and richer liked-song filters (year liked, tag, decade, artist, not-in-any-playlist, min plays) and sorts (longest since played, momentum); nightly **insights cache** feeding a "Fresh insights" dashboard row; mark sessions unattended by hand; concerts (lite) table; **ListenBrainz** similar artists and **artist origin** (MusicBrainz) connectors; stats.fm marked experimental.
+**Phase 8 (this drop) adds:** **Heard in the Wild** — songs your phone recognised out in the world (Pixel *Now Playing* and *Shazam*, scrobbled to Last.fm by Pano Scrobbler) imported every 30 minutes as a *separate event class* that can never touch your hours, streaks or records; anything it overheard from your own Spotify speakers is dropped on the way in (same artist, same moment). New `/wild` page: what you've never streamed vs what's already yours, where and when the world plays you music, pin/hide/Add to Radar. Owner's fixes: **Earworms** moved to Library; **session cards** show the date and top artists, the explorer gets *Oldest first* and an artist/track-in-session search; the dashboard **heatmap** can show any calendar year; a **Review outliers** panel in Settings lists stuck-repeat sessions with one-click *Mark unattended*, spiky short tracks, and plays longer than their song, under a six-number integrity strip. **Browse by genre** on Discover: every tag your artists carry, sized by your hours — pick one for your library in it and the artists just outside it. Under the hood: `vitest` (13 tests — the first run caught a real device-bucketing bug), 3 new SQL fixtures (10 total), CI now tests every push and only builds installers on version tags, `likedSongs` filters are parameterised. Rust additions (the wild connector) are written to the existing pattern but await their first `cargo` build. See **docs/PROJECT-STATUS-AND-ROADMAP.md** (updated) and **docs/HEARD-IN-THE-WILD.md**.
+
+**Phase 7c fixes:** playlist sync (Sync now was never calling the playlist sync — fixed, followed playlists now sync too); a Services-page crash that blanked the whole app (an ErrorBoundary now wraps every route, plus defensive fallbacks); and the real bug behind an outlier the owner found — B.B. King's "So Excited" at 229 plays, 226 of them a 30-second track looping unattended for 112 minutes that the attention detector misread as genuine listening because Spotify's `unknown` start_reason (normal for autoplay) was being treated as a user click. The interaction rule is now an explicit allow-list of real actions, and a new `stuck_repeat` flag catches this class of outlier directly (while correctly ignoring deliberate repeat-button mashing, which has real clicks). See **docs/PROJECT-STATUS-AND-ROADMAP.md** for the full project summary and roadmap.
+
+**Phase 7 adds:** fixes from the first desktop run — playlists now sync on *Sync now* (followed playlists get items too), After-midnight falls back to counts, Radar is visible under *Made by Deep Cuts* (Discover and Library); **travel time zones** from Spotify's per-play country (Istanbul plays keep Istanbul time) plus manual date-range overrides in Settings; **scenes** (tag/origin clusters → scene phases, scene exports) and "also in rotation" on eras; **earworms**, calibrated against your Earwormz list, with learn-from-feedback; **Mixtape builder** with engine sliders; Library gains Followed playlists (lost gems), Made by Deep Cuts, and richer liked-song filters (year liked, tag, decade, artist, not-in-any-playlist, min plays) and sorts (longest since played, momentum); nightly **insights cache** feeding a "Fresh insights" dashboard row; mark sessions unattended by hand; concerts (lite) table; **ListenBrainz** similar artists and **artist origin** (MusicBrainz) connectors; stats.fm marked experimental.
 
 **Phase 6 adds:** album art from Spotify and the Cover Art Archive (via MusicBrainz release groups) feeding the collages and a new Record shelf on the dashboard; SQL fixture tests (`scripts/test_sql_fixtures.py`) which already caught two shape-rule bugs (album rides now require unskipped plays; discovery runs require actual listening); a keyboard skip-link; a release job in CI (tag `v*` → GitHub Release with all installers); and **docs/SETUP.md** — the complete setup guide for both the GitHub and local routes.
 
@@ -95,6 +99,16 @@ npm run tauri dev          # first compile of DuckDB takes 5–15 min; later run
 20. Services → stats.fm: paste key → Connect; Sync now reports "+N plays" (0 if Spotify already had them all).
 21. Enrichment: after 24 h, Services shows enriched track count; a 429 never shows as an error — Activity logs "quota exceeded, paused until midnight" at worst.
 
+### Phase 8 checks
+22. `npm test` → 13 vitest tests pass; `python3 scripts/test_sql_fixtures.py` → 10 fixtures pass; `python3 scripts/seed_dev_db.py && npm run dev:browser` then `npx tsx scripts/smoke-wild.ts` → ends with `invariant … OK`.
+23. Library → **Earworms** tab shows what used to be on Discover; Discover no longer has the card.
+24. Sessions → explorer: cards show a date and up to two artists; sort **Oldest first** puts your first-ever session at the top; type an artist into the search box → only sessions containing them remain; *clear* resets.
+25. Dashboard → heatmap picker → choose 2024 → the grid re-renders for that year (366 cells) and the *loudest day* link follows.
+26. Settings → **Review outliers**: the So-Excited session appears under *Stuck on repeat* → **Mark unattended** → totals recompute, the row flips to `unattended (by hand)`, the Attentive lens hides it. *it was me* reverts.
+27. Discover → **Browse by genre**: with Last.fm/MusicBrainz tags synced, chips appear sized by hours; click one → your artists in it on the left, *new to you* candidates with "next to …" reasons on the right; **Add to Radar** works; **not for me** hides for 90 days.
+28. Phone: Pano Scrobbler → Now Playing + Shazam on, **Spotify off** (or a dedicated Last.fm account). Deep Cuts: Services → **Heard in the Wild** → Set up → Sync now. Play a song on Spotify through a speaker while the phone listens → it must **not** appear on `/wild` (the card's *dropped* counter rises). Shazam something in a café → it appears within 30 min tagged *never streamed*; totals, streak and records are unchanged.
+29. `/wild` with nothing captured shows the setup explainer, not an empty chart.
+
 ## Where things live
 ```
 src-tauri/sql/            all analytics: schema, import_*, entity_resolution, compute_sessions, demo_seed
@@ -110,10 +124,18 @@ src/lib/theme.ts          skins (CSS vars + live chart colours)
 src-tauri/sql/compute_milestones.sql  INS-11
 src-tauri/src/connectors/lyrics.rs  LRCLIB → derived features only
 src-tauri/src/playlists.rs  PLY-07/10, DIS-02 (POST /me/playlists, /playlists/{id}/items ≤100)
+src/lib/wildQueries.ts    Heard in the Wild (Phase 8) — reads wild_plays, joins onto your record
+src/lib/hygieneQueries.ts Review outliers panel (Phase 8)
+src/lib/genreQueries.ts   Browse by genre (Phase 8)
+src/lib/__tests__/        vitest unit tests (npm test)
+src-tauri/sql/wild_insert.sql          dedup-aware capture insert (Phase 8) — see docs/HEARD-IN-THE-WILD.md
+src-tauri/src/connectors/lastfm_wild.rs Heard in the Wild connector (Phase 8, uncompiled)
 src/lib/filter.ts         the listening lens
 dev-server.mjs            browser dev harness (same commands over HTTP)
 scripts/validate_sql.py   pipeline check against a real export
-scripts/smoke-queries.ts  runs every TS query against the dev server
-docs/PHASE1-NOTES.md      decisions, deviations, what's next
+scripts/smoke-*.ts        run every TS query against the dev server (CI runs all four)
+scripts/seed_dev_db.py    demo-seeded dev database, no export needed
+docs/PHASE1-NOTES.md      decisions, deviations, per-phase notes
+docs/recommendations/     the four external reviews that shaped Phase 8 and the Phase 9 menu
 ```
 Data: `~/.local/share/deep-cuts/` (Linux), `%APPDATA%\DeepCuts` (Windows), or `./data/` in portable mode. `deep-cuts.duckdb` is your record; `demo.duckdb` is the demo.

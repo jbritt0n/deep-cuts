@@ -1,8 +1,8 @@
 import { C } from '@/lib/theme';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { DEFAULT_SESSION_FILTERS, PAGE, getSessionDetail, getSessionsOverview, listSessions, type SessionFilters } from '@/lib/sessionQueries';
-import { useAsync, useFilter } from '@/lib/hooks';
+import { useAsync, useDebounced, useFilter } from '@/lib/hooks';
 import { DAY_PART_LABELS, SHAPE_LABELS, SHAPE_RULES, artistHref, fmtDate, fmtHours, fmtInt, fmtMs, fmtPct, fmtTime, trackHref } from '@/lib/format';
 import { Card, Empty, ErrorBox, Loading, Sleeve, StatCard } from '@/components/Card';
 import { invoke } from '@/lib/bridge';
@@ -25,6 +25,9 @@ export function SessionsPage() {
 function SessionsOverviewPage() {
   const { filter } = useFilter();
   const [f, setF] = useState<SessionFilters>(DEFAULT_SESSION_FILTERS);
+  const [qText, setQText] = useState('');
+  const dq = useDebounced(qText, 300);
+  useEffect(() => { setF((cur) => (cur.q === dq ? cur : { ...cur, q: dq, page: 0 })); }, [dq]);
   const [heatMetric, setHeatMetric] = useState<'sessions' | 'minutes'>('sessions');
   const ov = useAsync(getSessionsOverview, [filter]);
   const list = useAsync(() => listSessions(f), [f, filter]);
@@ -137,8 +140,9 @@ function SessionsOverviewPage() {
             <Sel value={f.platform ?? ''} onChange={(v) => set({ platform: v || null })} label="Any device" options={o.platforms.map((p) => [p, p])} />
             <Sel value={f.attention ?? ''} onChange={(v) => set({ attention: v || null })} label="Any attention" options={[['active', 'Active'], ['drifting', 'Drifting'], ['unattended', 'Unattended']]} />
             <Sel value={String(f.minTracks)} onChange={(v) => set({ minTracks: Number(v) })} label="" options={[['1', '1+ plays'], ['3', '3+ plays'], ['6', '6+ plays'], ['12', '12+ plays'], ['30', '30+ plays']]} />
-            <Sel value={f.sort} onChange={(v) => set({ sort: v as SessionFilters['sort'] })} label="" options={[['recent', 'Most recent'], ['longest', 'Longest'], ['most_tracks', 'Most plays'], ['skippiest', 'Skippiest']]} />
-            {(f.shape || f.dayPart || f.platform || f.attention) && <button onClick={() => setF(DEFAULT_SESSION_FILTERS)} className="text-dust hover:text-cream">clear</button>}
+            <Sel value={f.sort} onChange={(v) => set({ sort: v as SessionFilters['sort'] })} label="" options={[['recent', 'Most recent'], ['oldest', 'Oldest first'], ['longest', 'Longest'], ['most_tracks', 'Most plays'], ['skippiest', 'Skippiest']]} />
+            <input value={qText} onChange={(e) => setQText(e.target.value)} placeholder="Artist or track in the session" className="rounded-full border border-line bg-transparent px-3 py-1.5 text-dust placeholder:text-dust/60 focus:text-cream" />
+            {(f.shape || f.dayPart || f.platform || f.attention || f.q) && <button onClick={() => { setQText(''); setF(DEFAULT_SESSION_FILTERS); }} className="text-dust hover:text-cream">clear</button>}
           </div>
           {list.error ? <ErrorBox message={list.error} /> : !list.data ? <Loading label="Listing…" /> : list.data.rows.length === 0 ? <Empty>No sessions match.</Empty> : (
             <>

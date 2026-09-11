@@ -9,6 +9,7 @@ pub mod lyrics;
 pub mod coverart;
 pub mod listenbrainz;
 pub mod wikidata;
+pub mod lastfm_wild;   // Phase 8 — Heard in the Wild
 
 use crate::db::Db;
 use serde_json::json;

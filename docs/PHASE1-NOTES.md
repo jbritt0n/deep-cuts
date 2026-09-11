@@ -79,3 +79,16 @@ Three errors, all fixed: `Mb::get` visibility; `urlencoding::encode(&format!(..)
 - **Insights cache** now real: obsession, scene_phase, comeback, earworm rows nightly; `surfaced` survives rebuilds.
 - **ListenBrainz** uses the labs similar-artists endpoint (no key); relations stored as `lb_similar`. **Origin** comes from MusicBrainz artist `area`/`country`.
 - Session overrides match on local start ±5 min so they survive rebuilds.
+
+## Phase 8 notes (Sep 11 2026)
+- **Heard in the Wild is its own event class.** `event_type = 'wild_play'`, never `'play'`. Considered and rejected: a `source`-class column with filters everywhere (invasive, one missed query leaks captures into totals). With a separate type, every existing `WHERE event_type = 'play'` does the isolation for free. Proven by `test_wild_never_touches_core_record` and the smoke invariant `plays_resolved = events − wild`.
+- **Dedup is temporal, not textual.** Last.fm exposes no scrobbling client, so "was this my Spotify?" can only be answered by asking whether a primary play of the same artist was running at that instant. ±120 s tolerance around the interval; title match loose (parenthetical / " - Remaster" suffixes stripped, containment allowed); a same-artist capture strictly inside the interval is dropped even if titles disagree. False negatives (a genuine capture during your own stream of that artist) are accepted as the safe direction. See `docs/HEARD-IN-THE-WILD.md`.
+- **Clock semantics matter twice.** The export stamps END of play, everything else START; `wild_insert.sql` derives the play interval per source, and the fixture `test_wild_start_stamped_sources_and_idempotency` guards the poller case.
+- **`since` defaults to setup day.** An owner's main Last.fm account has years of Spotify scrobbles; without the floor, the backfill would classify all of it as "overheard". Backfill is bounded `[since, oldest capture)` and runs a few pages per tick.
+- **Per-app origin is unrecoverable** (Shazam vs Now Playing) — one bucket, stated in the UI rather than faked with a heuristic.
+- **Owner §3 items** 3.3–3.6 done as specified; 3.1/3.2 deferred (Rust-side).
+- **Genre browse**: two lenses over one tag; the "new to you" lens routes through similar-artist edges because tags exist only for owned artists (same constraint `tagAffinity` already works around). Fallback text says so rather than showing an empty card.
+- **vitest caught a real bug on first run**: `PLATFORM_FAMILY` bucketed `Partner playstation4 …` as TV/speaker because `partner%` preceded the console rule. Reordered. This is the argument for testing SQL fragments through an in-memory DuckDB rather than by string inspection.
+- **CI**: tests on every push, Rust builds only on tags / manual dispatch, gated on tests. `scripts/seed_dev_db.py` exists so CI has a database without the owner's export.
+- **Session cards**: top artists are computed only for the 40 rows on the current page (CTE over `page`), not for all sessions, so the list stays fast on the 99k-play record.
+- **`likedSongs` filters** now bind `$n`; the manual `replace(/'/g, "''")` pattern is gone from the codebase.

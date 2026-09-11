@@ -17,6 +17,7 @@ const NAV: { to: string; label: string; group?: string }[] = [
   { to: '/drift', label: 'Taste drift' },
   { to: '/achievements', label: 'Achievements' },
   { to: '/discover', label: 'Discover', group: 'Act' },
+  { to: '/wild', label: 'Heard in the Wild' },
   { to: '/blend', label: 'Blend' },
   { to: '/services', label: 'Services', group: 'App' },
   { to: '/settings', label: 'Settings' },

@@ -29,6 +29,7 @@ export type SessionRow = {
   shape: string;
   openingTrack: string;
   closingTrack: string;
+  topArtists?: string[];      // Phase 8 (§3.4): shown on the card face, list view only
   platform: string | null;
   completionRate: number;
   completionSource: string;

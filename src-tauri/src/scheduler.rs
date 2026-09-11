@@ -149,6 +149,25 @@ pub fn start(app: AppHandle) {
             tokio::time::sleep(Duration::from_secs(6 * 3600)).await;
         }
     });
+
+    // Phase 8 — Heard in the Wild: pull the phone's Now Playing / Shazam scrobbles every 30 min.
+    // Cheap (one or two Last.fm calls), independent of Spotify, never touches the core record.
+    let a = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(150)).await;
+        loop {
+            let a2 = a.clone();
+            run_blocking(&a, "wild", move |st| {
+                let on = st.real.query("SELECT status FROM connector_state WHERE service = 'lastfm_wild'", &[]).ok()
+                    .and_then(|r| r.first().and_then(|m| m.get("status")).and_then(|v| v.as_str().map(|s| s == "connected"))).unwrap_or(false);
+                if !on { return Ok(()); }
+                let n = crate::connectors::lastfm_wild::import(&st.real, 5)?;
+                if n > 0 { let _ = a2.emit("data:changed", serde_json::json!({ "reason": "wild", "added": n })); }
+                Ok(())
+            }).await;
+            tokio::time::sleep(Duration::from_secs(30 * 60)).await;
+        }
+    });
 }
 
 async fn run_blocking<F>(app: &AppHandle, task: &'static str, f: F)

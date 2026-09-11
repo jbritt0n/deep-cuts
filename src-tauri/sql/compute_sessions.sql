@@ -18,9 +18,12 @@ SELECT
     p.played_at,                                                                    -- local wall clock
     p.track_id, p.artist_id, p.album_id, p.track_name, p.artist_name,
     p.ms_played, p.platform, p.was_skipped, p.is_first_play,
-    -- an interaction is anything other than a track ending and the next starting by itself
-    (coalesce(p.start_reason, 'trackdone') <> 'trackdone'
-     OR coalesce(p.end_reason, 'trackdone') NOT IN ('trackdone', 'unknown'))     AS is_interaction,
+    -- An interaction is a start/end reason that implies a person did something:
+    -- 'unknown' is common for ordinary autoplay in exports and must NOT count,
+    -- or a short track looping to completion (e.g. 'So Excited', ~30s) reads as
+    -- an unbroken chain of "interactions" and the whole stretch looks attended.
+    (coalesce(p.start_reason, 'trackdone') IN ('clickrow', 'clickside', 'remote', 'appload', 'backbtn', 'fwdbtn', 'playbtn', 'trackerror')
+     OR coalesce(p.end_reason, 'trackdone') IN ('fwdbtn', 'backbtn', 'logout', 'remote'))                                    AS is_interaction,
     coalesce(t.duration_ms, t.duration_ms_est)                      AS dur_ms,
     (t.duration_ms IS NOT NULL)                                     AS dur_enriched,
     LAG(p.played_at)                    OVER w                      AS prev_at,
@@ -70,10 +73,28 @@ WINDOW ws AS (PARTITION BY session_no ORDER BY played_at, play_id);
 CREATE OR REPLACE TEMP TABLE _gap AS
 SELECT coalesce(TRY_CAST((SELECT value FROM app_meta WHERE key = 'attention_gap_min') AS DOUBLE), 120) AS gap_min;
 
+-- Stuck-repeat detector (data hygiene): the same track completing naturally
+-- 8+ times in a row with NO explicit click on any of those plays is a loop left
+-- running, not listening — e.g. a 30-second track autoplaying for two hours.
+-- Deliberately mashing replay (a real click each time) does not count.
+CREATE OR REPLACE TEMP TABLE _repeat_runs0 AS
+SELECT session_no, track_id, played_at, play_id, is_interaction,
+       (track_id IS DISTINCT FROM LAG(track_id) OVER (PARTITION BY session_no ORDER BY played_at, play_id)) AS track_changed
+FROM _numbered;
+CREATE OR REPLACE TEMP TABLE _repeat_runs1 AS
+SELECT session_no, track_id, is_interaction, played_at, play_id,
+       SUM(CASE WHEN track_changed THEN 1 ELSE 0 END) OVER (PARTITION BY session_no ORDER BY played_at, play_id ROWS UNBOUNDED PRECEDING) AS run_id
+FROM _repeat_runs0;
+CREATE OR REPLACE TEMP TABLE _repeat_runs AS
+SELECT session_no, MAX(len) AS max_same_track_run
+FROM (SELECT session_no, run_id, COUNT(*) AS len FROM _repeat_runs1 WHERE NOT is_interaction GROUP BY 1, 2)
+GROUP BY 1;
+
 -- islands: same-album run (SES-07 fallback) and non-skip run (SES-06)
 CREATE OR REPLACE TEMP TABLE _plays AS
 SELECT *,
-    idle_min <= (SELECT gap_min FROM _gap)                                  AS attended,
+    (idle_min <= (SELECT gap_min FROM _gap)
+     AND coalesce((SELECT max_same_track_run FROM _repeat_runs r WHERE r.session_no = _plays0.session_no), 0) < 8) AS attended,
     SUM(CASE WHEN album_changed THEN 1 ELSE 0 END) OVER ws2                  AS album_run,
     SUM(CASE WHEN was_skipped THEN 1 ELSE 0 END)   OVER ws2                  AS skip_island
 FROM _plays0
@@ -156,7 +177,8 @@ SELECT
     SUM(CASE WHEN p.attended THEN p.ms_played ELSE 0 END)          AS attended_ms,
     SUM(CASE WHEN NOT p.attended THEN p.ms_played ELSE 0 END)      AS unattended_ms,
     EXTRACT(hour FROM MIN(p.played_at))                            AS start_hour,
-    EXTRACT(dow  FROM MIN(p.played_at))                            AS start_dow
+    EXTRACT(dow  FROM MIN(p.played_at))                            AS start_dow,
+    coalesce(MAX(rr.max_same_track_run), 0) >= 8                   AS stuck_repeat
 FROM _plays p
 JOIN _ids        i  USING (session_no)
 JOIN _artist_mix am USING (session_no)
@@ -164,6 +186,7 @@ JOIN _track_mix  tm USING (session_no)
 JOIN _runs       r  USING (session_no)
 LEFT JOIN _album_runs ar USING (session_no)
 JOIN _thirds     th USING (session_no)
+LEFT JOIN _repeat_runs rr USING (session_no)
 GROUP BY i.session_id;
 
 INSERT INTO sessions
@@ -204,7 +227,8 @@ SELECT
     interaction_count, attended_ms, unattended_ms,
     CASE WHEN unattended_ms = 0                          THEN 'active'
          WHEN unattended_ms < attended_ms                THEN 'drifting'
-         ELSE 'unattended' END                          AS attention
+         ELSE 'unattended' END                          AS attention,
+    stuck_repeat
 FROM _agg;
 
 -- manual session overrides (matched on local start time, ±5 min so rebuilds don't lose them)
@@ -236,7 +260,7 @@ GROUP BY 1, 2;
 
 DROP TABLE _ordered; DROP TABLE _flagged; DROP TABLE _numbered; DROP TABLE _plays0; DROP TABLE _plays;
 DROP TABLE _runs; DROP TABLE _album_runs; DROP TABLE _artist_mix; DROP TABLE _track_mix;
-DROP TABLE _thirds; DROP TABLE _ids; DROP TABLE _agg; DROP TABLE _gap;
+DROP TABLE _thirds; DROP TABLE _ids; DROP TABLE _agg; DROP TABLE _gap; DROP TABLE _repeat_runs; DROP TABLE _repeat_runs0; DROP TABLE _repeat_runs1;
 
 INSERT INTO app_meta (key, value) VALUES ('last_sessions_rebuild', CAST(now() AS VARCHAR))
 ON CONFLICT (key) DO UPDATE SET value = excluded.value;

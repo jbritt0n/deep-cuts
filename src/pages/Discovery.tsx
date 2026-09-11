@@ -3,7 +3,8 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { curated, inbox, spotifySearchUrl, type Rec } from '@/lib/recQueries';
 import { lyricSearch } from '@/lib/phase4Queries';
-import { earworms, madeByDeepCuts } from '@/lib/phase7Queries';
+import { madeByDeepCuts } from '@/lib/phase7Queries';
+import { genreDiscover, genreLibrary, genreTags } from '@/lib/genreQueries';
 import { MixtapeBuilder } from '@/components/Mixtape';
 import { useDebounced } from '@/lib/hooks';
 import { fmtInt } from '@/lib/format';
@@ -28,9 +29,7 @@ export function DiscoveryPage() {
   const [lq, setLq] = useState('');
   const dlq = useDebounced(lq, 250);
   const lyr = useAsync(() => lyricSearch(dlq), [dlq, filter]);
-  const ew = useAsync(() => earworms(30), [filter]);
   const made = useAsync(madeByDeepCuts, [filter]);
-  const [ewHidden, setEwHidden] = useState<Set<string>>(new Set());
   const [only, setOnly] = useState<Rec['engine'] | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [hidden, setHidden] = useState<Set<string>>(new Set());
@@ -78,30 +77,7 @@ export function DiscoveryPage() {
           {made.data && made.data.length ? <ul className="divide-y divide-line/60 text-sm">{made.data.slice(0, 8).map((m) => <li key={m.id} className="flex items-center gap-3 py-1.5"><span className="min-w-0 flex-1 truncate">{m.url ? <a href={m.url} target="_blank" rel="noreferrer" className="hover:text-amber">{m.name}</a> : m.name}</span><span className="num shrink-0 text-xs text-dust">{m.kind} · {m.tracks} · {m.isPublic ? 'public' : 'private'} · {m.createdAt.slice(0, 10)}</span></li>)}</ul> : <p className="text-sm text-dust">Nothing created yet. Radar appears here after your first “Add to Radar”.</p>}
         </Card>
       </div>
-      <div className="mb-6">
-        <Card title="Earworms" subtitle="Songs that keep coming back: modest plays spread over many months, played on their own, never skipped. Tell it when it's right or wrong — it learns."
-          aside={ew.data && ew.data.length ? <MakePlaylistButton small name="Earworms · Deep Cuts" tracks={ew.data.filter((e) => !ewHidden.has(e.trackId)).map((e) => ({ trackId: e.trackId, track: e.track, artistId: null, artist: e.artist, plays: e.plays, hours: 0, skipRate: e.skipRate }))} kind="insight" note="earworms" /> : undefined}>
-          {!ew.data ? <Loading label="Listening for hooks…" /> : ew.data.length === 0 ? (
-            <div className="text-sm text-dust">
-              <p>Nothing here yet — earworms come from the nightly insights pass, which hasn't run on this record.</p>
-              <button onClick={() => { setMsg('Rebuilding insights…'); invoke('rebuild').then(() => { setMsg('Insights rebuilt.'); ew.reload(); }).catch((e) => setMsg(String(e))); }} className="mt-2 rounded-full border border-line px-4 py-1.5 text-dust hover:text-cream">Compute insights now</button>
-            </div>
-          ) : (
-            <ul className="grid gap-2 md:grid-cols-2 lg:grid-cols-3">
-              {ew.data.filter((e) => !ewHidden.has(e.trackId)).slice(0, 18).map((e) => (
-                <li key={e.trackId} className={`rounded-xl border p-3 text-sm ${e.verdict === 'accepted' ? 'border-moss/50 bg-moss/5' : 'border-line bg-ink/40'}`}>
-                  <p className="truncate"><Link to={`/track/${encodeURIComponent(e.trackId)}`} className="hover:text-amber">{e.track}</Link><span className="ml-2 text-xs text-dust">{e.artist}</span></p>
-                  <p className="num mt-0.5 text-xs text-dust">{e.plays} plays over {e.months} months in {e.years} year{e.years === 1 ? '' : 's'} · {Math.round(e.alone * 100)}% on its own</p>
-                  <div className="mt-2 flex gap-3 text-xs">
-                    <button onClick={() => invoke('rec_feedback', { subjectType: 'track', subjectKey: e.trackId, engine: 'earworm', verdict: 'accepted' }).then(() => ew.reload())} className="text-dust hover:text-moss">{e.verdict === 'accepted' ? 'confirmed' : 'yes, earworm'}</button>
-                    <button onClick={() => invoke('rec_feedback', { subjectType: 'track', subjectKey: e.trackId, engine: 'earworm', verdict: 'dismissed' }).then(() => setEwHidden(new Set([...ewHidden, e.trackId])))} className="text-dust hover:text-coral">not really</button>
-                  </div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Card>
-      </div>
+      <div className="mb-6"><GenreBrowser onMsg={setMsg} onAccepted={() => made.reload()} /></div>
       <div className="mb-6">
         <Card title="Curated from your own archive" subtitle="Deterministic playlists built from what you already have. Preview, trim, add, publish.">
           {cur.data ? (
@@ -180,5 +156,82 @@ export function DiscoveryPage() {
         </div>
       </div>
     </div>
+  );
+}
+
+/** Phase 8 — discovery by genre: pick a tag, see your library in it and what sits just outside it. */
+function GenreBrowser({ onMsg, onAccepted }: { onMsg: (m: string) => void; onAccepted: () => void }) {
+  const { filter } = useFilter();
+  const [q, setQ] = useState('');
+  const dq = useDebounced(q, 200);
+  const [tag, setTag] = useState<string | null>(null);
+  const tags = useAsync(() => genreTags(60, dq), [dq, filter]);
+  const lib = useAsync(() => (tag ? genreLibrary(tag) : Promise.resolve([])), [tag, filter]);
+  const disc = useAsync(() => (tag ? genreDiscover(tag) : Promise.resolve([])), [tag, filter]);
+  const [hidden, setHidden] = useState<Set<string>>(new Set());
+  const act = async (key: string, name: string, verdict: 'accepted' | 'dismissed') => {
+    try { await invoke('rec_feedback', { subjectType: 'artist', subjectKey: key, engine: 'genre', verdict }); } catch (e) { onMsg(String(e)); return; }
+    setHidden(new Set([...hidden, key])); if (verdict === 'dismissed') onMsg(`Won't suggest ${name} again for 90 days.`);
+  };
+  const radar = async (key: string, name: string) => {
+    onMsg(`Adding ${name} to your Radar playlist…`);
+    try { const res = await invoke<{ added: number; url: string }>('add_to_radar', { search: name }); onMsg(`Added ${res.added} tracks by ${name} to Deep Cuts Radar — ${res.url}`); await act(key, name, 'accepted'); onAccepted(); }
+    catch (e) { onMsg(String(e)); }
+  };
+  const maxH = Math.max(...(tags.data ?? []).map((t) => t.hours), 1);
+  return (
+    <Card title="Browse by genre" subtitle="Every tag your artists carry, sized by your hours. Pick one to see who you already have there — and who's standing just outside."
+      aside={<input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Find a genre" className="rounded-full border border-line bg-transparent px-3 py-1 text-xs text-dust placeholder:text-dust/60 focus:text-cream" />}>
+      {tags.error ? <ErrorBox message={tags.error} /> : !tags.data ? <Loading label="Sorting the tags…" /> : tags.data.length === 0 ? (
+        <p className="text-sm text-dust">{dq ? 'No genre matches that.' : 'No tags yet — connect Last.fm or MusicBrainz in Services and let them tag your artists.'}</p>
+      ) : (
+        <div className="flex flex-wrap gap-2 text-xs">
+          {tags.data.map((t) => (
+            <button key={t.tag} onClick={() => setTag(tag === t.tag ? null : t.tag)} title={`${t.artists} artists · ${fmtHours(t.hours)}`}
+              className={`rounded-full px-3 py-1.5 transition ${tag === t.tag ? 'bg-amber text-ink' : 'border border-line text-dust hover:text-cream'}`}
+              style={tag === t.tag ? undefined : { borderColor: `rgba(242,194,123,${0.2 + 0.8 * (t.hours / maxH)})` }}>
+              {t.tag}<span className="num ml-1.5 opacity-60">{t.artists}</span>
+            </button>
+          ))}
+        </div>
+      )}
+      {tag && (
+        <div className="mt-5 grid gap-6 lg:grid-cols-2">
+          <div>
+            <p className="mb-2 text-xs text-dust">Your <span className="text-cream">{tag}</span> — {lib.data ? `${lib.data.length} artists` : ''}</p>
+            {!lib.data ? <Loading label="Listing…" /> : lib.data.length === 0 ? <p className="text-sm text-dust">Nothing in the current lens.</p> : (
+              <ul className="divide-y divide-line/60 text-sm">
+                {lib.data.slice(0, 20).map((a) => (
+                  <li key={a.artistId} className="flex items-center justify-between gap-3 py-1.5">
+                    <Link to={artistHref(a.artistId)} className="truncate hover:text-amber">{a.artist}</Link>
+                    <span className="num shrink-0 text-xs text-dust">{fmtHours(a.hours)} · {fmtInt(a.plays)} plays{a.lastPlayed ? ` · last ${fmtDate(a.lastPlayed, { month: 'short', year: 'numeric' })}` : ''}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          <div>
+            <p className="mb-2 text-xs text-dust">New to you in <span className="text-cream">{tag}</span> — next to artists you already play</p>
+            {!disc.data ? <Loading label="Looking around…" /> : disc.data.filter((c) => !hidden.has(c.key)).length === 0 ? <p className="text-sm text-dust">Nothing adjacent yet. The similar-artist graph fills in as Last.fm and ListenBrainz sync.</p> : (
+              <ul className="space-y-2">
+                {disc.data.filter((c) => !hidden.has(c.key)).slice(0, 12).map((c) => (
+                  <li key={c.key} className="rounded-xl border border-line bg-ink/40 p-3 text-sm">
+                    <div className="flex items-baseline justify-between gap-3">
+                      <a href={spotifySearchUrl(c.artist)} target="_blank" rel="noreferrer" className="truncate hover:text-amber">{c.artist}</a>
+                      <span className="num shrink-0 text-xs text-dust">{fmtPct(c.score)}</span>
+                    </div>
+                    <p className="mt-0.5 truncate text-xs text-dust">next to {c.via.map((v, i) => <Link key={c.viaIds[i]} to={artistHref(c.viaIds[i])} className="hover:text-cream">{v}{i < c.via.length - 1 ? ', ' : ''}</Link>)}</p>
+                    <div className="mt-2 flex gap-3 text-xs">
+                      <button onClick={() => radar(c.key, c.artist)} className="rounded-full border border-line px-3 py-1 text-dust hover:text-cream">Add to Radar</button>
+                      <button onClick={() => act(c.key, c.artist, 'dismissed')} className="ml-auto text-dust/70 hover:text-cream">not for me</button>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </div>
+      )}
+    </Card>
   );
 }

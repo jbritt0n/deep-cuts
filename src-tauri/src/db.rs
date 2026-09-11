@@ -24,6 +24,7 @@ pub const POLL_INSERT_SQL: &str = include_str!("../sql/poll_insert.sql");
 pub const IMPORT_BLEND_SQL: &str = include_str!("../sql/import_blend.sql");
 pub const COMPUTE_MILESTONES_SQL: &str = include_str!("../sql/compute_milestones.sql");
 pub const COMPUTE_INSIGHTS_SQL: &str = include_str!("../sql/compute_insights.sql");
+pub const WILD_INSERT_SQL: &str = include_str!("../sql/wild_insert.sql");   // Phase 8
 
 pub struct Db {
     conn: Mutex<Connection>,
@@ -122,6 +123,14 @@ impl Db {
 
     /// Enforce read-only SQL for the UI query bridge (also the seam NFR-04's
     /// LLM validator will reuse): one statement, SELECT/WITH only.
+    ///
+    /// LIMITATION (Phase 8 review): this is substring matching, not a SQL parser.
+    /// It can false-positive (a literal containing "DROP " inside a LIKE pattern
+    /// trips it) and it gives a false sense of rigor. It is adequate for the
+    /// trusted UI today, but before the LLM "Ask" phase feeds *model-written*
+    /// SQL through here it should be replaced by a real parse (DuckDB's own
+    /// `json_serialize_sql` can classify statement type) or a strict allow-list
+    /// grammar. Tracked in docs/PROJECT-STATUS-AND-ROADMAP.md.
     pub fn assert_read_only(sql: &str) -> Result<()> {
         let trimmed = sql.trim().trim_end_matches(';');
         if trimmed.contains(';') {

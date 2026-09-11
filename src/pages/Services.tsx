@@ -1,5 +1,6 @@
 import { C } from '@/lib/theme';
 import { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { invoke, listen } from '@/lib/bridge';
 import { fmtInt } from '@/lib/format';
 import { Card, ErrorBox, Loading, Sleeve } from '@/components/Card';
@@ -12,6 +13,7 @@ const META: Record<string, { name: string; adds: string; color: string }> = {
   lastfm: { name: 'Last.fm', adds: 'Genre and mood tags per artist, and the similar-artist graph that will power recommendations.', color: C.coral },
   musicbrainz: { name: 'MusicBrainz', adds: 'Canonical artist identities so renamed artists merge, plus folksonomy tags. No account needed.', color: C.amber },
   statsfm: { name: 'stats.fm', adds: 'Plays Spotify never recorded from other devices you pointed at stats.fm.', color: C.violet },
+  lastfm_wild: { name: 'Heard in the Wild', adds: 'Songs your phone recognised out in the world (Google Now Playing, Shazam) via a Last.fm scrobbler. Kept as their own class — never counted as your listening.', color: '#F2C27B' },
 };
 
 export function ServicesPage() {
@@ -30,7 +32,7 @@ export function ServicesPage() {
   if (err && !rows) return <ErrorBox message={err} />;
   if (!rows) return <Loading />;
   const by = (s: string) => rows.find((r) => r.service === s);
-  const sp = by('spotify'), lf = by('lastfm'), mb = by('musicbrainz'), sf = by('statsfm'), lb = by('listenbrainz');
+  const sp = by('spotify'), lf = by('lastfm'), mb = by('musicbrainz'), sf = by('statsfm'), lb = by('listenbrainz'), wd = by('lastfm_wild');
 
   return (
     <div className="mx-auto max-w-5xl">
@@ -44,6 +46,9 @@ export function ServicesPage() {
         </ServiceCard>}
         {lf && <ServiceCard row={lf} busy={busy} onSync={() => run('lastfm', () => invoke<string>('sync_now', { service: 'lastfm' }), (r) => String(r))}>
           <LastfmBody row={lf} busy={busy} run={run} />
+        </ServiceCard>}
+        {wd && <ServiceCard row={wd} busy={busy} onSync={() => run('lastfm_wild', () => invoke<string>('sync_now', { service: 'lastfm_wild' }), (r) => String(r))}>
+          <WildBody row={wd} busy={busy} run={run} lastfmConnected={lf?.status === 'connected'} />
         </ServiceCard>}
         {mb && <ServiceCard row={mb} busy={busy} onSync={() => run('musicbrainz', () => invoke<string>('sync_now', { service: 'musicbrainz' }), (r) => String(r))}>
           <p className="text-xs text-dust">{fmtInt(Number(mb.extra.resolvedArtists ?? 0))} artists resolved · {fmtInt(Number(mb.extra.taggedArtists ?? 0))} tagged. Works through your library a batch at a time, one request a second.</p>
@@ -158,6 +163,36 @@ function StatsfmBody({ row, busy, run }: { row: Row; busy: string | null; run: R
         <input value={key} onChange={(e) => setKey(e.target.value)} placeholder="API key" type="password" className="num flex-1 rounded-lg border border-line bg-ink px-3 py-1.5 text-xs" />
         <button disabled={!!busy || key.trim().length < 10} onClick={() => run('statsfm', () => invoke<string>('statsfm_connect', { apiKey: key }), (r) => `Connected to stats.fm as ${String(r)}. First import runs in the background.`)} className="rounded-full bg-amber px-3 py-1.5 text-xs font-medium text-ink disabled:opacity-40">Connect</button>
       </div>
+    </div>
+  );
+}
+
+function WildBody({ row, busy, run, lastfmConnected }: { row: Row; busy: string | null; run: Run; lastfmConnected: boolean }) {
+  const [user, setUser] = useState('');
+  const [since, setSince] = useState(() => new Date().toISOString().slice(0, 10));
+  const x = row.extra;
+  if (row.status === 'connected') return (
+    <div className="text-xs text-dust">
+      <p className="num">{fmtInt(Number(x.captures ?? 0))} captures · {fmtInt(Number(x.neverStreamed ?? 0))} songs you've never streamed · {fmtInt(Number(x.dropped ?? 0))} dropped as your own Spotify playback{x.since ? ` · since ${String(x.since)}` : ''}{x.backfillDone === false ? ' · still back-filling' : ''}</p>
+      <p className="mt-2">Pulls every 30 minutes. A capture that lands while your own Spotify was playing the same artist is treated as your speakers being overheard and is skipped — that check runs on every import, so duplicates can't reach the numbers. <Link to="/wild" className="underline hover:text-cream">Open Heard in the Wild</Link>.</p>
+      <button disabled={!!busy} onClick={() => run('wild', () => invoke('lastfm_wild_disconnect'), () => 'Heard in the Wild disconnected. Captures already imported are kept.')} className="mt-2 text-dust hover:text-cream">Disconnect</button>
+    </div>
+  );
+  return (
+    <div className="rounded-xl border border-line bg-ink/40 p-3 text-xs text-dust">
+      {!lastfmConnected && <p className="mb-2 text-amber">Connect Last.fm above first — this reuses its API key.</p>}
+      <p className="text-cream/80">On your phone (once):</p>
+      <ol className="mt-1 list-decimal space-y-0.5 pl-4">
+        <li>Install <span className="text-cream">Pano Scrobbler</span> and sign it in to Last.fm.</li>
+        <li>In Pano, enable scrobbling for <span className="text-cream">Now Playing</span> (Pixel ambient recognition) and <span className="text-cream">Shazam</span>.</li>
+        <li><span className="text-cream">Turn Spotify off</span> in Pano's app list — Spotify's own history is already in your record. Better still, give Pano its own Last.fm account and enter it below; then nothing you play on purpose can ever land here.</li>
+      </ol>
+      <div className="mt-3 grid gap-2 sm:grid-cols-[1fr_auto_auto]">
+        <input value={user} onChange={(e) => setUser(e.target.value)} placeholder="Last.fm account Pano writes to (blank = same as above)" className="rounded-lg border border-line bg-ink px-3 py-1.5 text-xs" />
+        <input value={since} onChange={(e) => setSince(e.target.value)} type="date" title="Only import captures on or after this date" className="num rounded-lg border border-line bg-ink px-3 py-1.5 text-xs" />
+        <button disabled={!!busy || !lastfmConnected} onClick={() => run('wild', () => invoke<string>('lastfm_wild_connect', { username: user.trim() || null, since: since || null }), (r) => `Heard in the Wild set up for ${String(r)}. Captures arrive within 30 minutes; use Sync now to pull immediately.`)} className="rounded-full bg-amber px-3 py-1.5 text-xs font-medium text-ink disabled:opacity-40">Set up</button>
+      </div>
+      <p className="mt-2 text-dust/70">“Since” defaults to today so an existing Last.fm history isn't mistaken for things you overheard. Per-app origin (Shazam vs. Now Playing) isn't recoverable from Last.fm, so both land in one bucket.</p>
     </div>
   );
 }
