@@ -70,3 +70,12 @@
 
 ## First compile (GitHub Actions, Sep 11 2026)
 Three errors, all fixed: `Mb::get` visibility; `urlencoding::encode(&format!(..))` borrowing a temporary (musicbrainz.rs, coverart.rs); non-exhaustive match on `duckdb::types::Value` (db.rs). No errors elsewhere in the crate.
+
+## Phase 7 notes
+- **Playlist sync bug**: `sync_now("spotify")` never called `sync_playlists`; it does now, and followed playlists fetch up to 300 items each.
+- **Travel zones**: `country_zones` maps single-zone countries → IANA zone; `tz_overrides` holds manual ranges; `load_tz_offsets` now materialises offsets for every zone the record needs; entity resolution picks override → country → home and ASOF-joins by zone. Migrations (`ALTER TABLE … ADD COLUMN IF NOT EXISTS`) upgrade existing records in place.
+- **Earworms** are not bursts. Calibrated on the owner's list: modest plays (8–40), many distinct months across years, played alone (outside album rides), ≤ 15% skips. Score in `compute_insights.sql`; 11 of 21 labelled earworms land in the top 250 of 1,221 candidates. Feedback via `recommendation_feedback` (engine 'earworm').
+- **Scenes** use a fixed tag-family vocabulary plus artist origin country; `compute_insights.sql` writes `artist_scene` and detects weekly scene phases.
+- **Insights cache** now real: obsession, scene_phase, comeback, earworm rows nightly; `surfaced` survives rebuilds.
+- **ListenBrainz** uses the labs similar-artists endpoint (no key); relations stored as `lb_similar`. **Origin** comes from MusicBrainz artist `area`/`country`.
+- Session overrides match on local start ±5 min so they survive rebuilds.

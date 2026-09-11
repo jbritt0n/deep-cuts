@@ -22,10 +22,20 @@ SELECT track_id, duration_ms, track_number, isrc, explicit, release_date, releas
 FROM tracks WHERE enriched_at IS NOT NULL;
 
 -- ---- per-play identity ----------------------------------------------------
+-- Which zone applies to each play: manual override by date → single-zone country → home zone.
+CREATE OR REPLACE TEMP TABLE _home AS SELECT coalesce((SELECT value FROM app_meta WHERE key = 'timezone'), 'UTC') AS zone;
+CREATE OR REPLACE TEMP TABLE _pz AS
+SELECT p.*,
+       coalesce(
+         (SELECT ov.zone FROM tz_overrides ov WHERE CAST(p.played_at_utc AS DATE) BETWEEN ov.from_date AND ov.to_date ORDER BY ov.from_date DESC LIMIT 1),
+         (SELECT cz.zone FROM country_zones cz WHERE cz.country = p.country AND cz.zone IN (SELECT DISTINCT zone FROM tz_offsets)),
+         (SELECT zone FROM _home)) AS zone
+FROM plays_normalized p;
+
 CREATE OR REPLACE TEMP TABLE _p AS
 SELECT
     p.*,
-    -- local wall clock via tz_offsets (ASOF: latest range starting at/before the instant)
+    -- local wall clock via tz_offsets for the play's zone (ASOF: latest range starting at/before the instant)
     CAST(p.played_at_utc AS TIMESTAMP) + (coalesce(o.offset_s, 0) * INTERVAL 1 SECOND) AS played_at,
     CASE WHEN artist_name IS NULL THEN NULL
          ELSE 'name:' || lower(trim(artist_name)) END                                   AS artist_id,
@@ -34,8 +44,8 @@ SELECT
     CASE WHEN spotify_track_id IS NOT NULL THEN spotify_track_id
          WHEN track_name IS NULL THEN NULL
          ELSE 'local:' || md5(coalesce(lower(trim(artist_name)), '') || '|' || lower(trim(track_name))) END AS track_id
-FROM plays_normalized p
-ASOF LEFT JOIN tz_offsets o ON CAST(p.played_at_utc AS TIMESTAMP) >= o.from_utc;
+FROM _pz p
+ASOF LEFT JOIN tz_offsets o ON o.zone = p.zone AND CAST(p.played_at_utc AS TIMESTAMP) >= o.from_utc;
 
 -- manual merges (Settings → Merge artists): redirect ids, also carry album/track keys
 UPDATE _p SET artist_id = m.into_artist_id FROM artist_merges m WHERE _p.artist_id = m.from_artist_id;
@@ -113,13 +123,14 @@ SELECT
     ROW_NUMBER() OVER (PARTITION BY p.track_id ORDER BY p.played_at, p.play_id) = 1 AS is_first_play,
     ROW_NUMBER() OVER (PARTITION BY p.track_id ORDER BY p.played_at, p.play_id)     AS play_index,
     TRUE  AS attended,   -- refined by compute_sessions.sql
-    NULL  AS idle_min
+    NULL  AS idle_min,
+    p.country, p.zone
 FROM _p p
 LEFT JOIN tracks  t  ON t.track_id  = p.track_id
 LEFT JOIN artists a  ON a.artist_id = p.artist_id
 LEFT JOIN albums  al ON al.album_id = p.album_id;
 
-DROP TABLE _p; DROP TABLE _artist_names;
+DROP TABLE _p; DROP TABLE _pz; DROP TABLE _home; DROP TABLE _artist_names;
 DROP TABLE _keep_artists; DROP TABLE _keep_albums; DROP TABLE _keep_tracks;
 
 INSERT INTO app_meta (key, value) VALUES ('last_entity_resolution', CAST(now() AS VARCHAR))

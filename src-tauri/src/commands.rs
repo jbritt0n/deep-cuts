@@ -352,12 +352,15 @@ pub async fn sync_now(state: State<'_, AppState>, app: AppHandle, service: Strin
             "spotify" => {
                 let added = sync::poll_recent(&client, &real)?;
                 let liked = sync::sync_liked(&client, &real)?;
+                let (me, _) = sync::whoami(&client, &real)?;
+                let pls = sync::sync_playlists(&client, &real, &me)?;
                 let enriched = sync::enrich_batch(&client, &real)?;
-                format!("Spotify: +{added} plays, {liked} liked songs, {enriched} tracks enriched")
+                format!("Spotify: +{added} plays, {liked} liked songs, {pls} playlists, {enriched} tracks enriched")
             }
             "lastfm" => { let t = lastfm::enrich_tags(&real, 60)?; let s = lastfm::enrich_similar(&real, 15)?; format!("Last.fm: tagged {t} artists, {s} similar-artist seeds") }
             "musicbrainz" => { let n = musicbrainz::resolve_batch(&real, 40)?; let r = musicbrainz::enrich_relations(&real, 15)?; format!("MusicBrainz: resolved {n} artists, relationships for {r}") }
             "statsfm" => { let n = crate::connectors::statsfm::import(&real, 10)?; format!("stats.fm: +{n} plays") }
+            "listenbrainz" => { let n = crate::connectors::listenbrainz::enrich_similar(&real, 20)?; format!("ListenBrainz: similar artists for {n} seeds") }
             other => anyhow::bail!("{other} isn't connectable yet"),
         })
     }).await.map_err(err)?.map_err(err)?;
@@ -484,4 +487,79 @@ pub async fn unmerge_artist(state: State<'_, AppState>, app: AppHandle, from_id:
 #[tauri::command]
 pub fn list_merges(state: State<'_, AppState>) -> CmdResult<Vec<db::Row>> {
     state.real.query("SELECT m.from_artist_id AS \"fromId\", m.into_artist_id AS \"intoId\", a.name AS \"intoName\", al.alias_name AS \"fromName\" FROM artist_merges m LEFT JOIN artists a ON a.artist_id = m.into_artist_id LEFT JOIN artist_aliases al ON al.artist_id = m.into_artist_id AND lower(al.alias_name) = substr(m.from_artist_id, 6) ORDER BY m.created_at DESC", &[]).map_err(err)
+}
+
+#[tauri::command]
+pub async fn listenbrainz_connect(state: State<'_, AppState>) -> CmdResult<()> {
+    let real = state.real.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::connectors::listenbrainz::connect(&real)).await.map_err(err)?.map_err(err)
+}
+#[tauri::command]
+pub fn listenbrainz_disconnect(state: State<'_, AppState>) -> CmdResult<()> { crate::connectors::listenbrainz::disconnect(&state.real).map_err(err) }
+
+/// Travel: manual zone overrides; reloads offsets and rebuilds.
+#[tauri::command]
+pub async fn set_tz_override(state: State<'_, AppState>, app: AppHandle, from_date: String, to_date: String, zone: String, note: Option<String>, remove_id: Option<String>) -> CmdResult<()> {
+    if remove_id.is_none() && zone.parse::<chrono_tz::Tz>().is_err() { return Err(format!("Unknown time zone: {zone}")); }
+    let real = state.real.clone(); let home = state.real.zone.clone();
+    tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<()> {
+        if let Some(id) = remove_id { real.exec("DELETE FROM tz_overrides WHERE CAST(id AS VARCHAR) = ?", &[serde_json::json!(id)])?; }
+        else { real.exec("INSERT INTO tz_overrides (from_date, to_date, zone, note) VALUES (CAST(? AS DATE), CAST(? AS DATE), ?, ?)", &[serde_json::json!(from_date), serde_json::json!(to_date), serde_json::json!(zone), serde_json::json!(note)])?; }
+        let saved = real.query("SELECT value FROM app_meta WHERE key = 'timezone'", &[])?.first().and_then(|r| r.get("value")).and_then(|v| v.as_str().map(str::to_string)).unwrap_or(home);
+        real.load_tz_offsets(&saved)?;
+        real.rebuild_all()?;
+        Ok(())
+    }).await.map_err(err)?.map_err(err)?;
+    events::emit(&app, events::DATA_CHANGED, serde_json::json!({ "reason": "timezone" }));
+    Ok(())
+}
+
+/// Session hygiene: mark a session unattended / active by its local start time.
+#[tauri::command]
+pub async fn set_session_attention(state: State<'_, AppState>, app: AppHandle, start_at: String, attention: Option<String>) -> CmdResult<()> {
+    let real = state.real.clone();
+    tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<()> {
+        match attention {
+            Some(a) if a == "unattended" || a == "active" => { real.exec("INSERT INTO session_overrides (start_at, attention) VALUES (CAST(? AS TIMESTAMP), ?) ON CONFLICT (start_at) DO UPDATE SET attention = excluded.attention", &[serde_json::json!(start_at), serde_json::json!(a)])?; }
+            _ => { real.exec("DELETE FROM session_overrides WHERE start_at = CAST(? AS TIMESTAMP)", &[serde_json::json!(start_at)])?; }
+        }
+        real.rebuild_all()?;
+        Ok(())
+    }).await.map_err(err)?.map_err(err)?;
+    events::emit(&app, events::DATA_CHANGED, serde_json::json!({ "reason": "session_override" }));
+    Ok(())
+}
+
+/// Concerts (lite).
+#[tauri::command]
+pub fn set_concert(state: State<'_, AppState>, artist_id: String, on_date: String, venue: Option<String>, note: Option<String>, remove_id: Option<String>) -> CmdResult<()> {
+    if let Some(id) = remove_id { return state.real.exec("DELETE FROM concerts WHERE CAST(id AS VARCHAR) = ?", &[serde_json::json!(id)]).map(|_| ()).map_err(err); }
+    state.real.exec("INSERT INTO concerts (artist_id, on_date, venue, note) VALUES (?, CAST(? AS DATE), ?, ?)", &[serde_json::json!(artist_id), serde_json::json!(on_date), serde_json::json!(venue), serde_json::json!(note)]).map(|_| ()).map_err(err)
+}
+
+#[tauri::command]
+pub fn mark_milestone_seen(state: State<'_, AppState>, id: String) -> CmdResult<()> {
+    state.real.exec("UPDATE milestones SET seen = TRUE WHERE CAST(milestone_id AS VARCHAR) = ?", &[serde_json::json!(id)]).map(|_| ()).map_err(err)
+}
+#[tauri::command]
+pub fn mark_insight_surfaced(state: State<'_, AppState>, id: String) -> CmdResult<()> {
+    state.real.exec("UPDATE insights SET surfaced = TRUE WHERE CAST(insight_id AS VARCHAR) = ?", &[serde_json::json!(id)]).map(|_| ()).map_err(err)
+}
+
+/// Mixtape builder: for artists you don't own, fetch a few Spotify track ids by search (API-06 caps at 10).
+#[tauri::command]
+pub async fn spotify_tracks_for_artists(state: State<'_, AppState>, artists: Vec<String>, per_artist: Option<usize>) -> CmdResult<Vec<serde_json::Value>> {
+    let real = state.real.clone(); let client = state.spotify_ref(); let n = per_artist.unwrap_or(2).clamp(1, 5);
+    tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<Vec<serde_json::Value>> {
+        let mut out = Vec::new();
+        for a in artists.iter().take(40) {
+            let url = format!("{}/search?type=track&limit=10&q={}", crate::spotify::endpoints::API_BASE, urlencoding::encode(&format!("artist:{a}")));
+            let Ok(v) = client.get(&real, &url, true) else { continue };
+            for t in v["tracks"]["items"].as_array().cloned().unwrap_or_default().iter().filter(|t| t["artists"].get(0).and_then(|x| x["name"].as_str()).map(|nm| nm.eq_ignore_ascii_case(a)).unwrap_or(true)).take(n) {
+                out.push(serde_json::json!({ "trackId": t["id"], "track": t["name"], "artist": t["artists"][0]["name"], "album": t["album"]["name"], "imageUrl": t["album"]["images"][0]["url"], "durationMs": t["duration_ms"] }));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(150));
+        }
+        Ok(out)
+    }).await.map_err(err)?.map_err(err)
 }

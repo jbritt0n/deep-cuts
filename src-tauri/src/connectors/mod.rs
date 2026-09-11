@@ -7,6 +7,8 @@ pub mod musicbrainz;
 pub mod statsfm;
 pub mod lyrics;
 pub mod coverart;
+pub mod listenbrainz;
+pub mod wikidata;
 
 use crate::db::Db;
 use serde_json::json;

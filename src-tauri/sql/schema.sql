@@ -97,6 +97,7 @@ SELECT
     json_extract_string(payload, '$.start_reason')       AS start_reason,
     CAST(json_extract(payload, '$.shuffle') AS BOOLEAN)  AS shuffle,
     json_extract_string(payload, '$.source')             AS source,
+    json_extract_string(payload, '$.country')            AS country,
     -- behavioural flags (replacing deprecated audio features) — v1 definition kept
     (json_extract_string(payload, '$.end_reason') IN ('fwdbtn', 'backbtn')) AS was_skipped,
     (CAST(json_extract(payload, '$.ms_played') AS BIGINT) < 30000)          AS under_30s
@@ -341,7 +342,9 @@ CREATE TABLE IF NOT EXISTS plays_resolved (
     -- last `attention_gap_min` minutes (app_meta, default 120). Long autoplay
     -- stretches — the laptop left on all night — become unattended.
     attended          BOOLEAN DEFAULT TRUE,
-    idle_min          DOUBLE       -- minutes since the last interaction
+    idle_min          DOUBLE,      -- minutes since the last interaction
+    country           VARCHAR,     -- conn_country from the export
+    zone              VARCHAR      -- IANA zone used for played_at
 );
 
 CREATE OR REPLACE VIEW daily_minutes AS
@@ -394,7 +397,7 @@ CREATE TABLE IF NOT EXISTS connector_state (
     detail         JSON
 );
 INSERT INTO connector_state (service, status) VALUES ('spotify', 'disconnected'), ('lastfm', 'disconnected'),
-       ('musicbrainz', 'disconnected'), ('statsfm', 'disconnected')
+       ('musicbrainz', 'disconnected'), ('statsfm', 'disconnected'), ('listenbrainz', 'disconnected')
 ON CONFLICT (service) DO NOTHING;
 
 -- API-07 quota bookkeeping: calls per hour per service, and pause-until.
@@ -442,3 +445,76 @@ CREATE TABLE IF NOT EXISTS artist_merges (
     into_artist_id  VARCHAR,               -- the id that survives
     created_at      TIMESTAMPTZ DEFAULT now()
 );
+
+-- ------------------------------------------------------------
+-- Phase 7 — travel time zones, scenes, hygiene, concerts
+-- ------------------------------------------------------------
+-- Single-zone countries → IANA zone. Plays whose conn_country maps here use that
+-- zone; multi-zone countries (US, CA, AU, BR, MX, RU, ID…) fall back to the home
+-- zone unless a manual override covers the date.
+CREATE TABLE IF NOT EXISTS country_zones (country VARCHAR PRIMARY KEY, zone VARCHAR);
+INSERT INTO country_zones VALUES
+ ('TR','Europe/Istanbul'),('GB','Europe/London'),('IE','Europe/Dublin'),('PT','Europe/Lisbon'),('FR','Europe/Paris'),('DE','Europe/Berlin'),('NL','Europe/Amsterdam'),('BE','Europe/Brussels'),('ES','Europe/Madrid'),('IT','Europe/Rome'),('CH','Europe/Zurich'),('AT','Europe/Vienna'),('CZ','Europe/Prague'),('PL','Europe/Warsaw'),('HU','Europe/Budapest'),('DK','Europe/Copenhagen'),('SE','Europe/Stockholm'),('NO','Europe/Oslo'),('FI','Europe/Helsinki'),('GR','Europe/Athens'),('RO','Europe/Bucharest'),('BG','Europe/Sofia'),('HR','Europe/Zagreb'),('RS','Europe/Belgrade'),('UA','Europe/Kyiv'),('IS','Atlantic/Reykjavik'),
+ ('IL','Asia/Jerusalem'),('AE','Asia/Dubai'),('SA','Asia/Riyadh'),('EG','Africa/Cairo'),('MA','Africa/Casablanca'),('ZA','Africa/Johannesburg'),('KE','Africa/Nairobi'),('NG','Africa/Lagos'),('GH','Africa/Accra'),('ET','Africa/Addis_Ababa'),('TZ','Africa/Dar_es_Salaam'),
+ ('IN','Asia/Kolkata'),('JP','Asia/Tokyo'),('KR','Asia/Seoul'),('CN','Asia/Shanghai'),('HK','Asia/Hong_Kong'),('TW','Asia/Taipei'),('SG','Asia/Singapore'),('MY','Asia/Kuala_Lumpur'),('TH','Asia/Bangkok'),('VN','Asia/Ho_Chi_Minh'),('PH','Asia/Manila'),('NZ','Pacific/Auckland'),
+ ('AR','America/Argentina/Buenos_Aires'),('CL','America/Santiago'),('CO','America/Bogota'),('PE','America/Lima'),('UY','America/Montevideo'),('CR','America/Costa_Rica'),('PA','America/Panama'),('JM','America/Jamaica'),('CU','America/Havana'),('DO','America/Santo_Domingo'),('PR','America/Puerto_Rico'),('GT','America/Guatemala')
+ON CONFLICT (country) DO NOTHING;
+
+-- Manual overrides (Settings → Travel): inclusive dates, local.
+CREATE TABLE IF NOT EXISTS tz_overrides (
+    id         UUID DEFAULT uuid() PRIMARY KEY,
+    from_date  DATE,
+    to_date    DATE,
+    zone       VARCHAR,
+    note       VARCHAR
+);
+
+-- Sessions the owner marked by hand (Settings → Session hygiene / session page).
+CREATE TABLE IF NOT EXISTS session_overrides (
+    start_at   TIMESTAMP,     -- local start of the session at the time it was marked (stable across rebuilds)
+    attention  VARCHAR,       -- 'unattended' | 'active'
+    note       VARCHAR,
+    created_at TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (start_at)
+);
+
+-- Concerts (lite): dates you saw an artist; artist page shows the bump.
+CREATE TABLE IF NOT EXISTS concerts (
+    id         UUID DEFAULT uuid() PRIMARY KEY,
+    artist_id  VARCHAR,
+    on_date    DATE,
+    venue      VARCHAR,
+    note       VARCHAR
+);
+
+-- Scenes: clusters of artists that share tags / origin. Rebuilt by compute_insights.sql.
+CREATE TABLE IF NOT EXISTS artist_scene (artist_id VARCHAR, scene VARCHAR, weight DOUBLE);
+
+-- Artist origin from Wikidata / MusicBrainz area (Phase 7 connector).
+CREATE TABLE IF NOT EXISTS artist_origin (
+    artist_id    VARCHAR PRIMARY KEY,
+    country      VARCHAR,     -- ISO-2
+    country_name VARCHAR,
+    city         VARCHAR,
+    formed_year  INTEGER,
+    source       VARCHAR,
+    fetched_at   TIMESTAMPTZ DEFAULT now()
+);
+
+-- ------------------------------------------------------------
+-- Migrations for records created by earlier versions (idempotent).
+-- ------------------------------------------------------------
+ALTER TABLE plays_resolved ADD COLUMN IF NOT EXISTS country VARCHAR;
+ALTER TABLE plays_resolved ADD COLUMN IF NOT EXISTS zone VARCHAR;
+ALTER TABLE plays_resolved ADD COLUMN IF NOT EXISTS attended BOOLEAN DEFAULT TRUE;
+ALTER TABLE plays_resolved ADD COLUMN IF NOT EXISTS idle_min DOUBLE;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS interaction_count INTEGER;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS attended_ms BIGINT;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS unattended_ms BIGINT;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS attention VARCHAR;
+ALTER TABLE tracks ADD COLUMN IF NOT EXISTS duration_ms_est INTEGER;
+ALTER TABLE tracks ADD COLUMN IF NOT EXISTS track_number INTEGER;
+ALTER TABLE artists ADD COLUMN IF NOT EXISTS mbid VARCHAR;
+ALTER TABLE playlists ADD COLUMN IF NOT EXISTS public BOOLEAN;
+ALTER TABLE created_playlists ADD COLUMN IF NOT EXISTS is_public BOOLEAN DEFAULT FALSE;
+ALTER TABLE connector_state ADD COLUMN IF NOT EXISTS detail JSON;

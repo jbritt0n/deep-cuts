@@ -187,14 +187,24 @@ export async function decadeMix(): Promise<DecadeMix> {
 
 // ----------------------------------------------------------- liked & playlists
 export type LikedSong = TrackRow & { addedAt: string; lastPlayed: string | null; playsSinceLiked: number };
-export async function likedSongs(sort: 'added' | 'plays' | 'hours' | 'skips' | 'unplayed' = 'added', limit = 300): Promise<{ total: number; rows: LikedSong[]; timeline: { month: string; added: number }[]; lagDays: number | null }> {
-  const order = { added: 'l.added_at DESC', plays: 'plays DESC', hours: 'hours DESC', skips: '"skipRate" DESC, plays DESC', unplayed: 'plays_since ASC, l.added_at DESC' }[sort];
+export type LikedFilters = { yearLiked?: number | null; tag?: string | null; neverInPlaylist?: boolean; decade?: number | null; minPlays?: number | null; artistQuery?: string | null };
+export async function likedSongs(sort: 'added' | 'plays' | 'hours' | 'skips' | 'unplayed' | 'lastPlayed' | 'momentum' = 'added', limit = 300, f: LikedFilters = {}): Promise<{ total: number; rows: LikedSong[]; timeline: { month: string; added: number }[]; lagDays: number | null }> {
+  const order = { added: 'l.added_at DESC', plays: 'plays DESC', hours: 'hours DESC', skips: '"skipRate" DESC, plays DESC', unplayed: 'plays_since ASC, l.added_at DESC', lastPlayed: 'MAX(p.played_at) ASC NULLS FIRST', momentum: 'recent90 DESC, plays DESC' }[sort];
+  const conds: string[] = [];
+  if (f.yearLiked) conds.push(`EXTRACT(year FROM l.added_at) = ${Math.floor(f.yearLiked)}`);
+  if (f.tag) conds.push(`EXISTS (SELECT 1 FROM artist_tags tg WHERE tg.artist_id = t.artist_id AND tg.tag = '${f.tag.replace(/'/g, "''")}')`);
+  if (f.neverInPlaylist) conds.push(`NOT EXISTS (SELECT 1 FROM playlist_items pi WHERE pi.track_id = l.track_id)`);
+  if (f.decade) conds.push(`EXTRACT(year FROM t.release_date) BETWEEN ${f.decade} AND ${f.decade + 9}`);
+  if (f.artistQuery) conds.push(`a.name ILIKE '%${f.artistQuery.replace(/'/g, "''")}%'`);
+  const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+  const having = f.minPlays ? `HAVING COUNT(p.play_id) >= ${Math.floor(f.minPlays)}` : '';
   const rows = (await query(`
     SELECT l.track_id AS "trackId", t.name AS track, t.artist_id AS "artistId", a.name AS artist,
            COUNT(p.play_id) AS plays, ROUND(COALESCE(SUM(p.ms_played), 0)/3600000.0, 1) AS hours, COALESCE(AVG(CASE WHEN p.was_skipped THEN 1.0 ELSE 0 END), 0) AS "skipRate",
-           CAST(l.added_at AS VARCHAR) AS added, CAST(MAX(p.played_at) AS VARCHAR) AS last, COUNT(p.play_id) FILTER (WHERE p.played_at_utc >= l.added_at) AS plays_since
+           CAST(l.added_at AS VARCHAR) AS added, CAST(MAX(p.played_at) AS VARCHAR) AS last, COUNT(p.play_id) FILTER (WHERE p.played_at_utc >= l.added_at) AS plays_since,
+           COUNT(p.play_id) FILTER (WHERE p.played_at >= now() - INTERVAL 90 DAY) AS recent90
     FROM liked_songs l JOIN tracks t ON t.track_id = l.track_id LEFT JOIN artists a ON a.artist_id = t.artist_id LEFT JOIN plays_resolved p ON p.track_id = l.track_id ${playsWhere('p').replace(/^ AND/, ' AND')}
-    GROUP BY 1, 2, 3, 4, l.added_at ORDER BY ${order} LIMIT ${limit}`)).map((r) => ({ ...toT(r), addedAt: String(r.added), lastPlayed: str(r.last), playsSinceLiked: num(r.plays_since) }));
+    ${where} GROUP BY 1, 2, 3, 4, l.added_at ${having} ORDER BY ${order} LIMIT ${limit}`)).map((r) => ({ ...toT(r), addedAt: String(r.added), lastPlayed: str(r.last), playsSinceLiked: num(r.plays_since) }));
   const [t] = await query(`SELECT COUNT(*) AS n FROM liked_songs`);
   const timeline = (await query(`SELECT strftime(DATE_TRUNC('month', added_at), '%Y-%m') AS m, COUNT(*) AS n FROM liked_songs GROUP BY 1 ORDER BY 1`)).map((r) => ({ month: String(r.m), added: num(r.n) }));
   const [lag] = await query(`SELECT quantile_cont(epoch(l.added_at) - epoch(f.first_at), 0.5) / 86400.0 AS d FROM liked_songs l JOIN (SELECT track_id, MIN(played_at_utc) AS first_at FROM plays_resolved GROUP BY 1) f USING (track_id)`);
@@ -263,4 +273,11 @@ export async function lyricSearch(term: string, limit = 60): Promise<{ coverage:
     SELECT ${T}, f.keywords, f.themes FROM plays_resolved p JOIN track_lyric_features f USING (track_id)
     WHERE (list_contains(f.keywords, $1) OR list_contains(f.themes, $1)) ${playsWhere('p')} GROUP BY 1, 2, 3, 4, f.keywords, f.themes ORDER BY plays DESC LIMIT ${limit}`, [q])).map((r) => ({ ...toT(r), keywords: (r.keywords as string[]) ?? [], themes: (r.themes as string[]) ?? [] }));
   return { coverage: num(c?.cov), hits };
+}
+
+export async function likedFacets(): Promise<{ years: number[]; tags: { tag: string; n: number }[]; decades: number[] }> {
+  const years = (await query(`SELECT DISTINCT EXTRACT(year FROM added_at)::INT AS y FROM liked_songs ORDER BY 1 DESC`)).map((r) => num(r.y));
+  const tags = (await query(`SELECT tg.tag, COUNT(DISTINCT l.track_id) AS n FROM liked_songs l JOIN tracks t USING (track_id) JOIN artist_tags tg ON tg.artist_id = t.artist_id GROUP BY 1 ORDER BY n DESC LIMIT 30`)).map((r) => ({ tag: String(r.tag), n: num(r.n) }));
+  const decades = (await query(`SELECT DISTINCT (EXTRACT(year FROM t.release_date)::INT / 10) * 10 AS d FROM liked_songs l JOIN tracks t USING (track_id) WHERE t.release_date IS NOT NULL ORDER BY 1`)).map((r) => num(r.d));
+  return { years, tags, decades };
 }

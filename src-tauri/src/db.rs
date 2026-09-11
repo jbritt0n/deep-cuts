@@ -23,6 +23,7 @@ pub const IMPORT_MARK_KEYS_SQL: &str = include_str!("../sql/import_mark_keys.sql
 pub const POLL_INSERT_SQL: &str = include_str!("../sql/poll_insert.sql");
 pub const IMPORT_BLEND_SQL: &str = include_str!("../sql/import_blend.sql");
 pub const COMPUTE_MILESTONES_SQL: &str = include_str!("../sql/compute_milestones.sql");
+pub const COMPUTE_INSIGHTS_SQL: &str = include_str!("../sql/compute_insights.sql");
 
 pub struct Db {
     conn: Mutex<Connection>,
@@ -49,27 +50,32 @@ impl Db {
         self.conn.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    /// Fill `tz_offsets` from chrono-tz: one row per UTC-offset change between
-    /// 2008 and 2032, walked hourly (transitions happen on the hour).
+    /// Fill `tz_offsets` for the home zone plus every zone the record needs:
+    /// single-zone countries seen in `conn_country` and manual travel overrides.
+    /// One row per UTC-offset change between 2008 and 2032, walked hourly.
     pub fn load_tz_offsets(&self, zone: &str) -> Result<()> {
-        let tz: chrono_tz::Tz = zone
-            .parse()
-            .map_err(|_| anyhow!("unknown time zone {zone}; falling back to UTC"))
-            .unwrap_or(chrono_tz::UTC);
+        let mut zones: Vec<String> = vec![zone.to_string()];
+        if let Ok(rows) = self.query(
+            "SELECT DISTINCT cz.zone FROM plays_normalized p JOIN country_zones cz USING (country)              UNION SELECT DISTINCT zone FROM tz_overrides WHERE zone IS NOT NULL", &[]) {
+            for r in rows { if let Some(z) = r.get("zone").and_then(|v| v.as_str()) { if !zones.iter().any(|x| x == z) { zones.push(z.to_string()); } } }
+        }
         let conn = self.lock();
         conn.execute_batch("DELETE FROM tz_offsets;")?;
         let mut stmt = conn.prepare("INSERT INTO tz_offsets (from_utc, offset_s, zone) VALUES (?, ?, ?)")?;
-        let mut t = Utc.with_ymd_and_hms(2008, 1, 1, 0, 0, 0).unwrap();
-        let end = Utc.with_ymd_and_hms(2032, 1, 1, 0, 0, 0).unwrap();
-        let mut prev: Option<i32> = None;
-        while t < end {
-            let off = tz.offset_from_utc_datetime(&t.naive_utc());
-            let secs = chrono::Offset::fix(&off).local_minus_utc();
-            if prev != Some(secs) {
-                stmt.execute(duckdb::params![t.naive_utc().format("%Y-%m-%d %H:%M:%S").to_string(), secs, zone])?;
-                prev = Some(secs);
+        for z in &zones {
+            let tz: chrono_tz::Tz = match z.parse() { Ok(t) => t, Err(_) => { log::warn!("unknown time zone {z}; skipped"); continue; } };
+            let mut t = Utc.with_ymd_and_hms(2008, 1, 1, 0, 0, 0).unwrap();
+            let end = Utc.with_ymd_and_hms(2032, 1, 1, 0, 0, 0).unwrap();
+            let mut prev: Option<i32> = None;
+            while t < end {
+                let off = tz.offset_from_utc_datetime(&t.naive_utc());
+                let secs = chrono::Offset::fix(&off).local_minus_utc();
+                if prev != Some(secs) {
+                    stmt.execute(duckdb::params![t.naive_utc().format("%Y-%m-%d %H:%M:%S").to_string(), secs, z.as_str()])?;
+                    prev = Some(secs);
+                }
+                t += chrono::Duration::hours(1);
             }
-            t += chrono::Duration::hours(1);
         }
         drop(stmt);
         conn.execute(
@@ -168,6 +174,7 @@ impl Db {
         self.exec_batch(ENTITY_RESOLUTION_SQL).context("entity_resolution.sql")?;
         self.exec_batch(COMPUTE_SESSIONS_SQL).context("compute_sessions.sql")?;
         self.exec_batch(COMPUTE_MILESTONES_SQL).context("compute_milestones.sql")?;
+        self.exec_batch(COMPUTE_INSIGHTS_SQL).context("compute_insights.sql")?;
         self.checkpoint()
     }
 

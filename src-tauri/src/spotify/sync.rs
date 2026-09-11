@@ -107,7 +107,9 @@ pub fn sync_playlists(client: &SpotifyClient, db: &Db, me_id: &str) -> Result<us
             db.exec("INSERT INTO playlists (playlist_id, name, description, owner_is_me, track_count, snapshot_id, public, synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, now()) \
                      ON CONFLICT (playlist_id) DO UPDATE SET name = excluded.name, description = excluded.description, track_count = excluded.track_count, snapshot_id = excluded.snapshot_id, public = excluded.public, synced_at = now()",
                 &[json!(id), json!(s(&p[f::NAME])), json!(s(&p[f::DESCRIPTION])), json!(mine), json!(p["tracks"][f::TOTAL].as_i64().or(p[f::ITEMS][f::TOTAL].as_i64())), json!(s(&p[f::SNAPSHOT_ID])), json!(p[f::PUBLIC].as_bool())])?;
-            if mine {
+            // items for your own playlists always; for followed ones up to 300 tracks each (quota-friendly)
+            let item_cap = if mine { u32::MAX } else { 300 };
+            {
                 db.exec("DELETE FROM playlist_items WHERE playlist_id = ?", &[json!(id)])?;
                 let mut off = 0u32; let mut pos = 0i64;
                 loop {
@@ -121,7 +123,7 @@ pub fn sync_playlists(client: &SpotifyClient, db: &Db, me_id: &str) -> Result<us
                             pos += 1;
                         }
                     }
-                    if iv[f::NEXT].is_null() { break; }
+                    if iv[f::NEXT].is_null() || off + 100 >= item_cap { break; }
                     off += 100;
                 }
             }

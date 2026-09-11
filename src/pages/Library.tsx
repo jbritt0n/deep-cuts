@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { likedAlbums, likedArtists, likedSongs, playlistDetail, playlistsOverview, pruneLists } from '@/lib/phase4Queries';
+import { likedAlbums, likedArtists, likedFacets, likedSongs, playlistDetail, playlistsOverview, pruneLists, type LikedFilters } from '@/lib/phase4Queries';
+import { followedPlaylists, madeByDeepCuts } from '@/lib/phase7Queries';
 import { useAsync, useFilter } from '@/lib/hooks';
 import { albumHref, artistHref, fmtDate, fmtHours, fmtInt, fmtPct, trackHref } from '@/lib/format';
 import { Card, ErrorBox, Loading, Sleeve } from '@/components/Card';
@@ -11,26 +12,37 @@ import { Histogram } from '@/components/charts/Bars';
 export function LibraryPage() {
   const [params, setParams] = useSearchParams();
   const tab = params.get('tab') ?? 'songs';
-  const tabs = [['songs', 'Liked songs'], ['albums', 'Liked albums'], ['artists', 'Liked artists'], ['playlists', 'Playlists'], ['prune', 'Prune']];
+  const tabs = [['songs', 'Liked songs'], ['albums', 'Liked albums'], ['artists', 'Liked artists'], ['playlists', 'My playlists'], ['followed', 'Followed'], ['made', 'Made by Deep Cuts'], ['prune', 'Prune']];
   return (
     <div className="mx-auto max-w-6xl">
       <Sleeve kicker="Library" title="Liked songs and playlists, with your numbers" meta="Everything Spotify knows you saved, joined to everything you actually played. Syncs daily once Spotify is connected." />
       <div className="mb-6 flex flex-wrap gap-2 text-xs">{tabs.map(([k, l]) => <button key={k} onClick={() => setParams({ tab: k })} className={`rounded-full px-3 py-1.5 ${tab === k ? 'bg-amber text-ink' : 'border border-line text-dust hover:text-cream'}`}>{l}</button>)}</div>
-      {tab === 'songs' && <LikedSongs />}{tab === 'albums' && <LikedAlbums />}{tab === 'artists' && <LikedArtists />}{tab === 'playlists' && <Playlists />}{tab === 'prune' && <Prune />}
+      {tab === 'songs' && <LikedSongs />}{tab === 'albums' && <LikedAlbums />}{tab === 'artists' && <LikedArtists />}{tab === 'playlists' && <Playlists />}{tab === 'followed' && <Followed />}{tab === 'made' && <MadeBy />}{tab === 'prune' && <Prune />}
     </div>
   );
 }
 
 function LikedSongs() {
   const { filter } = useFilter();
-  const [sort, setSort] = useState<'added' | 'plays' | 'hours' | 'skips' | 'unplayed'>('added');
-  const { data, error } = useAsync(() => likedSongs(sort, 300), [sort, filter]);
+  const [sort, setSort] = useState<'added' | 'plays' | 'hours' | 'skips' | 'unplayed' | 'lastPlayed' | 'momentum'>('added');
+  const [f, setF] = useState<LikedFilters>({});
+  const facets = useAsync(likedFacets, [filter]);
+  const { data, error } = useAsync(() => likedSongs(sort, 300, f), [sort, f, filter]);
   if (error) return <ErrorBox message={error} />;
   if (!data) return <Loading />;
   if (data.total === 0) return <Card><p className="text-sm text-dust">No liked songs synced yet. Connect Spotify in Services; the first sync pulls them all.</p></Card>;
   return (
     <div className="grid gap-6 lg:grid-cols-[1.5fr_1fr]">
-      <Card title={`${fmtInt(data.total)} liked songs`} aside={<div className="flex items-center gap-2 text-xs"><select value={sort} onChange={(e) => setSort(e.target.value as typeof sort)} className="rounded-full border border-line bg-transparent px-3 py-1 text-dust">{[['added', 'Recently liked'], ['plays', 'Most played'], ['hours', 'Most hours'], ['skips', 'Most skipped'], ['unplayed', 'Never played since liking']].map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select><MakePlaylistButton small name="From my liked songs" tracks={data.rows.slice(0, 50)} note="liked" pool={data.rows} /></div>}>
+      <Card title={`${fmtInt(data.total)} liked songs`} aside={<div className="flex items-center gap-2 text-xs"><select value={sort} onChange={(e) => setSort(e.target.value as typeof sort)} className="rounded-full border border-line bg-transparent px-3 py-1 text-dust">{[['added', 'Recently liked'], ['plays', 'Most played'], ['hours', 'Most hours'], ['skips', 'Most skipped'], ['unplayed', 'Never played since liking'], ['lastPlayed', 'Longest since last play'], ['momentum', 'Momentum (last 90 days)']].map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select><MakePlaylistButton small name="From my liked songs" tracks={data.rows.slice(0, 50)} note="liked" pool={data.rows} /></div>}>
+        <div className="mb-3 flex flex-wrap gap-2 text-xs">
+          <select value={f.yearLiked ?? ''} onChange={(e) => setF({ ...f, yearLiked: e.target.value ? Number(e.target.value) : null })} className="rounded-full border border-line bg-transparent px-3 py-1 text-dust"><option value="">Any year liked</option>{facets.data?.years.map((y) => <option key={y} value={y}>{y}</option>)}</select>
+          <select value={f.tag ?? ''} onChange={(e) => setF({ ...f, tag: e.target.value || null })} className="rounded-full border border-line bg-transparent px-3 py-1 text-dust"><option value="">Any tag</option>{facets.data?.tags.map((t) => <option key={t.tag} value={t.tag}>{t.tag} · {t.n}</option>)}</select>
+          {facets.data && facets.data.decades.length > 0 && <select value={f.decade ?? ''} onChange={(e) => setF({ ...f, decade: e.target.value ? Number(e.target.value) : null })} className="rounded-full border border-line bg-transparent px-3 py-1 text-dust"><option value="">Any decade</option>{facets.data.decades.map((d) => <option key={d} value={d}>{d}s</option>)}</select>}
+          <input value={f.artistQuery ?? ''} onChange={(e) => setF({ ...f, artistQuery: e.target.value || null })} placeholder="Artist…" className="rounded-full border border-line bg-transparent px-3 py-1" />
+          <label className="flex items-center gap-1 text-dust"><input type="checkbox" checked={!!f.neverInPlaylist} onChange={(e) => setF({ ...f, neverInPlaylist: e.target.checked })} /> not in any playlist</label>
+          <label className="flex items-center gap-1 text-dust">min plays <input type="number" min={0} value={f.minPlays ?? ''} onChange={(e) => setF({ ...f, minPlays: e.target.value ? Number(e.target.value) : null })} className="num w-14 rounded-full border border-line bg-transparent px-2 py-0.5" /></label>
+          {Object.values(f).some(Boolean) && <button onClick={() => setF({})} className="text-dust hover:text-cream">clear</button>}
+        </div>
         <ul className="divide-y divide-line/60 text-sm">
           {data.rows.map((t) => (
             <li key={t.trackId} className="flex items-center gap-3 py-2">
@@ -86,5 +98,34 @@ function Prune() {
       <Card title="Liked, never played since" subtitle="Saved 90+ days ago, not played once after.">{data.likedNeverPlayed.length ? <ul className="divide-y divide-line/60 text-sm">{data.likedNeverPlayed.map((t) => <li key={t.trackId} className="py-1.5"><Link to={trackHref(t.trackId)} className="hover:text-amber">{t.track}</Link><span className="ml-2 text-xs text-dust">{t.artist} · liked {fmtDate(t.addedAt, { month: 'short', year: 'numeric' })}</span></li>)}</ul> : <p className="text-sm text-dust">—</p>}</Card>
       <Card title="Dead weight in your playlists" subtitle="Tracks you skip 60%+ inside playlists you own.">{data.playlistDeadweight.length ? <ul className="divide-y divide-line/60 text-sm">{data.playlistDeadweight.map((t) => <li key={`${t.trackId}${t.playlist}`} className="py-1.5"><Link to={trackHref(t.trackId)} className="hover:text-amber">{t.track}</Link><span className="ml-2 text-xs text-dust">{t.artist} · in {t.playlist} · {fmtPct(t.skipRate)}</span></li>)}</ul> : <p className="text-sm text-dust">—</p>}</Card>
     </div>
+  );
+}
+
+function Followed() {
+  const { filter } = useFilter(); const { data, error } = useAsync(followedPlaylists, [filter]);
+  if (error) return <ErrorBox message={error} />; if (!data) return <Loading />;
+  if (!data.length) return <Card><p className="text-sm text-dust">No followed playlists synced yet — Services → Spotify → Sync now.</p></Card>;
+  return (
+    <Card title="Playlists you follow" subtitle="Sorted by how long since you last played anything from them — the ones at the top are the ones you lost.">
+      <ul className="divide-y divide-line/60 text-sm">
+        {data.map((p) => (
+          <li key={p.playlistId} className="py-3">
+            <div className="flex items-baseline justify-between gap-3"><a href={`https://open.spotify.com/playlist/${p.playlistId}`} target="_blank" rel="noreferrer" className="truncate hover:text-amber">{p.name}</a><span className="num shrink-0 text-xs text-dust">{p.tracks} tracks · played {p.playedTracks} · {fmtHours(p.hours)} · {p.lastPlayed ? `last ${p.lastPlayed.slice(0, 10)}` : 'never played'}</span></div>
+            {p.gems.length > 0 && <p className="mt-1 truncate text-xs text-dust">your gems here: {p.gems.map((g, i) => <span key={g.trackId}>{i > 0 ? ' · ' : ''}<Link to={trackHref(g.trackId)} className="hover:text-amber">{g.track}</Link></span>)}</p>}
+          </li>
+        ))}
+      </ul>
+    </Card>
+  );
+}
+function MadeBy() {
+  const { filter } = useFilter(); const { data, error } = useAsync(madeByDeepCuts, [filter]);
+  if (error) return <ErrorBox message={error} />; if (!data) return <Loading />;
+  return (
+    <Card title="Made by Deep Cuts" subtitle="Every playlist this app created on your Spotify account, including Deep Cuts Radar.">
+      {!data.length ? <p className="text-sm text-dust">Nothing yet. Any “Make playlist” or “Add to Radar” lands here.</p> : (
+        <ul className="divide-y divide-line/60 text-sm">{data.map((m) => <li key={m.id} className="flex items-center gap-3 py-2"><span className="min-w-0 flex-1 truncate">{m.url ? <a href={m.url} target="_blank" rel="noreferrer" className="hover:text-amber">{m.name}</a> : m.name}</span><span className="num shrink-0 text-xs text-dust">{m.kind} · {m.tracks} tracks · {m.isPublic ? 'public' : 'private'} · {m.createdAt.slice(0, 10)}</span></li>)}</ul>
+      )}
+    </Card>
   );
 }

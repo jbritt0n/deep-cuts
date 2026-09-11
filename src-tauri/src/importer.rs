@@ -223,10 +223,13 @@ pub fn run(app: &AppHandle, store: &Db, input: &Path, import_id: &str) -> Result
 
     // ING-04: derive everything, then land on the dashboard.
     progress("resolving", None, count, count, inserted, duplicate, skipped, "Resolving artists, albums and tracks".into());
+    let zone = store.zone.clone();
+    store.load_tz_offsets(&zone)?;   // new countries in this export may need new zones
     store.exec_batch(db::ENTITY_RESOLUTION_SQL).context("entity_resolution.sql")?;
     progress("sessions", None, count, count, inserted, duplicate, skipped, "Finding your listening sessions".into());
     store.exec_batch(db::COMPUTE_SESSIONS_SQL).context("compute_sessions.sql")?;
     store.exec_batch(db::COMPUTE_MILESTONES_SQL).context("compute_milestones.sql")?;
+    store.exec_batch(db::COMPUTE_INSIGHTS_SQL).context("compute_insights.sql")?;
     progress("finishing", None, count, count, inserted, duplicate, skipped, "Pressing the record".into());
     store.checkpoint()?;
 

@@ -301,7 +301,7 @@ export async function periodReview(period: Period, topN = 5): Promise<YearReview
     WITH base AS (SELECT AVG(CASE WHEN ${late} THEN 1.0 ELSE 0 END) AS s FROM plays_resolved ${W})
     SELECT track_id AS id, track_name AS name, artist_name AS artist, artist_id AS "artistId", COUNT(*) FILTER (WHERE ${late}) AS late_plays,
            AVG(CASE WHEN ${late} THEN 1.0 ELSE 0 END) AS late_share, AVG(CASE WHEN ${late} THEN 1.0 ELSE 0 END) / NULLIF((SELECT s FROM base), 0) AS lift
-    FROM plays_resolved ${W} AND track_id IS NOT NULL GROUP BY 1, 2, 3, 4 HAVING late_plays >= 4 ORDER BY lift DESC, late_plays DESC LIMIT 5`))
+    FROM plays_resolved ${W} AND track_id IS NOT NULL GROUP BY 1, 2, 3, 4 HAVING late_plays >= 2 ORDER BY late_plays DESC, lift DESC LIMIT 5`))
     .map((r) => ({ id: String(r.id), name: String(r.name), artist: str(r.artist), artistId: str(r.artistId), latePlays: num(r.late_plays), lateShare: num(r.late_share), lift: num(r.lift) }));
   const clock = (await query(`WITH h AS (SELECT EXTRACT(hour FROM played_at) AS hour, SUM(ms_played)/3600000.0 AS hours FROM plays_resolved ${W} GROUP BY 1) SELECT r.hour::INT AS hour, ROUND(COALESCE(h.hours, 0), 2) AS hours FROM range(24) r(hour) LEFT JOIN h USING (hour) ORDER BY 1`)).map((r) => ({ hour: num(r.hour), hours: num(r.hours) }));
   // short periods get a day series, long ones a month series

@@ -161,6 +161,14 @@ pub fn run() {
             commands::merge_artists,
             commands::unmerge_artist,
             commands::list_merges,
+            commands::listenbrainz_connect,
+            commands::listenbrainz_disconnect,
+            commands::set_tz_override,
+            commands::set_session_attention,
+            commands::set_concert,
+            commands::mark_milestone_seen,
+            commands::mark_insight_surfaced,
+            commands::spotify_tracks_for_artists,
         ])
         .on_window_event(|window, event| {
             // Close hides to the tray so the poller keeps running (ING-05). Quit from the tray menu.

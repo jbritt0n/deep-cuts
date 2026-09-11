@@ -10,6 +10,7 @@ import { YearLines } from '@/components/charts/Bars';
 import { MakePlaylistButton } from '@/components/PlaylistMaker';
 import { useState } from 'react';
 import { spanTracks } from '@/lib/insightQueries';
+import { sceneTracks, scenes, spanDeepCuts } from '@/lib/phase7Queries';
 import type { TrackRow } from '@/lib/types';
 
 export function InsightsPage() {
@@ -21,6 +22,7 @@ export function InsightsPage() {
   const seas = useAsync(I.seasonality, [filter]);
   const pers = useAsync(I.personas, [filter]);
   const eras = useAsync(() => I.eras(), [filter]);
+  const sc = useAsync(scenes, [filter]);
 
   return (
     <div className="mx-auto max-w-6xl">
@@ -39,6 +41,14 @@ export function InsightsPage() {
               </li>
             ))}
           </ol>
+        )}
+      </Section>
+
+      <Section title="Scenes" subtitle="Clusters of artists that share tags or origin — afrobeat, Turkish, post-punk. Needs Last.fm or MusicBrainz tags; origins arrive from MusicBrainz." state={sc}>
+        {(rows) => rows.length === 0 ? <Muted>No scenes yet — connect Last.fm or MusicBrainz and let tags fill in.</Muted> : (
+          <ul className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+            {rows.map((s) => <li key={s.scene} className="rounded-xl border border-line bg-ink/40 p-4"><p className="font-display text-xl capitalize">{s.scene.replace('-', ' ')}</p><p className="num text-xs text-dust">{s.artists} artists · {fmtHours(s.hours)} · {fmtPct(s.share)} of your listening</p><p className="mt-1 truncate text-sm text-dust">{s.lead.join(', ')}</p><SceneExport scene={s.scene} /></li>)}
+          </ul>
         )}
       </Section>
 
@@ -194,8 +204,15 @@ function PersonaCol({ label, p }: { label: string; p: I.Persona }) {
 function EraExport({ era }: { era: I.Era }) {
   const [tracks, setTracks] = useState<TrackRow[] | null>(null);
   const endExcl = (() => { const d = new Date(era.end + 'T00:00:00'); d.setMonth(d.getMonth() + 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`; })();
-  if (tracks) return <div className="mt-2"><MakePlaylistButton small label={`Export era · ${tracks.length} tracks`} name={era.name} tracks={tracks} kind="insight" description={`${fmtDate(era.start, { month: 'short', year: 'numeric' })} → ${fmtDate(era.end, { month: 'short', year: 'numeric' })}. ${fmtHours(era.hours)}. Made with Deep Cuts.`} note={`era:${era.start}:${endExcl}`} poolRange={[era.start, endExcl]} /></div>;
+  const [deep, setDeep] = useState<TrackRow[] | null>(null);
+  if (tracks) return <div className="mt-2 flex flex-wrap items-center gap-3"><MakePlaylistButton small label={`Export era · ${tracks.length} tracks`} name={era.name} tracks={tracks} kind="insight" description={`${fmtDate(era.start, { month: 'short', year: 'numeric' })} → ${fmtDate(era.end, { month: 'short', year: 'numeric' })}. ${fmtHours(era.hours)}. Made with Deep Cuts.`} note={`era:${era.start}:${endExcl}`} poolRange={[era.start, endExcl]} />
+    {deep ? <span className="text-xs text-dust">also in rotation: {deep.slice(0, 8).map((t, i) => <span key={t.trackId}>{i > 0 ? ' · ' : ''}<Link to={trackHref(t.trackId)} className="hover:text-amber">{t.track}</Link></span>)}</span> : <button onClick={() => spanDeepCuts(era.start, endExcl, 10, 12).then(setDeep)} className="text-xs text-dust hover:text-amber">also in rotation…</button>}</div>;
   return <button onClick={() => spanTracks(era.start, endExcl, 30).then(setTracks)} className="mt-2 text-xs text-dust hover:text-amber">Export era as playlist</button>;
+}
+function SceneExport({ scene }: { scene: string }) {
+  const [tracks, setTracks] = useState<TrackRow[] | null>(null);
+  if (tracks) return <div className="mt-2"><MakePlaylistButton small label={`Export · ${tracks.length}`} name={`${scene.replace('-', ' ')} · Deep Cuts`} tracks={tracks} kind="insight" note={`scene:${scene}`} pool={tracks} /></div>;
+  return <button onClick={() => sceneTracks(scene, 30).then(setTracks)} className="mt-2 text-xs text-dust hover:text-amber">Export scene as playlist</button>;
 }
 function seasonWord(start: string, end: string) {
   const m = Number(start.slice(5, 7)), e = Number(end.slice(5, 7));

@@ -29,7 +29,7 @@ export function ServicesPage() {
   if (err && !rows) return <ErrorBox message={err} />;
   if (!rows) return <Loading />;
   const by = (s: string) => rows.find((r) => r.service === s);
-  const sp = by('spotify'), lf = by('lastfm'), mb = by('musicbrainz'), sf = by('statsfm');
+  const sp = by('spotify'), lf = by('lastfm'), mb = by('musicbrainz'), sf = by('statsfm'), lb = by('listenbrainz');
 
   return (
     <div className="mx-auto max-w-5xl">
@@ -51,6 +51,12 @@ export function ServicesPage() {
               ? <button disabled={!!busy} onClick={() => run('mb', () => invoke('musicbrainz_disconnect'), () => 'MusicBrainz disconnected.')} className="text-sm text-dust hover:text-cream">Disconnect</button>
               : <button disabled={!!busy} onClick={() => run('mb', () => invoke('musicbrainz_connect'), () => 'MusicBrainz connected. Artists resolve in the background.')} className="rounded-full bg-amber px-4 py-2 text-sm font-medium text-ink disabled:opacity-40">Connect</button>}
           </div>
+        </ServiceCard>}
+        {lb && <ServiceCard row={lb} busy={busy} onSync={() => run('listenbrainz', () => invoke<string>('sync_now', { service: 'listenbrainz' }), (r) => String(r))}>
+          <p className="text-xs text-dust">Similar artists are fetched for your resolved artists (MusicBrainz first) a few at a time.</p>
+          <div className="mt-4">{lb.status === 'connected'
+            ? <button disabled={!!busy} onClick={() => run('lb', () => invoke('listenbrainz_disconnect'), () => 'ListenBrainz disconnected.')} className="text-sm text-dust hover:text-cream">Disconnect</button>
+            : <button disabled={!!busy} onClick={() => run('lb', () => invoke('listenbrainz_connect'), () => 'ListenBrainz connected.')} className="rounded-full bg-amber px-4 py-2 text-sm font-medium text-ink disabled:opacity-40">Connect</button>}</div>
         </ServiceCard>}
         {sf && <ServiceCard row={sf} busy={busy} onSync={() => run('statsfm', () => invoke<string>('sync_now', { service: 'statsfm' }), (r) => String(r))}>
           <StatsfmBody row={sf} busy={busy} run={run} />

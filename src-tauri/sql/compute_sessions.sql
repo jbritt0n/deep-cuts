@@ -207,6 +207,14 @@ SELECT
          ELSE 'unattended' END                          AS attention
 FROM _agg;
 
+-- manual session overrides (matched on local start time, ±5 min so rebuilds don't lose them)
+UPDATE sessions s SET attention = o.attention, unattended_ms = CASE WHEN o.attention = 'unattended' THEN s.total_ms ELSE 0 END, attended_ms = CASE WHEN o.attention = 'unattended' THEN 0 ELSE s.total_ms END
+FROM session_overrides o WHERE abs(epoch(s.start_at) - epoch(o.start_at)) <= 300;
+UPDATE _plays SET attended = FALSE FROM _ids i JOIN sessions s ON s.session_id = i.session_id JOIN session_overrides o ON abs(epoch(s.start_at) - epoch(o.start_at)) <= 300
+WHERE _plays.session_no = i.session_no AND o.attention = 'unattended';
+UPDATE _plays SET attended = TRUE FROM _ids i JOIN sessions s ON s.session_id = i.session_id JOIN session_overrides o ON abs(epoch(s.start_at) - epoch(o.start_at)) <= 300
+WHERE _plays.session_no = i.session_no AND o.attention = 'active';
+
 -- write attention back onto plays so every rollup can filter on it
 UPDATE plays_resolved SET attended = TRUE, idle_min = NULL;
 UPDATE plays_resolved SET attended = x.attended, idle_min = x.idle_min

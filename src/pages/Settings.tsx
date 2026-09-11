@@ -8,6 +8,7 @@ import { Card, ErrorBox, Sleeve } from '@/components/Card';
 import { Importer } from '@/components/Importer';
 import { search } from '@/lib/queries';
 import type { ArtistRow } from '@/lib/types';
+import { sessionOverrides, travel } from '@/lib/phase7Queries';
 
 type Activity = { at: string; task: string; level: string; message: string; detail: string | null };
 type ImportRun = { import_id: string; at: string; files: number; inserted: number; duplicate: number; skipped: number };
@@ -106,6 +107,10 @@ export function SettingsPage({ status, onChanged }: { status: AppStatus; onChang
         </div>
       </div>
 
+      <div className="mt-6 grid gap-6 md:grid-cols-2">
+        <Travel busy={busy} run={run} zones={zones} home={status.timezone} />
+        <SessionHygiene busy={busy} run={run} />
+      </div>
       <div className="mt-6">
         <MergeArtists busy={busy} run={run} />
       </div>
@@ -148,6 +153,34 @@ function MergeArtists({ busy, run }: { busy: string | null; run: (label: string,
       {merges.data && merges.data.length > 0 && (
         <ul className="mt-4 divide-y divide-line/60 text-sm">{merges.data.map((m) => <li key={m.fromId} className="flex items-center gap-3 py-1.5"><span className="num truncate text-xs text-dust">{m.fromName ?? m.fromId.replace('name:', '')}</span><span className="text-dust">→</span><span className="truncate">{m.intoName ?? m.intoId}</span><button disabled={!!busy} onClick={() => run('unmerge', () => invoke('unmerge_artist', { fromId: m.fromId }), 'Merge undone and rebuilt.')} className="ml-auto text-xs text-dust hover:text-coral">undo</button></li>)}</ul>
       )}
+    </Card>
+  );
+}
+
+function Travel({ busy, run, zones, home }: { busy: string | null; run: (l: string, fn: () => Promise<unknown>, ok: string) => Promise<void>; zones: string[]; home: string }) {
+  const t = useAsync(travel, [busy]);
+  const [from, setFrom] = useState(''); const [to, setTo] = useState(''); const [zone, setZone] = useState('Europe/Istanbul'); const [note, setNote] = useState('');
+  return (
+    <Card title="Travel and time zones" subtitle={`Home zone ${home}. Plays made abroad use the country Spotify recorded (single-zone countries only). Add date ranges for anything else.`}>
+      {t.data && <p className="num mb-3 text-xs text-dust">{t.data.byZone.map((z) => `${z.zone} ${fmtInt(z.plays)}`).join(' · ')}</p>}
+      <div className="grid gap-2 sm:grid-cols-[1fr_1fr_1.4fr]">
+        <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="num rounded-lg border border-line bg-ink px-2 py-1 text-xs" aria-label="From" />
+        <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="num rounded-lg border border-line bg-ink px-2 py-1 text-xs" aria-label="To" />
+        <select value={zone} onChange={(e) => setZone(e.target.value)} className="rounded-lg border border-line bg-ink px-2 py-1 text-xs">{(zones.length ? zones : [zone]).map((z) => <option key={z} value={z}>{z}</option>)}</select>
+      </div>
+      <div className="mt-2 flex gap-2">
+        <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="Note (Istanbul summer)" className="flex-1 rounded-lg border border-line bg-ink px-2 py-1 text-xs" />
+        <button disabled={!!busy || !from || !to || from > to} onClick={() => run('tz', () => invoke('set_tz_override', { fromDate: from, toDate: to, zone, note }), 'Travel range added; everything recomputed.')} className="rounded-full bg-amber px-3 py-1 text-xs font-medium text-ink disabled:opacity-40">Add</button>
+      </div>
+      {t.data && t.data.overrides.length > 0 && <ul className="mt-3 divide-y divide-line/60 text-xs">{t.data.overrides.map((o) => <li key={o.id} className="flex items-center gap-2 py-1.5"><span className="num">{o.from} → {o.to}</span><span className="text-dust">{o.zone}{o.note ? ` · ${o.note}` : ''}</span><button disabled={!!busy} onClick={() => run('tz', () => invoke('set_tz_override', { fromDate: o.from, toDate: o.to, zone: o.zone, removeId: o.id }), 'Removed; recomputed.')} className="ml-auto text-dust hover:text-coral">remove</button></li>)}</ul>}
+    </Card>
+  );
+}
+function SessionHygiene({ busy, run }: { busy: string | null; run: (l: string, fn: () => Promise<unknown>, ok: string) => Promise<void> }) {
+  const o = useAsync(sessionOverrides, [busy]);
+  return (
+    <Card title="Session hygiene" subtitle="Sessions you marked by hand. Use the buttons on any session page (Sessions → open one → “Mark unattended”).">
+      {o.data && o.data.length ? <ul className="divide-y divide-line/60 text-sm">{o.data.map((s) => <li key={s.startAt} className="flex items-center gap-3 py-1.5"><span className="num text-xs">{s.startAt.slice(0, 16)}</span><span className={s.attention === 'unattended' ? 'text-violet' : 'text-moss'}>{s.attention}</span><button disabled={!!busy} onClick={() => run('sess', () => invoke('set_session_attention', { startAt: s.startAt, attention: null }), 'Override removed; recomputed.')} className="ml-auto text-xs text-dust hover:text-coral">undo</button></li>)}</ul> : <p className="text-sm text-dust">None yet.</p>}
     </Card>
   );
 }

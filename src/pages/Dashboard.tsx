@@ -2,6 +2,8 @@ import { Link } from 'react-router-dom';
 import type { AppStatus } from '@/lib/types';
 import { getDashboardStats, recentMilestones, topAlbums, topArtists, topTracks } from '@/lib/queries';
 import { Collage } from '@/components/Collage';
+import { unseenInsights } from '@/lib/phase7Queries';
+import { invoke } from '@/lib/bridge';
 import { albumHref } from '@/lib/format';
 import { TopN } from '@/components/TopN';
 import { MakePlaylistButton } from '@/components/PlaylistMaker';
@@ -22,6 +24,7 @@ export function Dashboard({ status }: { status: AppStatus }) {
   const [n, setN] = useState(10);
   const ms = useAsync(recentMilestones, [filter]);
   const shelf = useAsync(() => topAlbums(12), [filter]);
+  const ins = useAsync(() => unseenInsights(6), [filter]);
   const more = useAsync(async () => (n === 10 ? null : { artists: await topArtists(n), tracks: await topTracks(n) }), [n, filter]);
   if (error) return <ErrorBox message={error} />;
   if (!s || loading && !s) return <Loading />;
@@ -77,6 +80,11 @@ export function Dashboard({ status }: { status: AppStatus }) {
         </Card>
       </section>
 
+      {ins.data && ins.data.length > 0 && (
+        <div className="mt-6"><Card title="Fresh insights" subtitle="Computed nightly. Tap one to mark it seen." aside={<Link to="/insights" className="text-xs text-dust hover:text-amber">all insights</Link>}>
+          <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{ins.data.map((i) => { const p = i.payload; const text = i.kind === 'obsession' ? `${p.artist}: ${p.plays} plays in a week (usual ${p.usual})` : i.kind === 'scene_phase' ? `A ${String(p.scene).replace('-', ' ')} week — ${p.hours} h, led by ${p.lead}` : i.kind === 'comeback' ? `${p.artist} is back after ${p.days_silent} days` : i.kind === 'earworm' ? `Earworm: ${p.track} — ${p.artist}` : i.kind; const href = i.subjectType === 'artist' ? `/artist/${encodeURIComponent(i.subjectId)}` : i.subjectType === 'track' ? `/track/${encodeURIComponent(i.subjectId)}` : '/insights'; return <li key={i.id} className={`rounded-xl border px-3 py-2 text-sm ${i.surfaced ? 'border-line/50 bg-ink/30 text-dust' : 'border-line bg-ink/40'}`}><Link to={href} onClick={() => invoke('mark_insight_surfaced', { id: i.id }).catch(() => {})} className="block truncate hover:text-amber">{text}</Link><p className="num text-xs text-dust">{i.kind.replace('_', ' ')} · {i.periodStart}</p></li>; })}</ul>
+        </Card></div>
+      )}
       {ms.data && ms.data.length > 0 && (
         <div className="mt-6"><Card title="Milestones" subtitle="Quiet badges from the last few weeks." aside={<Link to="/achievements" className="text-xs text-dust hover:text-amber">achievements</Link>}>
           <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">{ms.data.map((m) => <li key={m.id} className="rounded-xl border border-line bg-ink/40 px-3 py-2 text-sm"><p className="truncate">{m.subjectType === 'artist' ? <Link to={`/artist/${encodeURIComponent(m.subjectId)}`} className="hover:text-amber">{m.description}</Link> : m.subjectType === 'track' ? <Link to={`/track/${encodeURIComponent(m.subjectId)}`} className="hover:text-amber">{m.description}</Link> : m.subjectType === 'day' ? <Link to={`/day/${m.subjectId}`} className="hover:text-amber">{m.description}</Link> : m.description}</p><p className="num text-xs text-dust">{m.occurredAt.slice(0, 10)}</p></li>)}</ul>

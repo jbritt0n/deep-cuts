@@ -3,6 +3,8 @@ import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { curated, inbox, spotifySearchUrl, type Rec } from '@/lib/recQueries';
 import { lyricSearch } from '@/lib/phase4Queries';
+import { earworms, madeByDeepCuts } from '@/lib/phase7Queries';
+import { MixtapeBuilder } from '@/components/Mixtape';
 import { useDebounced } from '@/lib/hooks';
 import { fmtInt } from '@/lib/format';
 import { MakePlaylistButton } from '@/components/PlaylistMaker';
@@ -26,6 +28,9 @@ export function DiscoveryPage() {
   const [lq, setLq] = useState('');
   const dlq = useDebounced(lq, 250);
   const lyr = useAsync(() => lyricSearch(dlq), [dlq, filter]);
+  const ew = useAsync(() => earworms(30), [filter]);
+  const made = useAsync(madeByDeepCuts, [filter]);
+  const [ewHidden, setEwHidden] = useState<Set<string>>(new Set());
   const [only, setOnly] = useState<Rec['engine'] | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [hidden, setHidden] = useState<Set<string>>(new Set());
@@ -39,7 +44,7 @@ export function DiscoveryPage() {
   };
   const radar = async (r: Rec) => {
     setMsg(`Adding ${r.title} to your Radar playlist…`);
-    try { const res = await invoke<{ added: number; url: string }>('add_to_radar', { search: r.spotifySearch }); setMsg(`Added ${res.added} tracks by ${r.title} to Deep Cuts Radar.`); await feedback(r, 'accepted'); }
+    try { const res = await invoke<{ added: number; url: string }>('add_to_radar', { search: r.spotifySearch }); setMsg(`Added ${res.added} tracks by ${r.title} to Deep Cuts Radar — find it in Spotify under Your Library → Playlists, or open it: ${res.url}`); await feedback(r, 'accepted'); made.reload(); }
     catch (e) { setMsg(String(e)); }
   };
   const recs = data.recs.filter((r) => !hidden.has(r.key) && (!only || r.engine === only));
@@ -67,6 +72,31 @@ export function DiscoveryPage() {
         ))}
       </div>
 
+      <div className="mb-6 grid gap-6 lg:grid-cols-[1.2fr_1fr]">
+        <Card title="Mixtape builder" subtitle="Set the blend, pick a length, preview, publish. Artists you don't own are filled in from Spotify search."><MixtapeBuilder /></Card>
+        <Card title="Made by Deep Cuts" subtitle="Playlists this app created on your Spotify. Radar lives here too." aside={made.data?.some((m) => m.kind === 'radar') ? <a href={made.data.find((m) => m.kind === 'radar')!.url ?? '#'} target="_blank" rel="noreferrer" className="text-xs text-dust hover:text-amber">open Radar</a> : undefined}>
+          {made.data && made.data.length ? <ul className="divide-y divide-line/60 text-sm">{made.data.slice(0, 8).map((m) => <li key={m.id} className="flex items-center gap-3 py-1.5"><span className="min-w-0 flex-1 truncate">{m.url ? <a href={m.url} target="_blank" rel="noreferrer" className="hover:text-amber">{m.name}</a> : m.name}</span><span className="num shrink-0 text-xs text-dust">{m.kind} · {m.tracks} · {m.isPublic ? 'public' : 'private'} · {m.createdAt.slice(0, 10)}</span></li>)}</ul> : <p className="text-sm text-dust">Nothing created yet. Radar appears here after your first “Add to Radar”.</p>}
+        </Card>
+      </div>
+      <div className="mb-6">
+        <Card title="Earworms" subtitle="Songs that keep coming back: modest plays spread over many months, played on their own, never skipped. Tell it when it's right or wrong — it learns."
+          aside={ew.data && ew.data.length ? <MakePlaylistButton small name="Earworms · Deep Cuts" tracks={ew.data.filter((e) => !ewHidden.has(e.trackId)).map((e) => ({ trackId: e.trackId, track: e.track, artistId: null, artist: e.artist, plays: e.plays, hours: 0, skipRate: e.skipRate }))} kind="insight" note="earworms" /> : undefined}>
+          {!ew.data ? <Loading label="Listening for hooks…" /> : ew.data.length === 0 ? <p className="text-sm text-dust">Nothing recurring enough yet.</p> : (
+            <ul className="grid gap-2 md:grid-cols-2 lg:grid-cols-3">
+              {ew.data.filter((e) => !ewHidden.has(e.trackId)).slice(0, 18).map((e) => (
+                <li key={e.trackId} className={`rounded-xl border p-3 text-sm ${e.verdict === 'accepted' ? 'border-moss/50 bg-moss/5' : 'border-line bg-ink/40'}`}>
+                  <p className="truncate"><Link to={`/track/${encodeURIComponent(e.trackId)}`} className="hover:text-amber">{e.track}</Link><span className="ml-2 text-xs text-dust">{e.artist}</span></p>
+                  <p className="num mt-0.5 text-xs text-dust">{e.plays} plays over {e.months} months in {e.years} year{e.years === 1 ? '' : 's'} · {Math.round(e.alone * 100)}% on its own</p>
+                  <div className="mt-2 flex gap-3 text-xs">
+                    <button onClick={() => invoke('rec_feedback', { subjectType: 'track', subjectKey: e.trackId, engine: 'earworm', verdict: 'accepted' }).then(() => ew.reload())} className="text-dust hover:text-moss">{e.verdict === 'accepted' ? 'confirmed' : 'yes, earworm'}</button>
+                    <button onClick={() => invoke('rec_feedback', { subjectType: 'track', subjectKey: e.trackId, engine: 'earworm', verdict: 'dismissed' }).then(() => setEwHidden(new Set([...ewHidden, e.trackId])))} className="text-dust hover:text-coral">not really</button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
+      </div>
       <div className="mb-6">
         <Card title="Curated from your own archive" subtitle="Deterministic playlists built from what you already have. Preview, trim, add, publish.">
           {cur.data ? (

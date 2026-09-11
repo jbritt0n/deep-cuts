@@ -26,6 +26,11 @@ const emit = (name, payload) => events.push({ name, payload });
 // tz_offsets like db.rs does, from the JS Intl database
 async function loadTz(zone) {
   await con.run('DELETE FROM tz_offsets');
+  let extra = []; try { const rd2 = await (await con.prepare("SELECT DISTINCT cz.zone FROM plays_normalized p JOIN country_zones cz USING (country) UNION SELECT DISTINCT zone FROM tz_overrides WHERE zone IS NOT NULL")).runAndReadAll(); extra = rd2.getRowObjectsJson().map((r) => r.zone); } catch { /* fresh db */ }
+  for (const z of [zone, ...extra.filter((z) => z && z !== zone)]) await loadOneZone(z);
+  await con.run(`INSERT INTO app_meta (key, value) VALUES ('timezone', '${zone}') ON CONFLICT (key) DO UPDATE SET value = excluded.value`);
+}
+async function loadOneZone(zone) {
   const fmt = new Intl.DateTimeFormat('en-US', { timeZone: zone, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
   const offsetAt = (d) => {
     const p = Object.fromEntries(fmt.formatToParts(d).map((x) => [x.type, x.value]));
@@ -44,7 +49,6 @@ async function loadTz(zone) {
     }
   }
   await con.run(`INSERT INTO tz_offsets VALUES ${rows.join(',')}`);
-  await con.run(`INSERT INTO app_meta (key, value) VALUES ('timezone', '${zone}') ON CONFLICT (key) DO UPDATE SET value = excluded.value`);
 }
 const zone = process.env.DEEPCUTS_TZ ?? Intl.DateTimeFormat().resolvedOptions().timeZone ?? 'UTC';
 await loadTz(zone);
@@ -66,6 +70,7 @@ async function rebuild() {
   await con.run(rd('entity_resolution.sql'));
   await con.run(rd('compute_sessions.sql'));
   await con.run(rd('compute_milestones.sql'));
+  await con.run(rd('compute_insights.sql'));
   await con.run('CHECKPOINT');
 }
 
@@ -143,6 +148,12 @@ const commands = {
   async merge_artists({ fromId, intoId }) { await con.run(`INSERT INTO artist_merges (from_artist_id, into_artist_id) VALUES ('${fromId.replace(/'/g, "''")}', '${intoId.replace(/'/g, "''")}') ON CONFLICT DO UPDATE SET into_artist_id = excluded.into_artist_id`); await rebuild(); emit('data:changed', { reason: 'merge' }); return null; },
   async unmerge_artist({ fromId }) { await con.run(`DELETE FROM artist_merges WHERE from_artist_id = '${fromId.replace(/'/g, "''")}'`); await rebuild(); emit('data:changed', { reason: 'merge' }); return null; },
   async list_merges() { return rowsOf('SELECT m.from_artist_id AS fromId, m.into_artist_id AS intoId, a.name AS intoName, al.alias_name AS fromName FROM artist_merges m LEFT JOIN artists a ON a.artist_id = m.into_artist_id LEFT JOIN artist_aliases al ON al.artist_id = m.into_artist_id AND lower(al.alias_name) = substr(m.from_artist_id, 6) ORDER BY m.created_at DESC'); },
+  async listenbrainz_connect() { throw new Error('Connectors need the desktop app.'); }, async listenbrainz_disconnect() { return null; },
+  async set_tz_override({ fromDate, toDate, zone: z, note, removeId }) { if (removeId) await con.run(`DELETE FROM tz_overrides WHERE CAST(id AS VARCHAR) = '${removeId}'`); else await con.run(`INSERT INTO tz_overrides (from_date, to_date, zone, note) VALUES (DATE '${fromDate}', DATE '${toDate}', '${z}', ${note ? `'${String(note).replace(/'/g, "''")}'` : 'NULL'})`); await loadTz(zone); await rebuild(); emit('data:changed', { reason: 'timezone' }); return null; },
+  async set_session_attention({ startAt, attention }) { if (attention) await con.run(`INSERT INTO session_overrides (start_at, attention) VALUES (TIMESTAMP '${startAt}', '${attention}') ON CONFLICT (start_at) DO UPDATE SET attention = excluded.attention`); else await con.run(`DELETE FROM session_overrides WHERE start_at = TIMESTAMP '${startAt}'`); await rebuild(); emit('data:changed', { reason: 'session' }); return null; },
+  async set_concert() { return null; }, async mark_milestone_seen({ id }) { await con.run(`UPDATE milestones SET seen = TRUE WHERE CAST(milestone_id AS VARCHAR) = '${id}'`); return null; },
+  async mark_insight_surfaced({ id }) { await con.run(`UPDATE insights SET surfaced = TRUE WHERE CAST(insight_id AS VARCHAR) = '${id}'`); return null; },
+  async spotify_tracks_for_artists() { throw new Error('Needs the desktop app connected to Spotify.'); },
   async clear_blend() { await con.run('DELETE FROM blend_plays'); return null; },
   async lyrics_enrich_now() { throw new Error('Lyric fetching needs the desktop app.'); },
   async save_binary_file() { return null; },

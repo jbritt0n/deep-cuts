@@ -5,6 +5,7 @@ import { DEFAULT_SESSION_FILTERS, PAGE, getSessionDetail, getSessionsOverview, l
 import { useAsync, useFilter } from '@/lib/hooks';
 import { DAY_PART_LABELS, SHAPE_LABELS, SHAPE_RULES, artistHref, fmtDate, fmtHours, fmtInt, fmtMs, fmtPct, fmtTime, trackHref } from '@/lib/format';
 import { Card, Empty, ErrorBox, Loading, Sleeve, StatCard } from '@/components/Card';
+import { invoke } from '@/lib/bridge';
 import { SessionCard, ShapeDot } from '@/components/Lists';
 import { SessionShapes } from '@/components/charts/SessionShapes';
 import { WeekHourHeatmap } from '@/components/charts/WeekHourHeatmap';
@@ -191,6 +192,11 @@ function SessionDetailPage({ id }: { id: string }) {
         title={<span className="flex items-center gap-3"><ShapeDot shape={s.shape} />{meta.label}<span className="text-2xl text-dust">· {fmtTime(s.startAt)} → {fmtTime(s.endAt)}</span></span>}
         meta={<>{mins(durMin)} on the clock · {fmtHours(s.totalMs / 3600000)} of music · {s.trackCount} plays · {s.uniqueArtists} artists · {s.skipCount} skips · {s.interactions} interactions{s.attention !== 'active' ? <span className="text-violet"> · {s.attention}: {fmtHours(s.unattendedMs / 3600000)} unattended</span> : null}</>}>
         <p className="mt-3 text-sm text-dust">{meta.note}.</p>
+        <div className="mt-3 flex gap-3 text-xs">
+          {s.attention !== 'unattended' ? <button onClick={() => invoke('set_session_attention', { startAt: s.startAt, attention: 'unattended' })} className="rounded-full border border-line px-3 py-1 text-dust hover:text-cream">Mark unattended</button>
+            : <button onClick={() => invoke('set_session_attention', { startAt: s.startAt, attention: 'active' })} className="rounded-full border border-line px-3 py-1 text-dust hover:text-cream">Mark as listened</button>}
+          <span className="text-dust/70">Recomputes the record; the Attentive lens follows.</span>
+        </div>
       </Sleeve>
       <section className="grid gap-4 sm:grid-cols-2 md:grid-cols-5">
         <StatCard label="Completion" value={fmtPct(s.completionRate)} footnote={s.completionSource === 'duration' ? 'from real lengths' : s.completionSource === 'estimate' ? 'from your longest full plays' : 'from skip rate'} />
