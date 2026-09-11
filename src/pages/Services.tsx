@@ -7,6 +7,7 @@ import { Card, ErrorBox, Loading, Sleeve } from '@/components/Card';
 type Row = { service: string; status: string; account: string | null; lastSyncAt: string | null; lastError: string | null; playsAdded: number; extra: Record<string, unknown> };
 
 const META: Record<string, { name: string; adds: string; color: string }> = {
+  coverart: { name: 'Cover Art Archive', adds: 'Album art.', color: '#9C93AD' }, lyrics: { name: 'LRCLIB', adds: 'Lyric themes.', color: '#9C93AD' }, origin: { name: 'Artist origin', adds: 'Where your artists are from.', color: '#9C93AD' },
   spotify: { name: 'Spotify', adds: 'Live plays every 20 minutes (also from the tray), liked songs and playlists, real track lengths and release dates.', color: C.moss },
   lastfm: { name: 'Last.fm', adds: 'Genre and mood tags per artist, and the similar-artist graph that will power recommendations.', color: C.coral },
   musicbrainz: { name: 'MusicBrainz', adds: 'Canonical artist identities so renamed artists merge, plus folksonomy tags. No account needed.', color: C.amber },
@@ -18,7 +19,7 @@ export function ServicesPage() {
   const [err, setErr] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
-  const load = () => invoke<Row[]>('get_connectors').then(setRows).catch((e) => setErr(String(e)));
+  const load = () => invoke<Row[]>('get_connectors').then((rs) => setRows((rs ?? []).map((r) => ({ ...r, extra: (r.extra && typeof r.extra === 'object' ? r.extra : {}) as Record<string, unknown>, playsAdded: Number(r.playsAdded ?? 0) })))).catch((e) => setErr(String(e)));
   useEffect(() => { load(); let un: (() => void) | undefined; listen('data:changed', load).then((u) => { un = u; }); return () => un?.(); }, []);
 
   const run = async (label: string, fn: () => Promise<unknown>, ok?: (r: unknown) => string) => {
@@ -67,7 +68,7 @@ export function ServicesPage() {
 }
 
 function ServiceCard({ row, busy, onSync, children }: { row: Row; busy: string | null; onSync?: () => void; children: React.ReactNode }) {
-  const m = META[row.service];
+  const m = META[row.service] ?? { name: row.service, adds: '', color: '#9C93AD' };
   const dot = row.status === 'connected' ? 'bg-moss' : row.status === 'error' ? 'bg-coral' : row.status === 'paused' ? 'bg-amber' : 'bg-line';
   return (
     <Card title={m.name} aside={<span className="flex items-center gap-2 text-xs text-dust"><span className={`inline-block h-2 w-2 rounded-full ${dot}`} />{row.status}{row.account ? ` · ${row.account}` : ''}</span>}>

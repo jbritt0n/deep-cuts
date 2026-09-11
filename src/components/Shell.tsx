@@ -2,6 +2,7 @@ import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import type { AppStatus } from '@/lib/types';
 import { SearchBox } from './SearchBox';
 import { FilterLens } from './FilterLens';
+import { ErrorBoundary } from './ErrorBoundary';
 
 const NAV: { to: string; label: string; group?: string }[] = [
   { to: '/', label: 'Dashboard' },
@@ -62,7 +63,7 @@ export function Shell({ status }: { status: AppStatus }) {
           <div className="ml-auto"><FilterLens /></div>
         </header>
         <main id="main" tabIndex={-1} className="min-h-0 flex-1 overflow-y-auto px-8 pb-16 pt-6">
-          <Outlet />
+          <ErrorBoundary resetKey={loc.pathname + loc.search}><Outlet /></ErrorBoundary>
         </main>
       </div>
     </div>

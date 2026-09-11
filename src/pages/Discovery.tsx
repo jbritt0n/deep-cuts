@@ -81,7 +81,12 @@ export function DiscoveryPage() {
       <div className="mb-6">
         <Card title="Earworms" subtitle="Songs that keep coming back: modest plays spread over many months, played on their own, never skipped. Tell it when it's right or wrong — it learns."
           aside={ew.data && ew.data.length ? <MakePlaylistButton small name="Earworms · Deep Cuts" tracks={ew.data.filter((e) => !ewHidden.has(e.trackId)).map((e) => ({ trackId: e.trackId, track: e.track, artistId: null, artist: e.artist, plays: e.plays, hours: 0, skipRate: e.skipRate }))} kind="insight" note="earworms" /> : undefined}>
-          {!ew.data ? <Loading label="Listening for hooks…" /> : ew.data.length === 0 ? <p className="text-sm text-dust">Nothing recurring enough yet.</p> : (
+          {!ew.data ? <Loading label="Listening for hooks…" /> : ew.data.length === 0 ? (
+            <div className="text-sm text-dust">
+              <p>Nothing here yet — earworms come from the nightly insights pass, which hasn't run on this record.</p>
+              <button onClick={() => { setMsg('Rebuilding insights…'); invoke('rebuild').then(() => { setMsg('Insights rebuilt.'); ew.reload(); }).catch((e) => setMsg(String(e))); }} className="mt-2 rounded-full border border-line px-4 py-1.5 text-dust hover:text-cream">Compute insights now</button>
+            </div>
+          ) : (
             <ul className="grid gap-2 md:grid-cols-2 lg:grid-cols-3">
               {ew.data.filter((e) => !ewHidden.has(e.trackId)).slice(0, 18).map((e) => (
                 <li key={e.trackId} className={`rounded-xl border p-3 text-sm ${e.verdict === 'accepted' ? 'border-moss/50 bg-moss/5' : 'border-line bg-ink/40'}`}>

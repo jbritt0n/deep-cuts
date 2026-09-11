@@ -21,6 +21,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
+/// Bump when the SQL pipeline changes so existing records rebuild on first launch.
+pub const PIPELINE_REV: &str = "7";
+
 pub struct AppState {
     pub paths: paths::DataPaths,
     /// The owner's record. Always open; empty until the first import.
@@ -87,10 +90,15 @@ fn open_databases(paths: &paths::DataPaths) -> anyhow::Result<(Arc<Db>, Arc<Db>,
     // (e.g. schema upgraded, or a rebuild was interrupted).
     let events_n = real.scalar_i64("SELECT COUNT(*) FROM events")?;
     let resolved_n = real.scalar_i64("SELECT COUNT(*) FROM plays_resolved")?;
-    if events_n > 0 && events_n != resolved_n {
-        log::info!("rebuilding derived tables ({events_n} events, {resolved_n} resolved)");
+    let built_with = real.query("SELECT value FROM app_meta WHERE key = 'built_with'", &[])?.first().and_then(|r| r.get("value")).and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
+    let version = env!("CARGO_PKG_VERSION").to_string() + "+" + PIPELINE_REV;
+    if events_n > 0 && (events_n != resolved_n || built_with != version) {
+        log::info!("rebuilding derived tables ({events_n} events, {resolved_n} resolved, pipeline {built_with} → {version})");
+        real.load_tz_offsets(&zone)?;
         real.rebuild_all()?;
+        real.log_activity("upgrade", "info", &format!("Rebuilt the record for pipeline {version}"), None);
     }
+    real.exec("INSERT INTO app_meta (key, value) VALUES ('built_with', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value", &[serde_json::json!(version)])?;
     Ok((Arc::new(real), Arc::new(demo), zone))
 }
 

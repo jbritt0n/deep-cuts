@@ -5,6 +5,7 @@ import { followedPlaylists, madeByDeepCuts } from '@/lib/phase7Queries';
 import { useAsync, useFilter } from '@/lib/hooks';
 import { albumHref, artistHref, fmtDate, fmtHours, fmtInt, fmtPct, trackHref } from '@/lib/format';
 import { Card, ErrorBox, Loading, Sleeve } from '@/components/Card';
+import { invoke } from '@/lib/bridge';
 import { MakePlaylistButton } from '@/components/PlaylistMaker';
 import { RankedBars, TrackList } from '@/components/Lists';
 import { Histogram } from '@/components/charts/Bars';
@@ -74,7 +75,7 @@ function Playlists() {
   const [open, setOpen] = useState<string | null>(null);
   const detail = useAsync(() => (open ? playlistDetail(open) : Promise.resolve(null)), [open, filter]);
   if (error) return <ErrorBox message={error} />; if (!data) return <Loading />;
-  if (!data.length) return <Card><p className="text-sm text-dust">No playlists synced yet. They arrive with the Spotify connection.</p></Card>;
+  if (!data.length) return <SyncNudge what="playlists" />;
   const cur = data.find((p) => p.playlistId === open);
   return (
     <div className="grid gap-6 lg:grid-cols-[1fr_1.4fr]">
@@ -104,7 +105,7 @@ function Prune() {
 function Followed() {
   const { filter } = useFilter(); const { data, error } = useAsync(followedPlaylists, [filter]);
   if (error) return <ErrorBox message={error} />; if (!data) return <Loading />;
-  if (!data.length) return <Card><p className="text-sm text-dust">No followed playlists synced yet — Services → Spotify → Sync now.</p></Card>;
+  if (!data.length) return <SyncNudge what="followed playlists" />;
   return (
     <Card title="Playlists you follow" subtitle="Sorted by how long since you last played anything from them — the ones at the top are the ones you lost.">
       <ul className="divide-y divide-line/60 text-sm">
@@ -126,6 +127,20 @@ function MadeBy() {
       {!data.length ? <p className="text-sm text-dust">Nothing yet. Any “Make playlist” or “Add to Radar” lands here.</p> : (
         <ul className="divide-y divide-line/60 text-sm">{data.map((m) => <li key={m.id} className="flex items-center gap-3 py-2"><span className="min-w-0 flex-1 truncate">{m.url ? <a href={m.url} target="_blank" rel="noreferrer" className="hover:text-amber">{m.name}</a> : m.name}</span><span className="num shrink-0 text-xs text-dust">{m.kind} · {m.tracks} tracks · {m.isPublic ? 'public' : 'private'} · {m.createdAt.slice(0, 10)}</span></li>)}</ul>
       )}
+    </Card>
+  );
+}
+
+function SyncNudge({ what }: { what: string }) {
+  const [msg, setMsg] = useState<string | null>(null); const [busy, setBusy] = useState(false);
+  const act = useAsync(() => invoke<{ at: string; task: string; level: string; message: string; detail: string | null }[]>('get_activity', { limit: 40 }), [msg]);
+  const lastErr = act.data?.find((a) => a.level === 'error' && (a.task === 'sync' || a.task === 'spotify'));
+  return (
+    <Card title={`No ${what} yet`}>
+      <p className="text-sm text-dust">They arrive with a Spotify sync. Run one now (also pulls liked songs and recent plays):</p>
+      <button disabled={busy} onClick={async () => { setBusy(true); setMsg(null); try { setMsg(await invoke<string>('sync_now', { service: 'spotify' })); } catch (e) { setMsg(String(e)); } finally { setBusy(false); } }} className="mt-3 rounded-full bg-amber px-4 py-2 text-sm font-medium text-ink disabled:opacity-40">{busy ? 'Syncing…' : 'Sync Spotify now'}</button>
+      {msg && <p className="mt-2 text-xs text-dust">{msg}</p>}
+      {lastErr && <p className="mt-3 text-xs text-coral">Last sync error ({lastErr.at.slice(0, 16)}): {lastErr.message}{lastErr.detail ? ` — ${lastErr.detail.slice(0, 300)}` : ''}</p>}
     </Card>
   );
 }
