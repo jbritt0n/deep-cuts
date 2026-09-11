@@ -251,5 +251,7 @@ pub fn value_to_json(v: Value) -> Json {
             Json::Object(obj)
         }
         Value::Union(inner) => value_to_json(*inner),
+        // `Value` is #[non_exhaustive]; render anything new as its debug form rather than failing.
+        other => json!(format!("{other:?}")),
     }
 }

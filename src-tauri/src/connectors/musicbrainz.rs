@@ -17,7 +17,7 @@ impl Mb {
     pub fn new() -> Result<Self> {
         Ok(Self { http: reqwest::blocking::Client::builder().timeout(Duration::from_secs(20)).user_agent(UA).build()?, last: std::sync::Mutex::new(Instant::now() - Duration::from_secs(2)) })
     }
-    fn get(&self, db: &Db, path: &str) -> Result<Value> {
+    pub fn get(&self, db: &Db, path: &str) -> Result<Value> {
         // client-side politeness: never faster than 1.1 s between calls
         {
             let mut l = self.last.lock().unwrap_or_else(|p| p.into_inner());
@@ -59,7 +59,8 @@ pub fn resolve_batch(db: &Db, max_artists: usize) -> Result<usize> {
     let mut n = 0;
     for r in rows {
         let (Some(id), Some(name)) = (r.get("artist_id").and_then(|v| v.as_str()), r.get("name").and_then(|v| v.as_str())) else { continue };
-        let q = urlencoding::encode(&format!("artist:\"{}\"", name.replace('"', "")));
+        let query_text = format!("artist:\"{}\"", name.replace('"', ""));
+        let q = urlencoding::encode(&query_text).into_owned();
         let v = match mb.get(db, &format!("artist/?query={q}&limit=3&fmt=json")) { Ok(v) => v, Err(e) => { set_state(db, "musicbrainz", "error", None, Some(&e.to_string())); break; } };
         db.exec("INSERT INTO api_calls (service, endpoint, status) VALUES ('musicbrainz', ?, 200)", &[json!(format!("resolve:{id}"))])?;
         let best = v["artists"].as_array().and_then(|a| a.iter().find(|x| x["score"].as_i64().unwrap_or(0) >= 90 && x["name"].as_str().map(|s| s.eq_ignore_ascii_case(name)).unwrap_or(false)).or(a.iter().find(|x| x["score"].as_i64().unwrap_or(0) >= 95)));

@@ -67,3 +67,6 @@
 - **Milestones** are recomputed from scratch on every rebuild; `seen` survives via a temp table keyed on (type, subject, value). Anniversaries only for artists played in the last 180 days.
 - **Merges** live in `artist_merges` and are applied in entity resolution; album and local-track keys are re-derived under the surviving id so albums/tracks merge too.
 - **Nightly job** at 03:30 local: rebuild, Parquet snapshot to `backups/`, keep 14. **Radar refresh**: monthly, adds two tracks per accepted recommendation not already handled.
+
+## First compile (GitHub Actions, Sep 11 2026)
+Three errors, all fixed: `Mb::get` visibility; `urlencoding::encode(&format!(..))` borrowing a temporary (musicbrainz.rs, coverart.rs); non-exhaustive match on `duckdb::types::Value` (db.rs). No errors elsewhere in the crate.

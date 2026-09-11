@@ -23,7 +23,8 @@ pub fn enrich_batch(db: &Db, max_albums: usize) -> Result<usize> {
     for r in rows {
         let g = |k: &str| r.get(k).and_then(|v| v.as_str()).map(str::to_string);
         let (Some(id), Some(name), Some(arid)) = (g("album_id"), g("name"), g("mbid")) else { continue };
-        let q = urlencoding::encode(&format!("releasegroup:\"{}\" AND arid:{}", name.replace('"', ""), arid));
+        let query_text = format!("releasegroup:\"{}\" AND arid:{}", name.replace('"', ""), arid);
+        let q = urlencoding::encode(&query_text).into_owned();
         let v = match mb.get(db, &format!("release-group/?query={q}&limit=1&fmt=json")) { Ok(v) => v, Err(e) => { set_state(db, "musicbrainz", "error", None, Some(&e.to_string())); break; } };
         db.exec("INSERT INTO api_calls (service, endpoint, status) VALUES ('musicbrainz', ?, 200)", &[json!(format!("rg:{id}"))])?;
         let Some(rgid) = v["release-groups"].get(0).and_then(|x| x["id"].as_str()) else { continue };
