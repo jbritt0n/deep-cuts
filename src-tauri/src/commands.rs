@@ -164,7 +164,12 @@ pub fn get_settings(state: State<'_, AppState>) -> CmdResult<Vec<db::Row>> {
 pub fn set_setting(state: State<'_, AppState>, key: String, value: String) -> CmdResult<()> {
     const ALLOWED: &[&str] = &["attention_gap_min", "theme", "lyrics_enabled", "album_threshold",
         // Phase 9b: weekly-era tuning (design brief §3.5) and the Spotify enrichment ceiling
-        "era_similarity", "era_min_weeks", "era_floor_h", "era_max_gap_weeks", "enrich_per_hour"];
+        "era_similarity", "era_min_weeks", "era_floor_h", "era_max_gap_weeks", "enrich_per_hour",
+        // Phase 9c: Settings → Tuning (see src/lib/settings.ts TUNING for defaults and bounds)
+        "short_play_seconds", "shape_loop_repeat", "shape_discovery_novelty", "shape_restless_skip", "shape_wander_entropy",
+        "feedback_memory_days", "forgotten_days", "tag_floor", "lyrics_batch", "playlist_default_public", "mixtape_last_mix",
+        // Phase 9c: The Crate — per-album skip (90 days) / keep decisions are recommendation_feedback rows; this is the crate's own toggle store
+        "crate_show_related"];
     if !ALLOWED.contains(&key.as_str()) {
         return Err(format!("Unknown setting: {key}"));
     }
@@ -306,7 +311,7 @@ pub fn get_connectors(state: State<'_, AppState>) -> CmdResult<Vec<ConnectorRow>
                 "callsLastHour": state.spotify_ref().calls_last_hour(&state.real), "enrichPerHour": crate::spotify::endpoints::budget::enrich_per_hour(&state.real),
                 "enrichedTracks": enriched.first().and_then(|x| x.get("e")).and_then(|v| v.as_i64()).unwrap_or(0), "totalTracks": enriched.first().and_then(|x| x.get("n")).and_then(|v| v.as_i64()).unwrap_or(0), "likedSongs": liked }),
             "lastfm" => serde_json::json!({ "taggedArtists": tag_of("lastfm"), "popularityArtists": state.real.scalar_i64("SELECT COUNT(*) FROM artist_popularity").unwrap_or(0) }),
-            "musicbrainz" => serde_json::json!({ "taggedArtists": tag_of("musicbrainz"), "resolvedArtists": mbids }),
+            "musicbrainz" => serde_json::json!({ "taggedArtists": tag_of("musicbrainz"), "resolvedArtists": mbids, "catalogueArtists": state.real.scalar_i64("SELECT COUNT(*) FROM artists WHERE catalogue_tracks IS NOT NULL").unwrap_or(0), "creditedTracks": state.real.scalar_i64("SELECT COUNT(DISTINCT track_id) FROM track_credits").unwrap_or(0) }),
             "lastfm_wild" => {
                 let d = r.get("detail").and_then(|v| v.as_str()).and_then(|x| serde_json::from_str::<serde_json::Value>(x).ok()).unwrap_or(serde_json::json!({}));
                 let since = wild_meta.iter().find(|m| m.get("key").and_then(|v| v.as_str()) == Some("wild_since")).and_then(|m| m.get("value")).and_then(|v| v.as_str()).and_then(|v| v.parse::<i64>().ok())
@@ -378,7 +383,7 @@ pub async fn sync_now(state: State<'_, AppState>, app: AppHandle, service: Strin
                 format!("Spotify: +{added} plays, {liked} liked songs, {pls} playlists, {enriched} tracks enriched")
             }
             "lastfm" => { let t = lastfm::enrich_tags(&real, 60)?; let s = lastfm::enrich_similar(&real, 15)?; let l = lastfm::enrich_popularity(&real, 30)?; format!("Last.fm: tagged {t} artists, {s} similar-artist seeds, listener counts for {l}") }
-            "musicbrainz" => { let n = musicbrainz::resolve_batch(&real, 40)?; let r = musicbrainz::enrich_relations(&real, 15)?; format!("MusicBrainz: resolved {n} artists, relationships for {r}") }
+            "musicbrainz" => { let n = musicbrainz::resolve_batch(&real, 40)?; let r = musicbrainz::enrich_relations(&real, 15)?; let c = musicbrainz::enrich_catalogue(&real, 15)?; let k = musicbrainz::enrich_credits(&real, 20)?; format!("MusicBrainz: resolved {n} artists, relationships for {r}, catalogue sizes for {c}, credits for {k} tracks") }
             "statsfm" => { let n = crate::connectors::statsfm::import(&real, 10)?; format!("stats.fm: +{n} plays") }
             "listenbrainz" => { let n = crate::connectors::listenbrainz::enrich_similar(&real, 20)?; format!("ListenBrainz: similar artists for {n} seeds") }
             "lastfm_wild" => { let n = crate::connectors::lastfm_wild::import(&real, 10)?; format!("Heard in the Wild: +{n} captures") }

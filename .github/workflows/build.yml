@@ -41,6 +41,8 @@ jobs:
           npx tsx scripts/smoke-wild.ts
           npx tsx scripts/smoke-eras.ts
           npx tsx scripts/smoke-crate.ts
+          npx tsx scripts/smoke-metrics.ts
+          npx tsx scripts/smoke-awards.ts
 
   build:
     needs: test

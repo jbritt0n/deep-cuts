@@ -11,8 +11,8 @@ import { invoke, listen } from '@/lib/bridge';
  * can render disabled with the right hint instead of failing on click, and keeps a short-lived toast.
  */
 type Outcome = { status: 'queued' | 'no_device' | 'needs_reauth' | 'not_connected' | 'quota' | 'unqueueable' | 'error'; message: string };
-type Ctx = { connected: boolean; canQueue: boolean; ready: boolean; queue: (trackId: string) => Promise<Outcome> };
-const QueueContext = createContext<Ctx>({ connected: false, canQueue: false, ready: false, queue: async () => ({ status: 'not_connected', message: 'Spotify is not connected.' }) });
+type Ctx = { connected: boolean; canQueue: boolean; ready: boolean; queue: (trackId: string) => Promise<Outcome>; queueMany: (trackIds: string[], label: string) => Promise<Outcome> };
+const QueueContext = createContext<Ctx>({ connected: false, canQueue: false, ready: false, queue: async () => ({ status: 'not_connected', message: 'Spotify is not connected.' }), queueMany: async () => ({ status: 'not_connected', message: 'Spotify is not connected.' }) });
 export const useQueue = () => useContext(QueueContext);
 
 export function QueueProvider({ children }: { children: ReactNode }) {
@@ -23,17 +23,24 @@ export function QueueProvider({ children }: { children: ReactNode }) {
     .then((rows) => { const sp = rows.find((r) => r.service === 'spotify'); setState({ connected: Boolean(sp?.extra?.connected), canQueue: Boolean(sp?.extra?.canQueue), ready: true }); })
     .catch(() => setState((s) => ({ ...s, ready: true })));
   useEffect(() => { load(); let un: (() => void) | undefined; listen('data:changed', load).then((u) => { un = u; }); return () => un?.(); }, []);
+  const show = (o: Outcome) => { setToast(o); if (timer.current) window.clearTimeout(timer.current); timer.current = window.setTimeout(() => setToast(null), o.status === 'queued' ? 2500 : 6000); };
+  const one = async (trackId: string): Promise<Outcome> => { try { return await invoke<Outcome>('queue_track', { trackId }); } catch (e) { return { status: 'error', message: String(e) }; } };
   const queue = async (trackId: string): Promise<Outcome> => {
-    let o: Outcome;
-    try { o = await invoke<Outcome>('queue_track', { trackId }); } catch (e) { o = { status: 'error', message: String(e) }; }
+    const o = await one(trackId);
     if (o.status === 'needs_reauth' || o.status === 'not_connected') load();
-    setToast(o);
-    if (timer.current) window.clearTimeout(timer.current);
-    timer.current = window.setTimeout(() => setToast(null), o.status === 'queued' ? 2500 : 6000);
+    show(o);
     return o;
   };
+  /** Queue several tracks in order (an album, a playlist). Stops at the first non-queued outcome — the same device / scope problem would hit every one. */
+  const queueMany = async (trackIds: string[], label: string): Promise<Outcome> => {
+    const ids = trackIds.filter((t) => t && !t.startsWith('local:'));
+    if (!ids.length) { const o: Outcome = { status: 'unqueueable', message: 'None of these tracks has a Spotify id.' }; show(o); return o; }
+    let n = 0;
+    for (const id of ids) { const o = await one(id); if (o.status !== 'queued') { if (o.status === 'needs_reauth' || o.status === 'not_connected') load(); show(n ? { ...o, message: `Queued ${n} of ${ids.length} from ${label}, then: ${o.message}` } : o); return o; } n++; }
+    const o: Outcome = { status: 'queued', message: `Queued ${label} — ${n} track${n === 1 ? '' : 's'}.` }; show(o); return o;
+  };
   return (
-    <QueueContext.Provider value={{ ...state, queue }}>
+    <QueueContext.Provider value={{ ...state, queue, queueMany }}>
       {children}
       {toast && (
         <div role="status" className={`fixed bottom-5 right-6 z-50 max-w-sm rounded-xl border px-4 py-3 text-sm shadow-lg backdrop-blur ${toast.status === 'queued' ? 'border-moss/50 bg-ink/90 text-moss' : 'border-amber/50 bg-ink/90 text-cream'}`}>

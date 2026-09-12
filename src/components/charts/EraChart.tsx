@@ -26,7 +26,7 @@ export function EraChart({ weeks, eras, threads, view, onView, onPick }: { weeks
   const model = useMemo(() => build(weeks, eras, threads), [weeks, eras, threads]);
   if (!model) return <p className="text-sm text-dust">Nothing to chart yet.</p>;
   const { idx, spans, first, nWeeks, maxH } = model;
-  const colW = 12, padL = 8, padR = 24;
+  const colW = 14, padL = 8, padR = 24;
   const width = padL + nWeeks * colW + padR;
   const x = (week: string) => padL + (idx.get(week) ?? weekIndex(first, week)) * colW;
   const dim = (k: string) => (hover && hover !== k ? 0.18 : 1);
@@ -40,7 +40,7 @@ export function EraChart({ weeks, eras, threads, view, onView, onPick }: { weeks
   );
 
   if (view === 'areas') {
-    const h = 200, top = 12, base = h - 26;
+    const h = 340, top = 34, base = h - 30;
     const y = (v: number) => base - (v / maxH) * (base - top);
     const area = (s: Span) => {
       if (!s.series.length) return '';
@@ -54,7 +54,7 @@ export function EraChart({ weeks, eras, threads, view, onView, onPick }: { weeks
         <div className="mb-2 flex flex-wrap items-center justify-between gap-2">{Toggle}<Legend hover={hover} setHover={setHover} threads={threadSpans} /></div>
         <Scroller>
           <svg width={width} height={h} className="block" role="img" aria-label="Eras and genre threads, weekly hours">
-            {ticks.map((t) => <g key={t.week}><line x1={x(t.week)} x2={x(t.week)} y1={top} y2={base} stroke={C.line} strokeDasharray="2 4" /><text x={x(t.week) + 4} y={h - 8} fontSize="10" fill={C.dust} className="num">{t.label}</text></g>)}
+            {ticks.map((t) => <g key={t.week}><line x1={x(t.week)} x2={x(t.week)} y1={top} y2={base} stroke={C.line} strokeDasharray="2 4" /><text x={x(t.week) + 4} y={h - 8} fontSize="12" fill={C.dust} className="num">{t.label}</text></g>)}
             <line x1={padL} x2={width - padR} y1={base} y2={base} stroke={C.line} />
             {eraSpans.map((s) => (
               <g key={s.key} opacity={dim(s.key)} onMouseEnter={() => setHover(s.key)} onMouseLeave={() => setHover(null)} onClick={() => onPick?.({ kind: 'era', key: s.key })} className="cursor-pointer" style={{ transition: 'opacity 150ms' }}>
@@ -70,7 +70,15 @@ export function EraChart({ weeks, eras, threads, view, onView, onPick }: { weeks
                 <path d={line(s)} fill="none" stroke={s.color} strokeWidth={1.4} strokeDasharray="3 2" />
               </g>
             ))}
-            {eraSpans.map((s) => <text key={`l${s.key}`} x={x(s.start) + 4} y={top + 10} fontSize="10" fill={C.dust} opacity={dim(s.key)} className="pointer-events-none">{truncate(s.label, Math.max(4, Math.floor((weeksIn(s) * colW) / 6)))}</text>)}
+            {eraSpans.flatMap((s) => {
+              // label at the era's start, repeated every ~50 weeks inside long eras so one is always in view while scrolling
+              const n = weeksIn(s); const starts: number[] = []; for (let k = 0; k < n; k += 50) starts.push(k);
+              return starts.map((k, j) => { const room = Math.min(n - k, 50) * colW; const lines = wrap(s.label, Math.max(6, Math.floor(room / 7))); const lx = x(s.start) + k * colW + 6; return (
+                <text key={`l${s.key}-${k}`} x={lx} y={16} fontSize="12" fill={C.cream} opacity={dim(s.key) * (j ? 0.55 : 1)} className="pointer-events-none">
+                  {lines.map((l, i) => <tspan key={i} x={lx} dy={i ? 14 : 0}>{l}</tspan>)}
+                </text>
+              ); });
+            })}
           </svg>
         </Scroller>
         <p className="mt-1 text-[11px] text-dust/70">Solid: the artist backbone, one era after another. Dashed: genre threads, which may run underneath several eras at once. Each shape sits on its own baseline — nothing is stacked.</p>
@@ -80,18 +88,18 @@ export function EraChart({ weeks, eras, threads, view, onView, onPick }: { weeks
 
   // lanes
   const laneKeys = ['__eras', ...uniq(threadSpans.map((s) => s.label))];
-  const laneH = 26, top = 6, h = top + laneKeys.length * laneH + 22;
+  const laneH = 30, top = 6, h = top + laneKeys.length * laneH + 26;
   const laneY = (k: string) => top + laneKeys.indexOf(k) * laneH;
   return (
     <div>
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">{Toggle}<Legend hover={hover} setHover={setHover} threads={threadSpans} /></div>
       <div className="grid grid-cols-[110px_1fr]">
         <div className="text-xs text-dust" style={{ paddingTop: top }}>
-          {laneKeys.map((k) => <div key={k} className="truncate pr-2" style={{ height: laneH, lineHeight: `${laneH}px` }} title={k === '__eras' ? 'Artist eras' : k}>{k === '__eras' ? 'Eras' : k}</div>)}
+          {laneKeys.map((k) => <div key={k} className="truncate pr-2 text-sm" style={{ height: laneH, lineHeight: `${laneH}px` }} title={k === '__eras' ? 'Artist eras' : k}>{k === '__eras' ? 'Eras' : k}</div>)}
         </div>
         <Scroller>
           <svg width={width} height={h} className="block" role="img" aria-label="Eras and genre threads as lanes">
-            {ticks.map((t) => <g key={t.week}><line x1={x(t.week)} x2={x(t.week)} y1={top} y2={h - 20} stroke={C.line} strokeDasharray="2 4" /><text x={x(t.week) + 4} y={h - 6} fontSize="10" fill={C.dust} className="num">{t.label}</text></g>)}
+            {ticks.map((t) => <g key={t.week}><line x1={x(t.week)} x2={x(t.week)} y1={top} y2={h - 20} stroke={C.line} strokeDasharray="2 4" /><text x={x(t.week) + 4} y={h - 6} fontSize="12" fill={C.dust} className="num">{t.label}</text></g>)}
             {spans.map((s) => {
               const lane = s.kind === 'era' ? '__eras' : s.label;
               const x0 = x(s.start), w = Math.max(colW, weeksIn(s) * colW - 2);
@@ -99,7 +107,7 @@ export function EraChart({ weeks, eras, threads, view, onView, onPick }: { weeks
                 <g key={s.key} opacity={dim(s.key)} onMouseEnter={() => setHover(s.key)} onMouseLeave={() => setHover(null)} onClick={() => onPick?.({ kind: s.kind, key: s.key })} className="cursor-pointer" style={{ transition: 'opacity 150ms' }}>
                   <title>{`${s.label}\n${s.sub}`}</title>
                   <rect x={x0} y={laneY(lane) + 4} width={w} height={laneH - 8} rx={9} fill={s.color} fillOpacity={s.kind === 'era' ? 0.85 : 0.6} />
-                  {w > 40 && <text x={x0 + 8} y={laneY(lane) + laneH / 2 + 3.5} fontSize="10" fill={C.ink} className="pointer-events-none">{truncate(s.kind === 'era' ? s.label : `${Math.round(s.hours)} h`, Math.floor(w / 6))}</text>}
+                  {w > 40 && <text x={x0 + 8} y={laneY(lane) + laneH / 2 + 4} fontSize="12" fill={C.ink} className="pointer-events-none">{truncate(s.kind === 'era' ? s.label : `${Math.round(s.hours)} h`, Math.floor(w / 7))}</text>}
                 </g>
               );
             })}
@@ -150,6 +158,15 @@ function build(weeks: EraWeek[], eras: Era[], threads: GenreThread[]) {
 const weekIndex = (first: string, week: string) => Math.round((Date.parse(week + 'T00:00:00Z') - Date.parse(first + 'T00:00:00Z')) / (7 * 86400e3));
 const weeksIn = (s: Span) => Math.max(1, weekIndex(s.start, s.endExclusive));
 const uniq = <T,>(xs: T[]) => [...new Set(xs)];
+/** Wrap a label onto at most two lines of ~n characters; the second line is truncated. */
+function wrap(s: string, n: number): string[] {
+  if (s.length <= n) return [s];
+  const words = s.split(' '); let first = '';
+  for (const w of words) { if ((first + ' ' + w).trim().length > n) break; first = (first + ' ' + w).trim(); }
+  if (!first) first = s.slice(0, n);
+  const rest = s.slice(first.length).trim();
+  return rest ? [first, truncate(rest, n)] : [first];
+}
 const truncate = (s: string, n: number) => (s.length <= n ? s : n <= 1 ? '' : s.slice(0, Math.max(0, n - 1)) + '…');
 function yearTicks(first: string, n: number) {
   const out: { week: string; label: string }[] = [];

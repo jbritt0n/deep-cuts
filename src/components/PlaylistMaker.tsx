@@ -3,6 +3,7 @@ import { inTauri, invoke } from '@/lib/bridge';
 import type { TrackRow } from '@/lib/types';
 import { search, topTracks } from '@/lib/queries';
 import { useDebounced } from '@/lib/hooks';
+import { settingBool } from '@/lib/settings';
 import { QueueButton } from './QueueButton';
 
 /**
@@ -43,7 +44,7 @@ export function MakePlaylistButton({ name, tracks, kind = 'list_export', descrip
 function PlaylistDialog({ draft, onClose }: { draft: Draft; onClose: () => void }) {
   const [name, setName] = useState(draft.name);
   const [desc, setDesc] = useState(draft.description);
-  const [pub, setPub] = useState(false);
+  const [pub, setPub] = useState(() => settingBool('playlist_default_public', false)); // Phase 9c: owner default, still per-playlist
   const [tracks, setTracks] = useState(draft.tracks);
   const [pool, setPool] = useState<TrackRow[]>(draft.pool ?? []);
   const [q, setQ] = useState('');

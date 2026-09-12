@@ -1,4 +1,6 @@
-# Handoff — Phase 9c (next development run)
+# Handoff — Phase 9d (next development run)
+
+> Written across the 9b and 9c checkpoints (Sep 12, 2026). §0–§1 cover both phases' Rust; §6 lists what 9c added on top.
 
 **Written:** September 12, 2026, at the Phase 9b checkpoint. Read this, then `PROJECT-STATUS-AND-ROADMAP.md` §1 (Phase 9b entry) and `DESIGN-BRIEF-EXPLORATORY-FEATURES.md` §3/§5 for the reasoning behind the eras and queue work.
 
@@ -19,6 +21,12 @@ Files touched — review these first if `cargo build` complains:
 - `connectors/lastfm.rs` — `enrich_popularity(db, n)` (`artist.getInfo` → `stats.listeners/playcount`; upsert `artist_popularity`, append `artist_popularity_history`; refresh after 90 days; `api_calls` endpoint `pop:<artist_id>` as the per-week "we looked" marker).
 - `scheduler.rs` — the 5-minute Last.fm tick now also calls `enrich_popularity(15)`.
 - `sql/schema.sql` — appended `artist_popularity`, `artist_popularity_history`, view `artist_obscurity`. Additive; no `PIPELINE_REV` bump needed (no derived table changed).
+
+**Added in 9c (also uncompiled):**
+- `spotify/client.rs` — 2xx handling: empty body → `Null`; unparsable body → error only for GET, otherwise `warn` + `Null` (fixes the owner's "Spotify returned non-JSON" toast on a queue that actually worked). The unused `Context` import was removed.
+- `commands.rs` — `set_setting` whitelist gained the Tuning keys: `short_play_seconds`, `shape_loop_repeat`, `shape_discovery_novelty`, `shape_restless_skip`, `shape_wander_entropy`, `feedback_memory_days`, `forgotten_days`, `tag_floor`, `lyrics_batch`, `playlist_default_public`, `mixtape_last_mix`, `crate_show_related`.
+- `scheduler.rs` — lyric tick reads `lyrics_batch` (10–100, default 40).
+- `sql/schema.sql` — `plays_normalized.under_30s` reads `short_play_seconds` from `app_meta` (scalar subquery inside the view). `sql/compute_sessions.sql` — new `_tune` temp table feeds the shape CASE. Both need a rebuild after a change; the Tuning card does it. **Consider a `PIPELINE_REV` bump** so existing records recompute `under_30s` once — harmless if not, since the default is unchanged.
 
 Things I checked by eye but can't prove without a compiler: the bind-by-move + guard pattern in `queue.rs` (`Err(ApiError::Http { status: 404, body }) if body.contains(…)`), the `let (Some(listeners), playcount) = … else { continue }` in `lastfm.rs`, and that `db::Row::get` is the `serde_json::Map`-style accessor every other caller uses.
 
@@ -43,6 +51,9 @@ Things I checked by eye but can't prove without a compiler: the bind-by-move + g
 - **Section sort is alphabetical** (dividers A→Z, like a shop); the chips match. Sorting sections by hours instead is a one-line change in `crateSections` + the deck builder.
 - **Abandoned** = ≤ 2 plays on ≤ 2 days, quiet 60+ days. **Rediscover** = ≥ 15 plays, quiet 365+ days. Both in `crateQueries.ts` `flags` CTE and asserted in `test_crate_flags_abandoned_and_rediscover`.
 - The Crate hides the queue icon on covers when Spotify is off but shows it (disabled, explained) on the record card — `always` prop.
+
+## 6. What 9c did with the owner's 9b feedback (all shipped; see roadmap §1 Phase 9c)
+Crate: tracks list + queue album, put-away/keep (90 d), nearby records, snappy section strip that follows the front card, physical wear. Eras: taller/larger chart, wrapped labels, page renamed; new Insights metrics page. Review: week-by-week. Settings: tabs, Tuning from the roadmap table, Activity page. Still open from the earlier list: Dig Deeper on the artist page (the "Dig deeper →" link still goes to the plain artist page), obscurity trajectory UI, chaos scoring, and the un-started 9b menu (FreqBlog, dynamic playlists, world map, Liner Notes calendar). Next roadmap steps in order: Awards on In Review (summary §3.1), session chaos score (§3.7), Skip Hall of Fame (§3.3), catalogue penetration + Dig Deeper (§3.4/§3.6).
 
 ## 5. Working notes
 - `scripts/seed_dev_db.py` now seeds **synthetic tags and listener counts** (clearly marked dev-only) so threads and the Crate render in the harness. Don't mistake those numbers for Last.fm's.

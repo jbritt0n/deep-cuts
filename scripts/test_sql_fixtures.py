@@ -155,6 +155,29 @@ def test_crate_flags_abandoned_and_rediscover():
     assert f['Old Flame'] == (False, True), f
     assert f['Still Spinning'] == (False, False), f
 
+def _tag(con, artist, tags):
+    for t, w in tags: con.execute("INSERT INTO artist_tags (artist_id, tag, weight, source) VALUES (?, ?, ?, 'lastfm')", [f"name:{artist.lower()}", t, w])
+
+def test_chaos_album_ride_low_and_wander_high():
+    # Phase 9d: chaos is the mean tag-vector distance between consecutive plays. An album ride (one artist) must score
+    # ~0; a session hopping jazz → death metal → ambient must score high. Tags are inserted BEFORE the pipeline runs.
+    con = fresh()
+    _tag(con, "Band", [("indie rock", .9)]); _tag(con, "Jazzman", [("jazz", .9), ("bebop", .6)]); _tag(con, "Doom", [("death metal", .9), ("metal", .8)]); _tag(con, "Drone", [("ambient", .9), ("electronic", .5)])
+    for i in range(8): play(con, f"2024-03-01 20:{i*4:02d}:00", f"Track {i}", "Band", "Album")
+    hop = ["Jazzman", "Doom", "Drone", "Jazzman", "Doom", "Drone", "Jazzman", "Doom", "Drone"]
+    for i, a in enumerate(hop): play(con, f"2024-03-05 20:{i*4:02d}:00", f"{a} song {i}", a, f"{a} LP")
+    rebuild(con)
+    rows = dict(con.execute("SELECT session_shape, chaos FROM sessions").fetchall())
+    assert rows.get('album_ride') is not None and rows['album_ride'] < 0.05, rows
+    wander = [v for k, v in rows.items() if k != 'album_ride']
+    assert wander and wander[0] > 0.9, rows
+
+def test_chaos_null_without_tags():
+    con = fresh()
+    for i, a in enumerate(["A", "B", "C", "D"]): play(con, f"2024-03-05 20:{i*4:02d}:00", f"s{i}", a)
+    rebuild(con)
+    assert con.execute("SELECT chaos FROM sessions").fetchone()[0] is None
+
 if __name__ == '__main__':
     tests = [v for k, v in globals().items() if k.startswith('test_')]
     fails = 0

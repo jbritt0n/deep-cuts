@@ -73,6 +73,13 @@ WINDOW ws AS (PARTITION BY session_no ORDER BY played_at, play_id);
 CREATE OR REPLACE TEMP TABLE _gap AS
 SELECT coalesce(TRY_CAST((SELECT value FROM app_meta WHERE key = 'attention_gap_min') AS DOUBLE), 120) AS gap_min;
 
+-- Phase 9c: the shape thresholds the owner was asked to confirm are now settings (Settings → Tuning), read once per rebuild.
+CREATE OR REPLACE TEMP TABLE _tune AS
+SELECT coalesce(TRY_CAST((SELECT value FROM app_meta WHERE key = 'shape_loop_repeat')      AS DOUBLE), 0.25) AS loop_repeat,
+       coalesce(TRY_CAST((SELECT value FROM app_meta WHERE key = 'shape_discovery_novelty') AS DOUBLE), 0.5)  AS discovery_novelty,
+       coalesce(TRY_CAST((SELECT value FROM app_meta WHERE key = 'shape_wander_entropy')    AS DOUBLE), 2.5)  AS wander_entropy,
+       coalesce(TRY_CAST((SELECT value FROM app_meta WHERE key = 'shape_restless_skip')     AS DOUBLE), 0.4)  AS restless_skip;
+
 -- Stuck-repeat detector (data hygiene): the same track completing naturally
 -- 8+ times in a row with NO explicit click on any of those plays is a loop left
 -- running, not listening — e.g. a 30-second track autoplaying for two hours.
@@ -198,15 +205,15 @@ SELECT
     -- §6.2 shapes, first match wins
     CASE
         WHEN album_ride                                                        THEN 'album_ride'
-        WHEN track_count >= 3 AND (repeat_rate >= 0.25 OR top_track_share >= 0.4) THEN 'comfort_loop'  -- ≥3 plays: owner to confirm
-        WHEN novelty_rate >= 0.5 AND track_count >= 6 AND skip_rate < 0.6       THEN 'discovery_run'
+        WHEN track_count >= 3 AND (repeat_rate >= (SELECT loop_repeat FROM _tune) OR top_track_share >= 0.4) THEN 'comfort_loop'
+        WHEN novelty_rate >= (SELECT discovery_novelty FROM _tune) AND track_count >= 6 AND skip_rate < 0.6 THEN 'discovery_run'
         WHEN duration_min >= 90 AND top_artist_share >= 0.6                    THEN 'deep_dive'
         WHEN duration_min >= 180                                               THEN 'binge'
         WHEN first_third_skip >= 2 * coalesce(rest_skip, 0) AND first_third_skip > 0
-         AND skip_rate < 0.4 AND track_count >= 6                              THEN 'warm_up'
-        WHEN skip_rate >= 0.4                                                  THEN 'restless'
+         AND skip_rate < (SELECT restless_skip FROM _tune) AND track_count >= 6 THEN 'warm_up'
+        WHEN skip_rate >= (SELECT restless_skip FROM _tune)                    THEN 'restless'
         WHEN duration_min >= 60 AND skip_rate <= 0.1 AND artist_entropy >= 3.0 THEN 'autopilot'
-        WHEN artist_entropy >= 2.5 AND track_count >= 8                        THEN 'shuffle_wander'
+        WHEN artist_entropy >= (SELECT wander_entropy FROM _tune) AND track_count >= 8 THEN 'shuffle_wander'
         ELSE 'steady'
     END AS session_shape,
     coalesce(completion_measured, 1 - skip_rate)                   AS completion_rate,
@@ -228,7 +235,8 @@ SELECT
     CASE WHEN unattended_ms = 0                          THEN 'active'
          WHEN unattended_ms < attended_ms                THEN 'drifting'
          ELSE 'unattended' END                          AS attention,
-    stuck_repeat
+    stuck_repeat,
+    NULL AS chaos, NULL AS chaos_pairs
 FROM _agg;
 
 -- manual session overrides (matched on local start time, ±5 min so rebuilds don't lose them)
@@ -249,6 +257,30 @@ INSERT INTO play_sessions (play_id, session_id, position_in_session)
 SELECT p.play_id, i.session_id, p.pos
 FROM _plays p JOIN _ids i USING (session_no);
 
+-- Phase 9d: session chaos (summary §3.7). For consecutive plays within a session, the cosine distance between the two
+-- artists' tag vectors (artist_tags at the owner's tag floor), averaged across the session. Same artist → 0; a pair
+-- where either artist has no tags contributes nothing (NULL). Sessions with < 2 scored pairs stay NULL.
+CREATE OR REPLACE TEMP TABLE _tagv AS
+SELECT artist_id, tag, MAX(weight) AS w FROM artist_tags
+WHERE weight >= coalesce(TRY_CAST((SELECT value FROM app_meta WHERE key = 'tag_floor') AS DOUBLE), 0.2) GROUP BY 1, 2;
+CREATE OR REPLACE TEMP TABLE _tagn AS SELECT artist_id, SQRT(SUM(w * w)) AS n FROM _tagv GROUP BY 1;
+CREATE OR REPLACE TEMP TABLE _pairs AS
+SELECT session_no, artist_id AS a, LAG(artist_id) OVER (PARTITION BY session_no ORDER BY pos) AS b
+FROM _plays WHERE artist_id IS NOT NULL;
+CREATE OR REPLACE TEMP TABLE _pair_dist AS
+SELECT p.a, p.b,
+       CASE WHEN p.a = p.b THEN 0.0
+            WHEN na.n IS NULL OR nb.n IS NULL THEN NULL
+            ELSE 1.0 - LEAST(1.0, coalesce(SUM(x.w * y.w), 0) / (na.n * nb.n)) END AS dist
+FROM (SELECT DISTINCT a, b FROM _pairs WHERE b IS NOT NULL) p
+LEFT JOIN _tagn na ON na.artist_id = p.a LEFT JOIN _tagn nb ON nb.artist_id = p.b
+LEFT JOIN _tagv x ON x.artist_id = p.a LEFT JOIN _tagv y ON y.artist_id = p.b AND y.tag = x.tag
+GROUP BY p.a, p.b, na.n, nb.n;
+UPDATE sessions s SET chaos = c.chaos, chaos_pairs = c.n
+FROM (SELECT i.session_id, AVG(d.dist) AS chaos, COUNT(d.dist) AS n
+      FROM _pairs p JOIN _ids i USING (session_no) JOIN _pair_dist d ON d.a = p.a AND d.b = p.b GROUP BY 1 HAVING COUNT(d.dist) >= 2) c
+WHERE s.session_id = c.session_id;
+
 -- SES-10: what follows what, within sessions
 INSERT INTO session_transitions (from_track_id, to_track_id, count)
 SELECT prev_track, track_id, COUNT(*)
@@ -260,7 +292,7 @@ GROUP BY 1, 2;
 
 DROP TABLE _ordered; DROP TABLE _flagged; DROP TABLE _numbered; DROP TABLE _plays0; DROP TABLE _plays;
 DROP TABLE _runs; DROP TABLE _album_runs; DROP TABLE _artist_mix; DROP TABLE _track_mix;
-DROP TABLE _thirds; DROP TABLE _ids; DROP TABLE _agg; DROP TABLE _gap; DROP TABLE _repeat_runs; DROP TABLE _repeat_runs0; DROP TABLE _repeat_runs1;
+DROP TABLE _thirds; DROP TABLE _ids; DROP TABLE _agg; DROP TABLE _gap; DROP TABLE _tune; DROP TABLE _tagv; DROP TABLE _tagn; DROP TABLE _pairs; DROP TABLE _pair_dist; DROP TABLE _repeat_runs; DROP TABLE _repeat_runs0; DROP TABLE _repeat_runs1;
 
 INSERT INTO app_meta (key, value) VALUES ('last_sessions_rebuild', CAST(now() AS VARCHAR))
 ON CONFLICT (key) DO UPDATE SET value = excluded.value;

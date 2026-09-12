@@ -7,7 +7,7 @@ use super::auth::{self, Tokens};
 use super::endpoints as ep;
 use crate::db::Db;
 use crate::secrets;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use serde_json::{json, Value};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -103,7 +103,17 @@ impl SpotifyClient {
             let _ = db.exec("INSERT INTO api_calls (service, endpoint, status) VALUES ('spotify', ?, ?)",
                 &[json!(url.split('?').next().unwrap_or(url).replace(ep::API_BASE, "")), json!(status.as_u16())]);
             match status.as_u16() {
-                200..=299 => return Ok(if text.is_empty() { Value::Null } else { serde_json::from_str(&text).context("Spotify returned non-JSON")? }),
+                200..=299 => {
+                    // Phase 9c: the queue endpoint answered 200 with a non-JSON body while still queueing the track
+                    // (owner report: "Spotify returned non-JSON … however the songs add to queue"). A 2xx is success;
+                    // only GETs, whose bodies we actually read, treat an unparsable body as an error.
+                    if text.trim().is_empty() { return Ok(Value::Null); }
+                    return match serde_json::from_str::<Value>(&text) {
+                        Ok(v) => Ok(v),
+                        Err(e) if method == reqwest::Method::GET => Err(anyhow!("Spotify returned non-JSON: {e}").into()),
+                        Err(e) => { log::warn!("spotify {status} on {url}: non-JSON body ignored ({e})"); Ok(Value::Null) }
+                    };
+                }
                 401 if !refreshed => {
                     let t = self.tokens.lock().unwrap_or_else(|p| p.into_inner()).clone().ok_or(ApiError::Unauthorized)?;
                     let nt = auth::refresh(&self.client_id, &t).map_err(|_| ApiError::Unauthorized)?;

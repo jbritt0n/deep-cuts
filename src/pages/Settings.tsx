@@ -3,6 +3,7 @@ import { invoke } from '@/lib/bridge';
 import type { AppStatus } from '@/lib/types';
 import { useAsync, useDebounced, useFilter, useSettings } from '@/lib/hooks';
 import { ERA_BOUNDS, ERA_KEYS, ERA_PRESETS, eraParamsFromSettings, matchingPreset, sanitizeEraParams, type EraParams } from '@/lib/eraParams';
+import { TUNING, loadSettings, type Tunable } from '@/lib/settings';
 import { eraDiagnostic, eras } from '@/lib/insightQueries';
 import { THEMES } from '@/lib/theme';
 import { fmtInt } from '@/lib/format';
@@ -15,37 +16,48 @@ import { integrity, overrunPlays, shortTrackOutliers, stuckRepeatSessions } from
 import { Link } from 'react-router-dom';
 import { fmtDate, fmtPct, trackHref } from '@/lib/format';
 
-type Activity = { at: string; task: string; level: string; message: string; detail: string | null };
 type ImportRun = { import_id: string; at: string; files: number; inserted: number; duplicate: number; skipped: number };
+
+type Tab = 'look' | 'record' | 'tuning' | 'connectors' | 'hygiene';
+const TABS: { id: Tab; label: string; blurb: string }[] = [
+  { id: 'look', label: 'Appearance', blurb: 'Skins.' },
+  { id: 'record', label: 'Record', blurb: 'Your history, time zones, data.' },
+  { id: 'tuning', label: 'Tuning', blurb: 'The thresholds behind eras, sessions and discovery.' },
+  { id: 'connectors', label: 'Connectors', blurb: 'Budgets and batch sizes for the background jobs.' },
+  { id: 'hygiene', label: 'Hygiene', blurb: 'Outliers, corrected sessions, merged artists.' },
+];
 
 export function SettingsPage({ status, onChanged }: { status: AppStatus; onChanged: () => void }) {
   const { theme, setTheme } = useFilter();
+  const [tab, setTab] = useState<Tab>(() => (new URLSearchParams(window.location.hash.split('?')[1] ?? '').get('tab') as Tab) || 'look');
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [zones, setZones] = useState<string[]>([]);
-  const [gap, setGap] = useState('120');
   const [lyrics, setLyrics] = useState(false);
-  const activity = useAsync(() => invoke<Activity[]>('get_activity', { limit: 60 }), [busy]);
   const imports = useAsync(() => invoke<ImportRun[]>('get_import_history'), [busy]);
 
   useEffect(() => {
     invoke<string[]>('list_timezones').then(setZones).catch(() => {});
-    invoke<{ key: string; value: string }[]>('get_settings').then((rows) => { const g = rows.find((r) => r.key === 'attention_gap_min'); if (g) setGap(g.value); const l = rows.find((r) => r.key === 'lyrics_enabled'); setLyrics(l?.value === 'true'); }).catch(() => {});
+    invoke<{ key: string; value: string }[]>('get_settings').then((rows) => { const l = rows.find((r) => r.key === 'lyrics_enabled'); setLyrics(l?.value === 'true'); }).catch(() => {});
   }, []);
 
   const run = async (label: string, fn: () => Promise<unknown>, ok: string) => {
     setBusy(label); setErr(null); setMsg(null);
-    try { await fn(); setMsg(ok); onChanged(); } catch (e) { setErr(String(e)); } finally { setBusy(null); }
+    try { await fn(); await loadSettings(); setMsg(ok); onChanged(); } catch (e) { setErr(String(e)); } finally { setBusy(null); }
   };
+  const last = imports.data?.[0];
 
   return (
     <div className="mx-auto max-w-5xl">
-      <Sleeve kicker="Settings" title="Your record, your machine" meta={<>{status.portable ? 'Portable mode · ' : ''}{status.dataDir}</>} />
+      <Sleeve kicker="Settings" title="Your record, your machine" meta={<>{status.portable ? 'Portable mode · ' : ''}{status.dataDir} · <Link to="/activity" className="underline hover:text-cream">Activity log</Link></>} />
+      <div className="mb-6 flex flex-wrap gap-2" role="tablist">
+        {TABS.map((t) => <button key={t.id} role="tab" aria-selected={tab === t.id} onClick={() => setTab(t.id)} title={t.blurb} className={`rounded-full px-4 py-1.5 text-sm ${tab === t.id ? 'bg-raised text-cream' : 'border border-line text-dust hover:text-cream'}`}>{t.label}</button>)}
+      </div>
       {msg && <div className="mb-4 rounded-xl border border-moss/40 bg-moss/5 px-4 py-3 text-sm text-moss">{msg}</div>}
       {err && <div className="mb-4"><ErrorBox message={err} /></div>}
 
-      <div className="mb-6">
+      {tab === 'look' && (
         <Card title="Skin" subtitle="Colour scheme for the whole app, charts included. Saved on this machine.">
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
             {THEMES.map((t) => (
@@ -58,48 +70,23 @@ export function SettingsPage({ status, onChanged }: { status: AppStatus; onChang
             ))}
           </div>
         </Card>
-      </div>
-      <div className="mb-6"><EraTuning /></div>
-      <div className="grid gap-6 md:grid-cols-2">
-        <Card title="Listening history" subtitle="Add a newer export any time. Only new plays are added; the rest is skipped.">
-          <Importer compact onDone={onChanged} />
-          {imports.data && imports.data.length > 0 && (
-            <ul className="num mt-4 space-y-1 text-xs text-dust">
-              {imports.data.map((r) => <li key={r.import_id}>{r.at?.slice(0, 16)} · {r.files} files · +{fmtInt(Number(r.inserted))} plays · {fmtInt(Number(r.duplicate))} duplicates</li>)}
-            </ul>
-          )}
-        </Card>
+      )}
 
-        <div className="space-y-6">
-          <Card title="Attention gap" subtitle="How long autoplay may run without you touching anything before it stops counting as listening.">
-            <div className="flex items-center gap-3">
-              <input type="number" min={15} max={600} step={15} value={gap} onChange={(e) => setGap(e.target.value)} className="num w-24 rounded-lg border border-line bg-ink px-3 py-2 text-sm" aria-label="Attention gap in minutes" />
-              <span className="text-sm text-dust">minutes</span>
-              <button disabled={!!busy} onClick={() => run('gap', async () => { await invoke('set_setting', { key: 'attention_gap_min', value: gap }); await invoke('rebuild'); }, `Attention gap set to ${gap} min and sessions rebuilt.`)}
-                className="ml-auto rounded-full bg-amber px-4 py-2 text-sm font-medium text-ink disabled:opacity-40">{busy === 'gap' ? 'Rebuilding…' : 'Apply'}</button>
-            </div>
-            <p className="mt-3 text-xs text-dust">120 minutes: a double album with no skips still counts; a laptop left on overnight does not.</p>
+      {tab === 'record' && (
+        <div className="grid gap-6 md:grid-cols-2">
+          <Card title="Listening history" subtitle={last ? `Last import ${last.at?.slice(0, 10)} · +${fmtInt(Number(last.inserted))} plays. Only new plays are ever added.` : 'Add a Spotify export; only new plays are added.'}>
+            <Importer compact onDone={onChanged} />
+            {imports.data && imports.data.length > 1 && <p className="mt-3 text-xs text-dust">{imports.data.length} imports so far — the full list is on <Link to="/activity" className="underline hover:text-cream">Activity</Link>.</p>}
           </Card>
-
-          <EnrichmentQuota busy={busy} run={run} />
-
-          <Card title="Lyric themes" subtitle="Fetch lyrics from LRCLIB for your most-played tracks and keep only derived themes and keywords — the text itself is never stored.">
-            <label className="flex items-center gap-3 text-sm">
-              <input type="checkbox" checked={lyrics} onChange={(e) => { setLyrics(e.target.checked); void run('lyrics', () => invoke('set_setting', { key: 'lyrics_enabled', value: String(e.target.checked) }), e.target.checked ? 'Lyric features enabled. They fill in a few dozen tracks every 15 minutes.' : 'Lyric features paused.'); }} />
-              Enable lyric features
-            </label>
-            <button disabled={!!busy || !lyrics} onClick={() => run('lyricsnow', () => invoke<string>('lyrics_enrich_now').then((m) => setMsg(m)), 'Done.')} className="mt-3 rounded-full border border-line px-4 py-2 text-sm text-dust hover:text-cream disabled:opacity-40">Fetch a batch now</button>
-          </Card>
-
           <Card title="Time zone" subtitle="Hours of the day and session boundaries are computed in this zone.">
             <select value={status.timezone} disabled={!!busy || !zones.length}
               onChange={(e) => run('tz', () => invoke('set_timezone', { zone: e.target.value }), `Time zone set to ${e.target.value}. Everything was recomputed.`)}
               className="w-full rounded-lg border border-line bg-ink px-3 py-2 text-sm">
               {(zones.length ? zones : [status.timezone]).map((z) => <option key={z} value={z}>{z}</option>)}
             </select>
-            <p className="mt-2 text-xs text-dust">Detected from this machine. If you've moved, plays before the move still use this zone — one zone per record for now.</p>
+            <p className="mt-2 text-xs text-dust">Detected from this machine. Plays made abroad use travel ranges below.</p>
           </Card>
-
+          <Travel busy={busy} run={run} zones={zones} home={status.timezone} />
           <Card title="Data" subtitle="Everything lives in one DuckDB file. Raw plays are never modified.">
             <ul className="num space-y-1 text-xs text-dust">
               <li>{status.dbPath}</li>
@@ -113,28 +100,81 @@ export function SettingsPage({ status, onChanged }: { status: AppStatus; onChang
             <p className="mt-3 text-xs text-dust">Portable mode: put an empty file named <span className="num">portable.flag</span> next to the app and it keeps its data in a <span className="num">data</span> folder beside it.</p>
           </Card>
         </div>
-      </div>
+      )}
 
-      <div className="mt-6">
-        <ReviewOutliers busy={busy} run={run} />
-      </div>
-      <div className="mt-6 grid gap-6 md:grid-cols-2">
-        <Travel busy={busy} run={run} zones={zones} home={status.timezone} />
-        <SessionHygiene busy={busy} run={run} />
-      </div>
-      <div className="mt-6">
-        <MergeArtists busy={busy} run={run} />
-      </div>
-      <div className="mt-6">
-        <Card title="Activity" subtitle="Everything the app did in the background. Failures land here, never as a crash.">
-          {activity.data && activity.data.length ? (
-            <ul className="divide-y divide-line/60 text-sm">
-              {activity.data.map((a, i) => <li key={i} className="flex gap-4 py-2"><span className="num w-36 shrink-0 text-xs text-dust">{a.at?.slice(0, 16)}</span><span className={`w-16 shrink-0 text-xs ${a.level === 'error' ? 'text-coral' : a.level === 'warn' ? 'text-amber' : 'text-dust'}`}>{a.task}</span><span className="min-w-0 flex-1 truncate" title={a.detail ?? ''}>{a.message}</span></li>)}
-            </ul>
-          ) : <p className="text-sm text-dust">Nothing yet.</p>}
-        </Card>
-      </div>
+      {tab === 'tuning' && (
+        <div className="space-y-6">
+          <EraTuning />
+          <TuningGroup group="sessions" title="Sessions" subtitle="Attention, skips and the session-shape rules. These are baked into the session table, so changes apply after a rebuild (a few seconds)." busy={busy} run={run} />
+          <div className="grid gap-6 md:grid-cols-2">
+            <TuningGroup group="discovery" title="Discovery and tags" subtitle="Read live by Discover, genre browse and genre threads — no rebuild." busy={busy} run={run} />
+            <Preferences busy={busy} run={run} />
+          </div>
+        </div>
+      )}
+
+      {tab === 'connectors' && (
+        <div className="grid gap-6 md:grid-cols-2">
+          <EnrichmentQuota busy={busy} run={run} />
+          <Card title="Lyric themes" subtitle="Fetch lyrics from LRCLIB for your most-played tracks and keep only derived themes and keywords — the text itself is never stored.">
+            <label className="flex items-center gap-3 text-sm">
+              <input type="checkbox" checked={lyrics} onChange={(e) => { setLyrics(e.target.checked); void run('lyrics', () => invoke('set_setting', { key: 'lyrics_enabled', value: String(e.target.checked) }), e.target.checked ? 'Lyric features enabled.' : 'Lyric features paused.'); }} />
+              Enable lyric features
+            </label>
+            <button disabled={!!busy || !lyrics} onClick={() => run('lyricsnow', () => invoke<string>('lyrics_enrich_now').then((m) => setMsg(m)), 'Done.')} className="mt-3 rounded-full border border-line px-4 py-2 text-sm text-dust hover:text-cream disabled:opacity-40">Fetch a batch now</button>
+          </Card>
+          <TuningGroup group="connectors" title="Batch sizes" subtitle="Speed against politeness for the background connectors." busy={busy} run={run} />
+          <Card title="Services" subtitle="Keys, connections and sync live on their own page."><Link to="/services" className="text-sm text-amber hover:underline">Open Services →</Link></Card>
+        </div>
+      )}
+
+      {tab === 'hygiene' && (
+        <div className="space-y-6">
+          <ReviewOutliers busy={busy} run={run} />
+          <SessionHygiene busy={busy} run={run} />
+          <MergeArtists busy={busy} run={run} />
+        </div>
+      )}
     </div>
+  );
+}
+
+/** Phase 9c: one card per TUNING group — a bounded slider per setting, saved together; session-group changes trigger a rebuild. */
+function TuningGroup({ group, title, subtitle, busy, run }: { group: Tunable['group']; title: string; subtitle: string; busy: string | null; run: (l: string, fn: () => Promise<unknown>, ok: string) => Promise<void> }) {
+  const settings = useSettings();
+  const items = TUNING.filter((t) => t.group === group);
+  const stored = useMemo(() => Object.fromEntries(items.map((t) => { const r = settings.data?.find((x) => x.key === t.key); const v = Number(r?.value); return [t.key, Number.isFinite(v) && r ? v : t.def]; })), [settings.data, items]);
+  const [draft, setDraft] = useState<Record<string, number> | null>(null);
+  const v = draft ?? stored;
+  const dirty = items.filter((t) => v[t.key] !== stored[t.key]);
+  const needsRebuild = dirty.some((t) => t.rebuild);
+  const apply = () => run(group, async () => { for (const t of dirty) await invoke('set_setting', { key: t.key, value: String(v[t.key]) }); if (needsRebuild) await invoke('rebuild'); settings.reload(); setDraft(null); }, needsRebuild ? `${dirty.length} setting${dirty.length === 1 ? '' : 's'} saved and sessions rebuilt.` : `${dirty.length} setting${dirty.length === 1 ? '' : 's'} saved.`);
+  return (
+    <Card title={title} subtitle={subtitle} aside={<div className="flex gap-2">{dirty.length > 0 && <button onClick={() => setDraft(null)} className="text-xs text-dust hover:text-cream">discard</button>}<button disabled={!!busy || !dirty.length} onClick={apply} className="rounded-full bg-amber px-4 py-1.5 text-xs font-medium text-ink disabled:opacity-40">{busy === group ? (needsRebuild ? 'Rebuilding…' : 'Saving…') : needsRebuild ? 'Apply & rebuild' : 'Apply'}</button></div>}>
+      <div className="grid gap-4 md:grid-cols-2">
+        {items.map((t) => (
+          <div key={t.key}>
+            <div className="flex items-baseline justify-between text-sm"><label htmlFor={`tune-${t.key}`}>{t.label}</label><span className="num text-xs text-cream">{t.step < 1 ? v[t.key].toFixed(2) : v[t.key]}{t.unit ? ` ${t.unit}` : ''}{v[t.key] !== t.def && <button onClick={() => setDraft({ ...v, [t.key]: t.def })} className="ml-2 text-dust hover:text-cream" title={`Reset to ${t.def}`}>↺</button>}</span></div>
+            <input id={`tune-${t.key}`} type="range" min={t.min} max={t.max} step={t.step} value={v[t.key]} onChange={(e) => setDraft({ ...v, [t.key]: Number(e.target.value) })} className="mt-1 w-full accent-amber" />
+            <p className="mt-0.5 text-[11px] text-dust/80">{t.why}</p>
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+}
+
+/** Two non-numeric preferences from the roadmap: playlist default visibility and remembering the last Mixtape mix. */
+function Preferences({ busy, run }: { busy: string | null; run: (l: string, fn: () => Promise<unknown>, ok: string) => Promise<void> }) {
+  const settings = useSettings();
+  const pub = settings.data?.find((r) => r.key === 'playlist_default_public')?.value === 'true';
+  const remember = settings.data?.find((r) => r.key === 'mixtape_last_mix');
+  return (
+    <Card title="Preferences" subtitle="Small defaults that save a click.">
+      <label className="flex items-start gap-3 text-sm"><input type="checkbox" checked={pub} disabled={!!busy} onChange={(e) => run('pref', async () => { await invoke('set_setting', { key: 'playlist_default_public', value: String(e.target.checked) }); settings.reload(); }, e.target.checked ? 'New playlists default to public.' : 'New playlists default to private.')} /><span>New Spotify playlists default to <span className="text-cream">{pub ? 'public' : 'private'}</span><span className="block text-xs text-dust">The toggle in every playlist preview still overrides this per playlist.</span></span></label>
+      <p className="mt-4 text-sm">Mixtape remembers your last mix{remember ? <span className="text-xs text-dust"> — currently {remember.value.replace(/[{}"]/g, '').replace(/,/g, ' · ')}</span> : <span className="text-xs text-dust"> — nothing saved yet; it will remember the next mix you build.</span>}</p>
+      {remember && <button disabled={!!busy} onClick={() => run('pref', async () => { await invoke('set_setting', { key: 'mixtape_last_mix', value: '' }); settings.reload(); }, 'Mixtape reset to 40 / 20 / 20 / 20.')} className="mt-2 text-xs text-dust hover:text-coral">forget it</button>}
+    </Card>
   );
 }
 
@@ -282,7 +322,7 @@ function EraTuning() {
   const median = lens.length ? lens[Math.floor(lens.length / 2)] : 0;
   const verdict = !preview.data ? null : preview.data.eras.length <= 2 ? 'Everything is one blob — raise the similarity threshold or shorten the minimum era.' : median <= 3 ? 'Every few weeks is its own era — lower the threshold or lengthen the minimum.' : 'Looks textured: a mix of short and long stretches.';
   return (
-    <Card title="Eras" subtitle="How the Insights timeline is cut into eras. Weekly grain; the recommended bundle came from a benchmark on a real record and won't suit every listener, so tune it here and watch the count respond." aside={saved ? <span className="text-xs text-moss">saved {saved}</span> : undefined}>
+    <Card title="Eras" subtitle="How the Eras timeline is cut into eras. Weekly grain; the recommended bundle came from a benchmark on a real record and won't suit every listener, so tune it here and watch the count respond." aside={saved ? <span className="text-xs text-moss">saved {saved}</span> : undefined}>
       <div className="grid gap-6 lg:grid-cols-[1fr_1.1fr]">
         <div>
           <div className="mb-4 flex flex-wrap gap-2">
@@ -312,7 +352,7 @@ function EraTuning() {
               <p className="mt-4 text-xs text-dust">Last 52 weeks — each cell is one week; an amber cell opened a new era before merging.</p>
               <div className="mt-2 flex flex-wrap gap-0.5">{preview.data.weeks.map((w) => <span key={w.week} title={`${w.week}: ${w.hours.toFixed(1)} h · similarity ${w.cosToPrev?.toFixed(3) ?? '—'}`} className={`h-4 w-3 rounded-sm ${w.breaks ? 'bg-amber' : 'bg-raised'}`} />)}</div>
               <ul className="mt-4 space-y-1.5 text-sm">{preview.data.eras.slice(0, 6).map((e) => <li key={e.start} className="flex items-baseline gap-3"><span className="num w-24 shrink-0 text-xs text-dust">{e.start.slice(0, 7)} · {e.weeks}w</span><span className="truncate">{e.name}</span></li>)}{preview.data.eras.length > 6 && <li className="text-xs text-dust">and {preview.data.eras.length - 6} more</li>}</ul>
-              <Link to="/insights" className="mt-3 inline-block text-xs text-dust underline hover:text-cream">See them on Insights</Link>
+              <Link to="/eras" className="mt-3 inline-block text-xs text-dust underline hover:text-cream">See them on Eras</Link>
             </div>
           )}
         </div>

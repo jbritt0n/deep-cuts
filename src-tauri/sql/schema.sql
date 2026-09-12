@@ -100,7 +100,8 @@ SELECT
     json_extract_string(payload, '$.country')            AS country,
     -- behavioural flags (replacing deprecated audio features) — v1 definition kept
     (json_extract_string(payload, '$.end_reason') IN ('fwdbtn', 'backbtn')) AS was_skipped,
-    (CAST(json_extract(payload, '$.ms_played') AS BIGINT) < 30000)          AS under_30s
+    -- Phase 9c: the "short play" cutoff is owner-tunable (Settings → Tuning → app_meta short_play_seconds, default 30). Rebuild after changing.
+    (CAST(json_extract(payload, '$.ms_played') AS BIGINT) < 1000 * coalesce(TRY_CAST((SELECT value FROM app_meta WHERE key = 'short_play_seconds') AS BIGINT), 30)) AS under_30s
 FROM events
 WHERE event_type = 'play';
 
@@ -255,6 +256,10 @@ CREATE TABLE IF NOT EXISTS sessions (
     stuck_repeat           BOOLEAN DEFAULT FALSE  -- same track ≥8× in a row naturally — likely left looping
 );
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS stuck_repeat BOOLEAN DEFAULT FALSE;
+-- Phase 9d: session chaos — mean cosine DISTANCE between consecutive plays' artist tag vectors (0 = coherent, 1 = jarring).
+-- An attribute, not a shape: shape describes structure, chaos describes coherence. NULL when too few tagged pairs.
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS chaos DOUBLE;
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS chaos_pairs INTEGER;
 
 CREATE TABLE IF NOT EXISTS play_sessions (
     play_id              UUID,
@@ -593,3 +598,21 @@ CREATE OR REPLACE VIEW artist_obscurity AS
 SELECT artist_id, listeners, playcount, fetched_at,
        GREATEST(0.0, LEAST(1.0, 1.0 - LOG10(COALESCE(listeners, 0) + 1) / 7.0)) AS obscurity
 FROM artist_popularity;
+
+-- ------------------------------------------------------------
+-- Phase 9d — catalogue size per artist (MusicBrainz recording count) → catalogue penetration,
+-- and multi-artist credits (MusicBrainz recording by ISRC) → Best Supporting Artist, feature credit.
+-- Both additive; tracks.artist_id stays the single load-bearing attribution.
+-- ------------------------------------------------------------
+ALTER TABLE artists ADD COLUMN IF NOT EXISTS catalogue_tracks INTEGER;      -- MusicBrainz recording-count (a proxy: includes live/remix recordings)
+ALTER TABLE artists ADD COLUMN IF NOT EXISTS catalogue_fetched_at TIMESTAMPTZ;
+CREATE TABLE IF NOT EXISTS track_credits (
+    track_id      VARCHAR,
+    artist_id     VARCHAR,       -- resolved to a known artist_id where the name matches, else NULL
+    artist_name   VARCHAR,       -- as MusicBrainz credits it
+    artist_mbid   VARCHAR,
+    credit_order  INTEGER,       -- 0 = primary
+    source        VARCHAR DEFAULT 'musicbrainz',
+    fetched_at    TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (track_id, credit_order)
+);

@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { periodCustom, periodForMonth, periodForYear, periodLastDays, periodReview, type Period } from '@/lib/insightQueries';
+import { periodCustom, periodForMonth, periodForWeek, periodForYear, periodLastDays, periodReview, shiftWeek, type Period } from '@/lib/insightQueries';
+import { localToday } from '@/lib/queries';
 import { useAsync, useFilter } from '@/lib/hooks';
 import { SHAPE_LABELS, albumHref, artistHref, fmtDate, fmtHours, fmtInt, fmtMinutes, fmtPct, trackHref } from '@/lib/format';
 import { Card, ErrorBox, Loading } from '@/components/Card';
@@ -14,6 +15,7 @@ import { ShareCardButton } from '@/components/ShareCard';
 import { Collage } from '@/components/Collage';
 import { yearReviewHtml } from '@/lib/exportHtml';
 import { inTauri, invoke } from '@/lib/bridge';
+import { awards, type Award } from '@/lib/awardQueries';
 
 /** One review page for any period: a year, a month, the last 30 days, or a custom range. */
 export function ReviewPage() {
@@ -25,17 +27,20 @@ export function ReviewPage() {
   const [customTo, setCustomTo] = useState(params.get('to') ?? '');
 
   const period: Period = useMemo(() => {
-    const y = params.get('year'), m = params.get('month'), d = params.get('days'), f = params.get('from'), t = params.get('to');
+    const y = params.get('year'), m = params.get('month'), d = params.get('days'), f = params.get('from'), t = params.get('to'), w = params.get('week');
+    if (w) return periodForWeek(w);
     if (y) return periodForYear(Number(y));
     if (m) return periodForMonth(m);
     if (f && t) return periodCustom(f, t);
     return periodLastDays(d ? Number(d) : 365);
   }, [params]);
   const { data: y, error, loading } = useAsync(() => periodReview(period, topN), [period, topN, filter]);
+  const aw = useAsync(() => awards(period), [period, filter]);
   if (error) return <ErrorBox message={error} />;
   if (!y) return <Loading />;
 
-  const mode = params.get('year') ? 'year' : params.get('month') ? 'month' : params.get('from') ? 'custom' : 'rolling';
+  const mode = params.get('week') ? 'week' : params.get('year') ? 'year' : params.get('month') ? 'month' : params.get('from') ? 'custom' : 'rolling';
+  const weekKey = params.get('week');
   const selYear = params.get('year') ? Number(params.get('year')) : params.get('month') ? Number(params.get('month')!.slice(0, 4)) : null;
   const monthsOfYear = selYear ? y.monthsAvailable.filter((k) => k.startsWith(String(selYear))).sort() : [];
   const pill = (active: boolean) => `rounded-full px-3 py-1.5 text-xs ${active ? 'bg-amber text-ink' : 'border border-line text-dust hover:text-cream'}`;
@@ -48,6 +53,7 @@ export function ReviewPage() {
         <div className="flex flex-wrap items-center gap-2">
           <button onClick={() => setParams({ days: '30' })} className={`num ${pill(mode === 'rolling' && params.get('days') === '30')}`}>Last 30 days</button>
           <button onClick={() => setParams({})} className={`num ${pill(mode === 'rolling' && !params.get('days'))}`}>Last 12 months</button>
+          <button onClick={() => setParams({ week: period.from >= '2000' && mode !== 'rolling' && mode !== 'custom' ? period.from : localToday() })} className={`num ${pill(mode === 'week')}`}>Week by week</button>
           <span className="mx-1 text-line">|</span>
           {y.yearsAvailable.map((yy) => <button key={yy} onClick={() => setParams({ year: String(yy) })} className={`num ${pill(selYear === yy && mode === 'year')}`}>{yy}</button>)}
           <span className="mx-1 text-line">|</span>
@@ -61,6 +67,16 @@ export function ReviewPage() {
             </div>
           </details>
         </div>
+        {mode === 'week' && weekKey && (
+          <div className="mt-2 flex flex-wrap items-center gap-2 text-xs">
+            <button onClick={() => setParams({ week: shiftWeek(period.from, -1) })} className="rounded-full border border-line px-3 py-1 text-dust hover:text-cream" aria-label="Previous week">← previous week</button>
+            <span className="num text-cream">{y.label}</span>
+            <button onClick={() => setParams({ week: shiftWeek(period.from, 1) })} disabled={shiftWeek(period.from, 1) > localToday()} className="rounded-full border border-line px-3 py-1 text-dust hover:text-cream disabled:opacity-30" aria-label="Next week">next week →</button>
+            <button onClick={() => setParams({ week: localToday() })} className="text-dust hover:text-cream">this week</button>
+            <input type="date" value={period.from} onChange={(e) => e.target.value && setParams({ week: e.target.value })} className="num rounded-lg border border-line bg-ink px-2 py-1" aria-label="Pick a week" />
+            <Link to="/notes" className="ml-auto text-dust underline hover:text-cream">Liner Notes for this week</Link>
+          </div>
+        )}
         {selYear && monthsOfYear.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-1.5">
             {monthsOfYear.map((k) => <button key={k} onClick={() => setParams({ month: k })} className={`num ${pill(params.get('month') === k)}`}>{new Date(Number(k.slice(0, 4)), Number(k.slice(5, 7)) - 1, 1).toLocaleDateString('en-US', { month: 'short' })}</button>)}
@@ -69,7 +85,7 @@ export function ReviewPage() {
 
         <div className="mt-8 grid items-center gap-8 md:grid-cols-[1.2fr_1fr]">
           <div>
-            <p className="text-sm text-dust">{mode === 'month' ? 'Month in Review' : mode === 'year' ? 'Year in Review' : 'In Review'} · {y.label}{loading ? ' · updating…' : ''}</p>
+            <p className="text-sm text-dust">{mode === 'week' ? 'Week in Review' : mode === 'month' ? 'Month in Review' : mode === 'year' ? 'Year in Review' : 'In Review'} · {y.label}{loading ? ' · updating…' : ''}</p>
             <h1 className="num mt-2 font-display text-6xl leading-[1.02] tracking-tight">{y.hours >= 10 ? `${fmtInt(y.hours)} hours` : fmtHours(y.hours)}</h1>
             <p className="num mt-4 max-w-md text-dust">{fmtInt(y.plays)} plays across {fmtInt(y.days)} of {fmtInt(y.spanDays)} days · {fmtInt(y.artists)} artists, {fmtInt(y.newArtists)} new to you · {fmtInt(y.tracks)} tracks · skipped {fmtPct(y.skipRate)}</p>
             {y.loudestDay && <p className="mt-4 text-sm text-dust">Loudest day: <Link to={`/day/${y.loudestDay.day}`} className="text-cream hover:text-amber">{fmtDate(y.loudestDay.day)}</Link> · {fmtMinutes(y.loudestDay.minutes)}, {fmtInt(y.loudestDay.plays)} plays.{y.longestSession ? <> Longest session: <Link to={`/day/${y.longestSession.day}`} className="text-cream hover:text-amber">{fmtDate(y.longestSession.day)}</Link>, {fmtHours(y.longestSession.hours)}, a {SHAPE_LABELS[y.longestSession.shape]?.label.toLowerCase()}.</> : null}</p>}
@@ -109,6 +125,33 @@ export function ReviewPage() {
         <Card title="Discoveries you dropped" subtitle="Burned bright, gone within 90 days.">{y.droppedDiscoveries.length ? <ul className="space-y-1 text-sm">{y.droppedDiscoveries.map((d) => <li key={d.artistId} className="flex justify-between"><Link to={artistHref(d.artistId)} className="truncate hover:text-amber">{d.artist}</Link><span className="num text-xs text-dust">{d.plays} plays</span></li>)}</ul> : <p className="text-sm text-dust">Too soon to tell, or nothing new.</p>}</Card>
         <Card title="After midnight" subtitle={`${fmtPct(y.lateShare)} of plays fell between 11 PM and 4 AM.`}>{y.canon.length ? <ul className="space-y-1 text-sm">{y.canon.map((c) => <li key={c.id} className="flex justify-between gap-2"><span className="truncate"><Link to={trackHref(c.id)} className="hover:text-amber">{c.name}</Link><span className="ml-2 text-xs text-dust">{c.artist}</span></span><span className="num shrink-0 text-xs text-dust">{c.latePlays} late</span></li>)}</ul> : <p className="text-sm text-dust">Early nights.</p>}</Card>
       </section>
+      <section className="mt-8">
+        <Card title="Superlatives" subtitle={`Awards for ${y.label}. Period-scoped, unlike Achievements — annual for a year, sillier for a month or a week.`}>
+          {aw.error ? <p className="text-sm text-coral">{aw.error}</p> : !aw.data ? <p className="text-sm text-dust">Tallying the votes…</p> : (
+            <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {aw.data.map((a) => <AwardCard key={a.id} a={a} />)}
+            </ul>
+          )}
+        </Card>
+      </section>
     </div>
   );
+}
+
+function AwardCard({ a }: { a: Award }) {
+  const inner = (
+    <>
+      <p className="text-xs text-dust">{a.title}</p>
+      {a.available && a.winner ? (
+        <>
+          <p className="mt-1 truncate font-display text-xl">{a.winner.name}</p>
+          {a.winner.sub && <p className="truncate text-xs text-dust">{a.winner.sub}</p>}
+          <p className="num mt-1 text-sm text-amber">{a.winner.stat}</p>
+          {a.runnerUp && <p className="mt-2 truncate text-[11px] text-dust">runner-up: {a.runnerUp.name} · {a.runnerUp.stat}</p>}
+        </>
+      ) : <p className="mt-1 text-sm text-dust">Not available this period{a.reason ? ` — ${a.reason}` : ''}.</p>}
+      <p className="mt-2 text-[11px] text-dust/70">{a.blurb}</p>
+    </>
+  );
+  return <li className={`rounded-xl border p-4 ${a.available ? 'border-line bg-ink/40' : 'border-line bg-ink/20 opacity-60'}`}>{a.available && a.winner?.href ? <Link to={a.winner.href} className="block hover:text-cream">{inner}</Link> : inner}</li>;
 }

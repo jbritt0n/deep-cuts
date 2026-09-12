@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { settingRaw } from '@/lib/settings';
 import { inTauri, invoke } from '@/lib/bridge';
 import { mixtapeArtists } from '@/lib/phase7Queries';
 import { curated } from '@/lib/recQueries';
@@ -8,13 +9,16 @@ import type { TrackRow } from '@/lib/types';
 /** Mixtape builder: choose the blend of engines and a length; Spotify search fills in artists you don't own. */
 export function MixtapeBuilder() {
   const { open } = usePlaylistMaker();
-  const [mix, setMix] = useState({ adjacency: 40, tag: 20, lb: 20, gaps: 20 });
+  const DEFAULT_MIX = { adjacency: 40, tag: 20, lb: 20, gaps: 20 };
+  // Phase 9c: remember the last mix (Settings → Tuning → Preferences) instead of resetting to 40/20/20/20 every time.
+  const [mix, setMix] = useState(() => { try { const raw = settingRaw('mixtape_last_mix'); const v = raw ? JSON.parse(raw) as typeof DEFAULT_MIX : null; return v && typeof v.adjacency === 'number' ? { ...DEFAULT_MIX, ...v } : DEFAULT_MIX; } catch { return DEFAULT_MIX; } });
   const [size, setSize] = useState(25);
   const [busy, setBusy] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const total = Object.values(mix).reduce((a, b) => a + b, 0) || 1;
   const set = (k: keyof typeof mix, v: number) => setMix({ ...mix, [k]: v });
   const build = async () => {
+    invoke('set_setting', { key: 'mixtape_last_mix', value: JSON.stringify(mix) }).catch(() => {});
     setBusy('Gathering candidates…'); setErr(null);
     try {
       const want = (k: keyof typeof mix) => Math.round((mix[k] / total) * size);

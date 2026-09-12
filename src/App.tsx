@@ -5,6 +5,7 @@ import { FilterContext } from './lib/hooks';
 import { loadFilter, saveFilter, setActiveFilter, type ListeningFilter } from './lib/filter';
 import { getYears } from './lib/queries';
 import { applyTheme, loadThemeId } from './lib/theme';
+import { loadSettings } from './lib/settings';
 import type { AppStatus } from './lib/types';
 import { Shell } from './components/Shell';
 import { Onboarding } from './pages/Onboarding';
@@ -16,7 +17,10 @@ import { AlbumPage } from './pages/Album';
 import { DayPage } from './pages/Day';
 import { MonthPage } from './pages/Month';
 import { SessionsPage } from './pages/Sessions';
+import { ErasPage } from './pages/Eras';
 import { InsightsPage } from './pages/Insights';
+import { ActivityPage } from './pages/Activity';
+import { SkipHallPage } from './pages/SkipHall';
 import { ReviewPage } from './pages/Review';
 import { DiscoveryPage } from './pages/Discovery';
 import { AchievementsPage } from './pages/Achievements';
@@ -42,7 +46,7 @@ export function App() {
   const [err, setErr] = useState<string | null>(null);
 
   const refresh = () => {
-    invoke<AppStatus>('get_status').then((s) => { setStatus(s); setErr(null); }).catch((e) => setErr(String(e)));
+    Promise.all([invoke<AppStatus>('get_status'), loadSettings()]).then(([s]) => { setStatus(s); setErr(null); }).catch((e) => setErr(String(e)));
     getYears().then(setYears).catch(() => {});
   };
   useEffect(() => {
@@ -81,7 +85,10 @@ export function App() {
             <Route path="/album/:id" element={<AlbumPage />} />
             <Route path="/day/:date" element={<DayPage />} />
             <Route path="/month/:key" element={<MonthPage />} />
+            <Route path="/eras" element={<ErasPage />} />
             <Route path="/insights" element={<InsightsPage />} />
+            <Route path="/activity" element={<ActivityPage />} />
+            <Route path="/notforme" element={<SkipHallPage />} />
             <Route path="/notes" element={<NotesPage />} />
             <Route path="/discover" element={<DiscoveryPage />} />
             <Route path="/achievements" element={<AchievementsPage />} />

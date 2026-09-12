@@ -8,6 +8,7 @@
  */
 import { query, num, str } from './db';
 import { playsWhere } from './filter';
+import { intSetting, numSetting } from './settings';
 
 export type GenreTag = { tag: string; artists: number; hours: number; plays: number };
 
@@ -18,7 +19,7 @@ export async function genreTags(limit = 60, q = ''): Promise<GenreTag[]> {
   if (q.trim()) { params.push(`%${q.trim().toLowerCase()}%`); filt = `AND t.tag LIKE $${params.length}`; }
   return (await query(`
     WITH owned AS (SELECT artist_id, SUM(ms_played)/3600000.0 AS hours, COUNT(*) AS plays FROM plays_resolved WHERE artist_id IS NOT NULL ${playsWhere()} GROUP BY 1),
-    tags AS (SELECT artist_id, tag, MAX(weight) AS w FROM artist_tags t WHERE weight >= 0.2 ${filt} GROUP BY 1, 2)
+    tags AS (SELECT artist_id, tag, MAX(weight) AS w FROM artist_tags t WHERE weight >= ${numSetting('tag_floor')} ${filt} GROUP BY 1, 2)
     SELECT t.tag, COUNT(DISTINCT t.artist_id) AS artists, ROUND(SUM(o.hours * t.w), 1) AS hours, SUM(o.plays) AS plays
     FROM tags t JOIN owned o USING (artist_id)
     GROUP BY 1 HAVING COUNT(DISTINCT t.artist_id) >= 2 ORDER BY hours DESC LIMIT ${limit}`, params))
@@ -55,7 +56,7 @@ export async function genreDiscover(tag: string, limit = 30): Promise<GenreCandi
              list(a.name ORDER BY COALESCE(e.match, 0.3) * o.hours DESC) AS via, list(a.artist_id ORDER BY COALESCE(e.match, 0.3) * o.hours DESC) AS via_ids
       FROM edges e JOIN seeds s ON s.artist_id = e.seed_id JOIN owned o ON o.artist_id = e.seed_id JOIN artists a ON a.artist_id = e.seed_id
       WHERE NOT EXISTS (SELECT 1 FROM owned x WHERE x.lname = lower(e.name) OR (x.mbid IS NOT NULL AND x.mbid = e.key))
-        AND NOT EXISTS (SELECT 1 FROM recommendation_feedback f WHERE f.subject_key = e.key AND f.verdict = 'dismissed' AND f.decided_at >= now() - INTERVAL 90 DAY)
+        AND NOT EXISTS (SELECT 1 FROM recommendation_feedback f WHERE f.subject_key = e.key AND f.verdict = 'dismissed' AND f.decided_at >= now() - INTERVAL ${intSetting('feedback_memory_days')} DAY)
       GROUP BY 1, 2)
     SELECT name, key, score / NULLIF(MAX(score) OVER (), 0) AS norm, via, via_ids FROM cand ORDER BY score DESC LIMIT ${limit}`, [tag])).map((r) => ({
     key: String(r.key), artist: String(r.name), score: num(r.norm),

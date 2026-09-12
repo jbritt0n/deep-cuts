@@ -1,0 +1,15 @@
+(globalThis as unknown as { window: object }).window = {};
+import { awards } from '../src/lib/awardQueries';
+import { skipHall } from '../src/lib/skipHallQueries';
+import { digDeeper } from '../src/lib/digQueries';
+import { periodForYear, periodForWeek } from '../src/lib/insightQueries';
+import { getSessionsOverview } from '../src/lib/sessionQueries';
+import { setActiveFilter } from '../src/lib/filter';
+import { primeSettings } from '../src/lib/settings';
+setActiveFilter({ attentiveOnly: true, fromYear: null, toYear: null }); primeSettings({});
+const time = async <T,>(label: string, fn: () => Promise<T>): Promise<T> => { const t0 = performance.now(); try { const r = await fn(); console.log(`✓ ${label.padEnd(24)} ${(performance.now() - t0).toFixed(0).padStart(5)} ms`); return r; } catch (e) { console.log(`✗ ${label}\n   ${String((e as Error).message ?? e).slice(0, 700)}`); throw e; } };
+const a = await time('awards 2025', () => awards(periodForYear(2025))); for (const x of a) console.log(`   ${x.title.padEnd(24)} ${x.available ? `${x.winner?.name} — ${x.winner?.stat}` : `n/a (${x.reason ?? ''})`}`);
+const w = await time('awards week', () => awards(periodForWeek('2026-09-07'))); console.log('  ', w.filter((x) => x.available).length, 'available');
+const sh = await time('skipHall', () => skipHall()); console.log(`   ${sh.rows.length} rows · tried ${sh.tried.length} · confirmed ${sh.confirmed.length}`, sh.rows.slice(0, 2).map((r) => `${r.track} ${r.skipped}/${r.shown}`).join(' · '));
+const d = await time('digDeeper', () => digDeeper('name:mitski')); console.log(`   cat ${d.catalogueTracks} played ${d.played} pen ${d.penetration?.toFixed(2)} unplayed ${d.unplayed.length} barely ${d.barelyPlayed.length} features ${d.features.length}/${d.featuredOn}`);
+const o = await time('sessionsOverview chaos', () => getSessionsOverview()); console.log(`   coverage ${(o.chaosCoverage * 100).toFixed(0)}% · shapes ${o.chaosByShape.map((x) => `${x.shape}:${x.chaos.toFixed(2)}`).join(' ')}`);

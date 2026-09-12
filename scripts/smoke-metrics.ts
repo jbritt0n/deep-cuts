@@ -1,0 +1,16 @@
+(globalThis as unknown as { window: object }).window = {};
+import * as M from '../src/lib/metricQueries';
+import { albumTracks, crateRecords, related } from '../src/lib/crateQueries';
+import { setActiveFilter } from '../src/lib/filter';
+import { primeSettings } from '../src/lib/settings';
+setActiveFilter({ attentiveOnly: true, fromYear: null, toYear: null }); primeSettings({});
+const time = async <T,>(label: string, fn: () => Promise<T>): Promise<T> => { const t0 = performance.now(); try { const r = await fn(); console.log(`✓ ${label.padEnd(24)} ${(performance.now() - t0).toFixed(0).padStart(5)} ms`); return r; } catch (e) { console.log(`✗ ${label}\n   ${String((e as Error).message ?? e).slice(0, 600)}`); throw e; } };
+const d = await time('deepCuts', M.deepCuts); console.log(`   overall ${(d.overall * 100).toFixed(0)}% · years ${d.byYear.map((y) => `${y.year}:${(y.ratio * 100).toFixed(0)}%`).join(' ')} · deepest ${d.deepest[0]?.artist} · spread ${d.spread[0]?.artist} · one-song ${d.oneSong[0]?.artist}`);
+const l = await time('albumLoyalty', () => M.albumLoyalty()); console.log('  ', l.length, l.slice(0, 2).map((x) => `${x.artist} → ${x.album} ${(x.share * 100).toFixed(0)}%`).join(' · '));
+const s = await time('silenceReport', M.silenceReport); console.log('  ', s.gaps.slice(0, 2).map((g) => `${g.days}d ${g.from}→${g.to}`).join(' · '), '|', s.byYear.map((y) => `${y.year}:${y.darkDays}/${y.totalDays}`).join(' '), '| now', s.currentGapDays);
+const v = await time('velocity', () => M.velocity()); console.log(`   ${v.series.length} weeks · last12 ${v.last12.toFixed(1)} · prior12 ${v.prior12.toFixed(1)} · all ${v.allTimeWeekly.toFixed(1)}`);
+const h = await time('deviceHandoff', M.deviceHandoff); console.log(`   multi ${(h.multiDeviceShare * 100).toFixed(0)}% · ${h.rows.slice(0, 2).map((r) => `${r.from}→${r.to} ${r.sessions}`).join(' · ')}`);
+const e = await time('explicitShare', M.explicitShare); console.log('  ', e.length, 'years');
+const recs = await crateRecords({ limit: 3 });
+const t = await time('albumTracks', () => albumTracks(recs[0].albumId)); console.log(`   ${recs[0].album}: ${t.length} tracks, #1 ${t[0]?.track} (${t[0]?.plays}×)`);
+const r = await time('related', () => related(recs[0].albumId, recs[0].artistId)); console.log(`   albums ${r.albums.length} · unknown ${r.unknown.length} · dormant ${r.dormant.length}`);

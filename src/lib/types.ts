@@ -42,6 +42,7 @@ export type SessionRow = {
   attention: string;
   interactions: number;
   unattendedMs: number;
+  chaos: number | null;        // Phase 9d: mean tag-vector distance between consecutive plays (0 coherent → 1 jarring)
 };
 export type OnThisDayRow = { year: number; plays: number; minutes: number; topArtist: string | null; topArtistId: string | null };
 export type RecordItem = { label: string; value: string; detail: string; href?: string };

@@ -4,6 +4,8 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { DEFAULT_SESSION_FILTERS, PAGE, getSessionDetail, getSessionsOverview, listSessions, type SessionFilters } from '@/lib/sessionQueries';
 import { useAsync, useDebounced, useFilter } from '@/lib/hooks';
 import { QueueButton } from '@/components/QueueButton';
+import { chaosColor, chaosWord } from '@/components/Lists';
+const sceneHue = (sc: string) => { let h = 0; for (const c of sc) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
 import { DAY_PART_LABELS, SHAPE_LABELS, SHAPE_RULES, artistHref, fmtDate, fmtHours, fmtInt, fmtMs, fmtPct, fmtTime, trackHref } from '@/lib/format';
 import { Card, Empty, ErrorBox, Loading, Sleeve, StatCard } from '@/components/Card';
 import { invoke } from '@/lib/bridge';
@@ -115,6 +117,18 @@ function SessionsOverviewPage() {
         </Card>
       </section>
 
+      <section className="mt-6">
+        <Card title="Chaos" subtitle={`How jarring your genre jumps are, session by session — the average tag-vector distance between consecutive artists (0 coherent, 1 jarring). Scored for ${fmtPct(o.chaosCoverage)} of sessions; the rest need tags.`}>
+          {o.chaosByYear.length === 0 && o.chaosByDayPart.length === 0 ? <p className="text-sm text-dust">No scored sessions yet — connect Last.fm or MusicBrainz and rebuild.</p> : (
+            <div className="grid gap-6 md:grid-cols-3">
+              <div><p className="mb-2 text-xs text-dust">By year — more or less coherent over time</p>{o.chaosByYear.length > 1 ? <YearLines rows={o.chaosByYear} series={[{ key: 'c', label: 'Chaos', color: C.coral, values: o.chaosByYear.map((y) => y.chaos), format: (v) => v.toFixed(2) }]} /> : <p className="text-sm text-dust">Needs two years.</p>}</div>
+              <div><p className="mb-2 text-xs text-dust">By time of day</p><RateBars data={['morning', 'midday', 'evening', 'night', 'late'].map((k) => o.chaosByDayPart.find((d) => d.dayPart === k)).filter(Boolean).map((d) => ({ label: DAY_PART_LABELS[d!.dayPart], value: d!.chaos, note: `${fmtInt(d!.sessions)} sessions` }))} format={(v) => v.toFixed(2)} /></div>
+              <div><p className="mb-2 text-xs text-dust">By shape — album rides should sit low, shuffle wanders high</p><RateBars data={o.chaosByShape.map((x) => ({ label: SHAPE_LABELS[x.shape]?.label ?? x.shape, value: x.chaos, note: `${fmtInt(x.sessions)} sessions` }))} format={(v) => v.toFixed(2)} /></div>
+            </div>
+          )}
+        </Card>
+      </section>
+
       <section className="mt-6 grid gap-6 md:grid-cols-2">
         <Card title="Skip forensics" subtitle="Where and when you bail.">
           <p className="mb-2 text-xs text-dust">By time of day</p>
@@ -141,7 +155,7 @@ function SessionsOverviewPage() {
             <Sel value={f.platform ?? ''} onChange={(v) => set({ platform: v || null })} label="Any device" options={o.platforms.map((p) => [p, p])} />
             <Sel value={f.attention ?? ''} onChange={(v) => set({ attention: v || null })} label="Any attention" options={[['active', 'Active'], ['drifting', 'Drifting'], ['unattended', 'Unattended']]} />
             <Sel value={String(f.minTracks)} onChange={(v) => set({ minTracks: Number(v) })} label="" options={[['1', '1+ plays'], ['3', '3+ plays'], ['6', '6+ plays'], ['12', '12+ plays'], ['30', '30+ plays']]} />
-            <Sel value={f.sort} onChange={(v) => set({ sort: v as SessionFilters['sort'] })} label="" options={[['recent', 'Most recent'], ['oldest', 'Oldest first'], ['longest', 'Longest'], ['most_tracks', 'Most plays'], ['skippiest', 'Skippiest']]} />
+            <Sel value={f.sort} onChange={(v) => set({ sort: v as SessionFilters['sort'] })} label="" options={[['recent', 'Most recent'], ['oldest', 'Oldest first'], ['longest', 'Longest'], ['most_tracks', 'Most plays'], ['skippiest', 'Skippiest'], ['chaotic', 'Most chaotic'], ['smoothest', 'Smoothest']]} />
             <input value={qText} onChange={(e) => setQText(e.target.value)} placeholder="Artist or track in the session" className="rounded-full border border-line bg-transparent px-3 py-1.5 text-dust placeholder:text-dust/60 focus:text-cream" />
             {(f.shape || f.dayPart || f.platform || f.attention || f.q) && <button onClick={() => { setQText(''); setF(DEFAULT_SESSION_FILTERS); }} className="text-dust hover:text-cream">clear</button>}
           </div>
@@ -210,6 +224,15 @@ function SessionDetailPage({ id }: { id: string }) {
         <StatCard label="Repeats" value={fmtPct(s.repeatRate)} />
         <StatCard label="Variety" value={s.artistEntropy.toFixed(1)} footnote="artist entropy, bits" />
       </section>
+      {s.chaos != null && (
+        <section className="mt-4 rounded-2xl border border-line bg-surface p-4">
+          <div className="flex flex-wrap items-baseline justify-between gap-2"><p className="text-sm"><span className="font-display text-xl" style={{ color: chaosColor(s.chaos) }}>{s.chaos.toFixed(2)}</span> <span className="text-dust">chaos · {chaosWord(s.chaos)}</span></p><p className="text-xs text-dust">Each segment is one play, coloured by the artist's scene family; a colour change is a genre jump. Chaos is the average tag-vector distance across those jumps.</p></div>
+          <div className="mt-3 flex h-6 w-full overflow-hidden rounded-md" role="img" aria-label="Genre transitions play by play">
+            {d.plays.map((p) => <span key={p.position} title={`${p.track} — ${p.artist}${p.scene ? ` · ${p.scene}` : ' · no scene'}`} className="min-w-[2px] flex-1 border-r border-ink/60" style={{ background: p.scene ? `hsl(${sceneHue(p.scene)} 40% 45%)` : 'transparent', backgroundImage: p.scene ? undefined : 'repeating-linear-gradient(45deg, transparent 0 3px, rgba(255,255,255,.08) 3px 6px)' }} />)}
+          </div>
+          <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-dust">{[...new Set(d.plays.map((p) => p.scene).filter(Boolean))].map((sc) => <span key={sc} className="flex items-center gap-1 capitalize"><span className="inline-block h-2 w-2 rounded-sm" style={{ background: `hsl(${sceneHue(sc!)} 40% 45%)` }} />{sc!.replace('-', ' ')}</span>)}{d.plays.some((p) => !p.scene) && <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm border border-line" />no scene yet</span>}</div>
+        </section>
+      )}
       <section className="mt-6 grid gap-6 lg:grid-cols-[1.5fr_1fr]">
         <Card title="Run-through" subtitle="Bar length is how long each play ran. Red is a skip, violet is autoplay you weren't there for.">
           <ol className="divide-y divide-line/60">

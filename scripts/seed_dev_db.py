@@ -17,7 +17,7 @@ while t < dt.datetime(2031, 1, 1, tzinfo=dt.timezone.utc):
 con.executemany("INSERT INTO tz_offsets VALUES (?,?,?)", rows)
 con.execute("INSERT INTO app_meta (key,value) VALUES ('timezone',?) ON CONFLICT (key) DO UPDATE SET value=excluded.value", [ZONE])
 con.execute(rd('demo_seed.sql'))
-for f in ('entity_resolution.sql', 'compute_sessions.sql', 'compute_milestones.sql'): con.execute(rd(f))
+con.execute(rd('entity_resolution.sql'))
 # Phase 9b dev-only enrichment stand-ins, so genre threads and The Crate have data before any connector runs.
 # Tags follow the scene vocabulary in compute_insights.sql; listener counts are invented but shaped like Last.fm's.
 TAGS = {'floating points': [('electronic', .9), ('ambient', .5)], 'little simz': [('hip-hop', .95)], 'mitski': [('indie rock', .9), ('indie', .6)], 'khruangbin': [('psychedelic', .8), ('funk', .5)],
@@ -31,7 +31,15 @@ for a, tags in TAGS.items():
 for a, n in POP.items():
     con.execute("INSERT INTO artist_popularity (artist_id, listeners, playcount) VALUES (?, ?, ?) ON CONFLICT DO NOTHING", [f'name:{a}', n, n * 40])
     con.execute("INSERT INTO artist_popularity_history (artist_id, listeners, playcount) VALUES (?, ?, ?)", [f'name:{a}', n, n * 40])
-con.execute(rd('compute_insights.sql'))
+for f in ('compute_sessions.sql', 'compute_milestones.sql', 'compute_insights.sql'): con.execute(rd(f))  # tags must exist before sessions so chaos can score
+# Phase 9d dev stand-ins: catalogue sizes (≈3× the songs heard) and a few feature credits, so Dig Deeper / Superlatives render.
+con.execute("UPDATE artists SET catalogue_tracks = 3 * (SELECT COUNT(DISTINCT track_id) FROM plays_resolved p WHERE p.artist_id = artists.artist_id), catalogue_fetched_at = now()")
+feat = con.execute("SELECT t.track_id, t.artist_id, a.name FROM tracks t JOIN artists a USING (artist_id) WHERE t.track_id NOT LIKE 'local:%' ORDER BY t.track_id LIMIT 6").fetchall()
+others = con.execute("SELECT artist_id, name FROM artists ORDER BY name LIMIT 6").fetchall()
+for (tid, aid, name), (oid, oname) in zip(feat, others):
+    if oid == aid: continue
+    con.execute("INSERT INTO track_credits (track_id, artist_id, artist_name, credit_order) VALUES (?, ?, ?, 0) ON CONFLICT DO NOTHING", [tid, aid, name])
+    con.execute("INSERT INTO track_credits (track_id, artist_id, artist_name, credit_order) VALUES (?, ?, ?, 1) ON CONFLICT DO NOTHING", [tid, oid, oname])
 # Heard in the Wild: one capture of the owner's own latest play (must be dropped), then genuine ones.
 p = con.execute("SELECT track_name, artist_name, played_at_utc, ms_played FROM plays_resolved ORDER BY played_at_utc DESC LIMIT 1").fetchone()
 end = p[2] if p[2].tzinfo else p[2].replace(tzinfo=dt.timezone.utc)

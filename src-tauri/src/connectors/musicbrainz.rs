@@ -111,3 +111,63 @@ pub fn enrich_relations(db: &Db, max_artists: usize) -> Result<usize> {
     if n > 0 { db.log_activity("musicbrainz", "info", &format!("Relationships and releases for {n} artists"), None); }
     Ok(n)
 }
+
+/// Phase 9d — catalogue size per artist (summary §3.4): MusicBrainz's `recording-count` for the artist, from a
+/// single `recording?artist=<mbid>&limit=1` browse call. A proxy — it counts live takes and remixes as separate
+/// recordings — so the UI says "of roughly N". Most-played resolved artists first; refreshed after 180 days.
+pub fn enrich_catalogue(db: &Db, max_artists: usize) -> Result<usize> {
+    let mb = Mb::new()?;
+    let rows = db.query(&format!(
+        "SELECT a.artist_id, a.mbid FROM artists a JOIN (SELECT artist_id, COUNT(*) c FROM plays_resolved GROUP BY 1) p USING (artist_id)
+         WHERE a.mbid IS NOT NULL AND (a.catalogue_fetched_at IS NULL OR a.catalogue_fetched_at < now() - INTERVAL 180 DAY)
+           AND NOT EXISTS (SELECT 1 FROM api_calls c WHERE c.service = 'musicbrainz' AND c.endpoint = 'cat:' || a.mbid AND c.called_at >= now() - INTERVAL 7 DAY)
+         ORDER BY (a.catalogue_fetched_at IS NULL) DESC, p.c DESC LIMIT {max_artists}"), &[])?;
+    let mut n = 0;
+    for r in rows {
+        let (Some(id), Some(mbid)) = (r.get("artist_id").and_then(|v| v.as_str()), r.get("mbid").and_then(|v| v.as_str())) else { continue };
+        let v = match mb.get(db, &format!("recording?artist={mbid}&limit=1&fmt=json")) { Ok(v) => v, Err(e) => { set_state(db, "musicbrainz", "error", None, Some(&e.to_string())); break; } };
+        db.exec("INSERT INTO api_calls (service, endpoint, status) VALUES ('musicbrainz', ?, 200)", &[json!(format!("cat:{mbid}"))])?;
+        let Some(count) = v["recording-count"].as_i64() else { continue };
+        db.exec("UPDATE artists SET catalogue_tracks = ?, catalogue_fetched_at = now() WHERE artist_id = ?", &[json!(count), json!(id)])?;
+        n += 1;
+    }
+    if n > 0 { db.log_activity("musicbrainz", "info", &format!("Catalogue sizes for {n} artists"), None); }
+    Ok(n)
+}
+
+/// Phase 9d — multi-artist credits (design brief §2): look a recording up by ISRC and write one `track_credits`
+/// row per credited artist, in credit order. `tracks.artist_id` is untouched — this is additive. Names are resolved
+/// to a known `artist_id` by lower-cased name / alias where possible; the rest keep the MusicBrainz name + MBID.
+/// Coverage caveat: not every recording has an ISRC in MusicBrainz, and some joint acts are credited as one artist.
+pub fn enrich_credits(db: &Db, max_tracks: usize) -> Result<usize> {
+    let mb = Mb::new()?;
+    let rows = db.query(&format!(
+        "SELECT t.track_id, t.isrc FROM tracks t JOIN (SELECT track_id, COUNT(*) c FROM plays_resolved GROUP BY 1) p USING (track_id)
+         WHERE t.isrc IS NOT NULL AND t.track_id NOT LIKE 'local:%'
+           AND NOT EXISTS (SELECT 1 FROM track_credits tc WHERE tc.track_id = t.track_id)
+           AND NOT EXISTS (SELECT 1 FROM api_calls c WHERE c.service = 'musicbrainz' AND c.endpoint = 'isrc:' || t.isrc)
+         ORDER BY p.c DESC LIMIT {max_tracks}"), &[])?;
+    let mut n = 0;
+    for r in rows {
+        let (Some(id), Some(isrc)) = (r.get("track_id").and_then(|v| v.as_str()), r.get("isrc").and_then(|v| v.as_str())) else { continue };
+        let v = match mb.get(db, &format!("recording?query=isrc:{isrc}&limit=1&fmt=json")) { Ok(v) => v, Err(e) => { set_state(db, "musicbrainz", "error", None, Some(&e.to_string())); break; } };
+        // remember we looked, so an ISRC MusicBrainz doesn't know can't be retried forever
+        db.exec("INSERT INTO api_calls (service, endpoint, status) VALUES ('musicbrainz', ?, 200)", &[json!(format!("isrc:{isrc}"))])?;
+        let Some(rec) = v["recordings"].as_array().and_then(|a| a.first()) else { continue };
+        let credits = rec["artist-credit"].as_array().cloned().unwrap_or_default();
+        if credits.is_empty() { continue; }
+        for (i, c) in credits.iter().enumerate() {
+            let name = c["name"].as_str().or(c["artist"]["name"].as_str()).unwrap_or("").to_string();
+            if name.is_empty() { continue; }
+            let cmbid = c["artist"]["id"].as_str().map(str::to_string);
+            let resolved = db.query("SELECT artist_id FROM artists WHERE lower(name) = lower(?) OR (mbid IS NOT NULL AND mbid = ?) UNION SELECT artist_id FROM artist_aliases WHERE lower(alias_name) = lower(?) LIMIT 1",
+                &[json!(name), json!(cmbid.clone().unwrap_or_default()), json!(name)]).ok()
+                .and_then(|rs| rs.first().and_then(|m| m.get("artist_id")).and_then(|x| x.as_str().map(str::to_string)));
+            db.exec("INSERT INTO track_credits (track_id, artist_id, artist_name, artist_mbid, credit_order) VALUES (?, ?, ?, ?, ?) ON CONFLICT (track_id, credit_order) DO UPDATE SET artist_id = excluded.artist_id, artist_name = excluded.artist_name, artist_mbid = excluded.artist_mbid, fetched_at = now()",
+                &[json!(id), json!(resolved), json!(name), json!(cmbid), json!(i as i64)])?;
+        }
+        n += 1;
+    }
+    if n > 0 { db.log_activity("musicbrainz", "info", &format!("Artist credits for {n} tracks"), None); }
+    Ok(n)
+}

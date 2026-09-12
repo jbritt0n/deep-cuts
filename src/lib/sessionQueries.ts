@@ -13,7 +13,7 @@ export type SessionFilters = {
   attention: string | null;
   minTracks: number;
   q: string;                 // Phase 8 (§3.4): artist or track name contained in the session
-  sort: 'recent' | 'oldest' | 'longest' | 'most_tracks' | 'skippiest';
+  sort: 'recent' | 'oldest' | 'longest' | 'most_tracks' | 'skippiest' | 'chaotic' | 'smoothest';
   page: number;
 };
 export const DEFAULT_SESSION_FILTERS: SessionFilters = { shape: null, dayPart: null, platform: null, attention: null, minTracks: 3, q: '', sort: 'recent', page: 0 };
@@ -41,7 +41,7 @@ const SESSION_COLS = `
   session_shape AS shape, opening_track AS "openingTrack", closing_track AS "closingTrack", platform,
   ROUND(completion_rate, 3) AS "completionRate", completion_source AS "completionSource", ROUND(skip_rate, 3) AS "skipRate",
   ROUND(repeat_rate, 3) AS "repeatRate", ROUND(novelty_rate, 3) AS "noveltyRate", ROUND(artist_entropy, 2) AS "artistEntropy",
-  day_part AS "dayPart", album_ride AS "albumRide", attention, interaction_count AS interactions, unattended_ms AS "unattendedMs"`;
+  day_part AS "dayPart", album_ride AS "albumRide", attention, interaction_count AS interactions, unattended_ms AS "unattendedMs", ROUND(chaos, 3) AS chaos`;
 
 export const toSessionRow = (r: Record<string, unknown>): SessionRow => ({
   sessionId: String(r.sessionId), startAt: String(r.startAt), endAt: String(r.endAt),
@@ -51,6 +51,7 @@ export const toSessionRow = (r: Record<string, unknown>): SessionRow => ({
   repeatRate: num(r.repeatRate), noveltyRate: num(r.noveltyRate), artistEntropy: num(r.artistEntropy),
   dayPart: String(r.dayPart ?? ''), albumRide: Boolean(r.albumRide),
   attention: String(r.attention ?? 'active'), interactions: num(r.interactions), unattendedMs: num(r.unattendedMs),
+  chaos: r.chaos == null ? null : num(r.chaos),
   topArtists: Array.isArray(r.topArtists) ? (r.topArtists as unknown[]).map(String) : undefined,
 });
 
@@ -65,6 +66,10 @@ export type SessionsOverview = {
   byYear: { year: number; sessions: number; medianMin: number; completion: number; skipRate: number; noveltyRate: number; attendedHours: number; unattendedHours: number }[];
   skipByDayPart: { dayPart: string; skipRate: number; plays: number }[];
   skipByPlatform: { platform: string; skipRate: number; plays: number }[];
+  chaosByYear: { year: number; chaos: number; sessions: number }[];
+  chaosByDayPart: { dayPart: string; chaos: number; sessions: number }[];
+  chaosByShape: { shape: string; chaos: number; sessions: number }[];
+  chaosCoverage: number;
   openers: { trackId: string; track: string; artist: string; count: number }[];
   closers: { trackId: string; track: string; artist: string; count: number }[];
   morningOpeners: { trackId: string; track: string; artist: string; count: number }[];
@@ -129,6 +134,11 @@ export async function getSessionsOverview(): Promise<SessionsOverview> {
     FROM plays_resolved p WHERE 1=1 ${PW} GROUP BY 1 HAVING COUNT(*) >= 200 ORDER BY plays DESC`))
     .map((r) => ({ platform: String(r.fam), skipRate: num(r.skip_rate), plays: num(r.plays) }));
 
+  // Phase 9d: chaos rollups (sessions with a score; coverage = share of 3+-track sessions scored, which grows as tags arrive)
+  const chaosByYear = (await query(`SELECT EXTRACT(year FROM start_at)::INT AS y, AVG(chaos) AS c, COUNT(chaos) AS n FROM sessions s WHERE track_count >= 3 AND chaos IS NOT NULL ${SW} GROUP BY 1 HAVING COUNT(chaos) >= 10 ORDER BY 1`)).map((r) => ({ year: num(r.y), chaos: num(r.c), sessions: num(r.n) }));
+  const chaosByDayPart = (await query(`SELECT day_part, AVG(chaos) AS c, COUNT(chaos) AS n FROM sessions s WHERE track_count >= 3 AND chaos IS NOT NULL ${SW} GROUP BY 1`)).map((r) => ({ dayPart: String(r.day_part), chaos: num(r.c), sessions: num(r.n) }));
+  const chaosByShape = (await query(`SELECT session_shape, AVG(chaos) AS c, COUNT(chaos) AS n FROM sessions s WHERE track_count >= 3 AND chaos IS NOT NULL ${SW} GROUP BY 1 HAVING COUNT(chaos) >= 5 ORDER BY c DESC`)).map((r) => ({ shape: String(r.session_shape), chaos: num(r.c), sessions: num(r.n) }));
+  const [cov] = await query(`SELECT COUNT(chaos) * 1.0 / NULLIF(COUNT(*), 0) AS c FROM sessions s WHERE track_count >= 3 ${SW}`);
   const edge = (col: 'opening_track_id' | 'closing_track_id', extra = '') => query(`
     SELECT s.${col} AS id, t.name AS track, a.name AS artist, COUNT(*) AS count
     FROM sessions s JOIN tracks t ON t.track_id = s.${col} LEFT JOIN artists a ON a.artist_id = t.artist_id
@@ -145,6 +155,7 @@ export async function getSessionsOverview(): Promise<SessionsOverview> {
     count: num(t?.n), medianMin: num(t?.med), p90Min: num(t?.p90), marathonCount: num(t?.marathons), avgTracks: num(t?.avg_tracks),
     completion: num(t?.completion), skipRate: num(t?.skip_rate), noveltyRate: num(t?.novelty), repeatRate: num(t?.repeat_rate),
     attention, shapes, shapesByYear, heat, lengthHist, byYear, skipByDayPart, skipByPlatform,
+    chaosByYear, chaosByDayPart, chaosByShape, chaosCoverage: num(cov?.c),
     openers, closers, morningOpeners, lateClosers, platforms,
   };
 }
@@ -161,7 +172,7 @@ export async function listSessions(f: SessionFilters): Promise<{ rows: SessionRo
     parts.push(`EXISTS (SELECT 1 FROM play_sessions ps JOIN plays_resolved p USING (play_id) WHERE ps.session_id = sessions.session_id AND (lower(p.artist_name) LIKE $${params.length} OR lower(p.track_name) LIKE $${params.length}))`);
   }
   const where = `WHERE ${parts.join(' AND ')} ${sessionsWhere()}`;
-  const order = { recent: 'start_at DESC', oldest: 'start_at ASC', longest: 'total_ms DESC', most_tracks: 'track_count DESC', skippiest: 'skip_rate DESC, track_count DESC' }[f.sort];
+  const order = { recent: 'start_at DESC', oldest: 'start_at ASC', longest: 'total_ms DESC', most_tracks: 'track_count DESC', skippiest: 'skip_rate DESC, track_count DESC', chaotic: 'chaos DESC NULLS LAST, track_count DESC', smoothest: 'chaos ASC NULLS LAST, track_count DESC' }[f.sort];
   // Top artists per session (by plays) for the card face — computed only for the page being shown.
   const rows = (await query(`
     WITH page AS (SELECT * FROM sessions ${where} ORDER BY ${order} LIMIT ${PAGE} OFFSET ${f.page * PAGE}),
@@ -177,7 +188,7 @@ export async function listSessions(f: SessionFilters): Promise<{ rows: SessionRo
 
 export type SessionDetail = {
   session: SessionRow;
-  plays: { position: number; playedAt: string; trackId: string | null; track: string; artistId: string | null; artist: string; album: string | null; msPlayed: number; skipped: boolean; attended: boolean; isFirstPlay: boolean; startReason: string | null; endReason: string | null }[];
+  plays: { position: number; playedAt: string; trackId: string | null; track: string; artistId: string | null; artist: string; album: string | null; msPlayed: number; skipped: boolean; attended: boolean; isFirstPlay: boolean; startReason: string | null; endReason: string | null; scene: string | null }[];
   artists: { artistId: string; artist: string; plays: number }[];
 };
 
@@ -187,12 +198,13 @@ export async function getSessionDetail(sessionId: string): Promise<SessionDetail
   const plays = (await query(`
     SELECT ps.position_in_session AS position, CAST(p.played_at AS VARCHAR) AS "playedAt", p.track_id AS "trackId", p.track_name AS track,
            p.artist_id AS "artistId", p.artist_name AS artist, p.album_name AS album, p.ms_played AS "msPlayed", p.was_skipped AS skipped,
-           p.attended, p.is_first_play AS "isFirstPlay", p.start_reason AS "startReason", p.end_reason AS "endReason"
+           p.attended, p.is_first_play AS "isFirstPlay", p.start_reason AS "startReason", p.end_reason AS "endReason",
+           (SELECT arg_max(scene, weight) FROM artist_scene sc WHERE sc.artist_id = p.artist_id) AS scene
     FROM play_sessions ps JOIN plays_resolved p USING (play_id)
     WHERE CAST(ps.session_id AS VARCHAR) = $1 ORDER BY ps.position_in_session`, [sessionId])).map((r) => ({
       position: num(r.position), playedAt: String(r.playedAt), trackId: str(r.trackId), track: String(r.track), artistId: str(r.artistId),
       artist: String(r.artist ?? ''), album: str(r.album), msPlayed: num(r.msPlayed), skipped: Boolean(r.skipped), attended: Boolean(r.attended),
-      isFirstPlay: Boolean(r.isFirstPlay), startReason: str(r.startReason), endReason: str(r.endReason),
+      isFirstPlay: Boolean(r.isFirstPlay), startReason: str(r.startReason), endReason: str(r.endReason), scene: str(r.scene),
     }));
   const artists = (await query(`
     SELECT p.artist_id AS "artistId", p.artist_name AS artist, COUNT(*) AS plays

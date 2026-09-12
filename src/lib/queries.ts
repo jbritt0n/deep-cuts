@@ -55,7 +55,8 @@ const SESSION_COLS = `
   album_ride                  AS "albumRide",
   attention,
   interaction_count           AS "interactions",
-  unattended_ms               AS "unattendedMs"`;
+  unattended_ms               AS "unattendedMs",
+  ROUND(chaos, 3)             AS chaos`;
 
 const TRACK_ROW = `
   track_id AS "trackId", track_name AS track, artist_id AS "artistId", artist_name AS artist,
@@ -471,6 +472,7 @@ const toSessionRow = (r: Record<string, unknown>): SessionRow => ({
   repeatRate: num(r.repeatRate), noveltyRate: num(r.noveltyRate), artistEntropy: num(r.artistEntropy),
   dayPart: String(r.dayPart ?? ''), albumRide: Boolean(r.albumRide),
   attention: String(r.attention ?? 'active'), interactions: num(r.interactions), unattendedMs: num(r.unattendedMs),
+  chaos: r.chaos == null ? null : num(r.chaos),
 });
 
 export { albumHref, artistHref };

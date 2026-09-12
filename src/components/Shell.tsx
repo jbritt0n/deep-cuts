@@ -10,6 +10,7 @@ const NAV: { to: string; label: string; group?: string }[] = [
   { to: '/library', label: 'Library' },
   { to: '/crate', label: 'The Crate' },
   { to: '/sessions', label: 'Sessions', group: 'Understand' },
+  { to: '/eras', label: 'Eras' },
   { to: '/insights', label: 'Insights' },
   { to: '/notes', label: 'Liner Notes' },
   { to: '/review', label: 'In Review' },
@@ -17,11 +18,13 @@ const NAV: { to: string; label: string; group?: string }[] = [
   { to: '/moods', label: 'Moods' },
   { to: '/drift', label: 'Taste drift' },
   { to: '/achievements', label: 'Achievements' },
+  { to: '/notforme', label: 'Not for me' },
   { to: '/discover', label: 'Discover', group: 'Act' },
   { to: '/wild', label: 'Heard in the Wild' },
   { to: '/blend', label: 'Blend' },
   { to: '/services', label: 'Services', group: 'App' },
   { to: '/settings', label: 'Settings' },
+  { to: '/activity', label: 'Activity' },
 ];
 
 export function Shell({ status }: { status: AppStatus }) {

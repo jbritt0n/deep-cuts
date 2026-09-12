@@ -70,7 +70,9 @@ pub fn start(app: AppHandle) {
             run_blocking(&a, "musicbrainz", |st| {
                 let connected = st.real.query("SELECT status FROM connector_state WHERE service = 'musicbrainz'", &[])
                     .ok().and_then(|r| r.first().and_then(|m| m.get("status")).and_then(|v| v.as_str().map(str::to_string)));
-                if connected.as_deref() == Some("connected") { musicbrainz::resolve_batch(&st.real, 30)?; musicbrainz::enrich_relations(&st.real, 10)?; crate::connectors::coverart::enrich_batch(&st.real, 10)?; crate::connectors::wikidata::enrich_origin(&st.real, 15)?; }
+                if connected.as_deref() == Some("connected") { musicbrainz::resolve_batch(&st.real, 30)?; musicbrainz::enrich_relations(&st.real, 10)?; crate::connectors::coverart::enrich_batch(&st.real, 10)?; crate::connectors::wikidata::enrich_origin(&st.real, 15)?;
+                    // Phase 9d: catalogue sizes (1 call/artist) and ISRC credits (1 call/track), both inside the same 1 req/s budget
+                    musicbrainz::enrich_catalogue(&st.real, 8)?; musicbrainz::enrich_credits(&st.real, 12)?; }
                 let lb = st.real.query("SELECT status FROM connector_state WHERE service = 'listenbrainz'", &[]).ok().and_then(|r| r.first().and_then(|m| m.get("status")).and_then(|v| v.as_str().map(str::to_string)));
                 if lb.as_deref() == Some("connected") { crate::connectors::listenbrainz::enrich_similar(&st.real, 8)?; }
                 Ok(())
@@ -86,7 +88,9 @@ pub fn start(app: AppHandle) {
         loop {
             run_blocking(&a, "lyrics", |st| {
                 let on = st.real.query("SELECT value FROM app_meta WHERE key = 'lyrics_enabled'", &[]).ok().and_then(|r| r.first().and_then(|m| m.get("value")).and_then(|v| v.as_str().map(|s| s == "true"))).unwrap_or(false);
-                if on { crate::connectors::lyrics::enrich_batch(&st.real, 40)?; }
+                // Phase 9c: batch size is a setting (10–100, default 40)
+                let batch = st.real.query("SELECT value FROM app_meta WHERE key = 'lyrics_batch'", &[]).ok().and_then(|r| r.first().and_then(|m| m.get("value")).and_then(|v| v.as_str()).and_then(|v| v.parse::<usize>().ok())).map(|v| v.clamp(10, 100)).unwrap_or(40);
+                if on { crate::connectors::lyrics::enrich_batch(&st.real, batch)?; }
                 Ok(())
             }).await;
             tokio::time::sleep(Duration::from_secs(900)).await;

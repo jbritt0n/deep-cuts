@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAsync, useFilter } from '@/lib/hooks';
-import { crateRecords, crateSections, crateSummary, type CrateRecord, type CrateSort, type Shelf } from '@/lib/crateQueries';
+import { albumTracks, crateRecords, crateSections, crateSummary, related, type CrateRecord, type CrateSort, type Shelf } from '@/lib/crateQueries';
+import { invoke } from '@/lib/bridge';
+import { QueueButton, useQueue } from '@/components/QueueButton';
 import { albumHref, artistHref, fmtDate, fmtHours, fmtInt, trackHref } from '@/lib/format';
 import { Card, ErrorBox, Loading, Sleeve } from '@/components/Card';
 import { CoverTile } from '@/components/Collage';
-import { QueueButton } from '@/components/QueueButton';
 
 /**
  * Phase 9b — The Crate. Not a sorted grid: a fanned stack of records, the front one fully visible and
@@ -33,7 +34,16 @@ export function CratePage() {
   const [section, setSection] = useState<string | null>(null);
   const summary = useAsync(crateSummary, [filter]);
   const sections = useAsync(() => crateSections(shelf), [filter, shelf]);
-  const records = useAsync(() => crateRecords({ shelf, section, sort: shelf === 'backroom' && sort === 'section' ? 'obscurity' : sort }), [filter, shelf, section, sort]);
+  const [fbTick, setFbTick] = useState(0);
+  const records = useAsync(() => crateRecords({ shelf, section, sort: shelf === 'backroom' && sort === 'section' ? 'obscurity' : sort }), [filter, shelf, section, sort, fbTick]);
+  /** Skip (hide for 90 days) or keep (pin to the front for 90 days) — recommendation_feedback rows under engine 'crate'. */
+  const decide = async (r: CrateRecord, verdict: 'dismissed' | 'accepted') => {
+    await invoke('rec_feedback', { subjectType: 'album', subjectKey: r.albumId, engine: 'crate', verdict }).catch(() => {});
+    if (verdict === 'dismissed') setDeckHint(`${r.album} put away for 90 days`); else setDeckHint(`${r.album} kept up front for 90 days`);
+    setFbTick((t) => t + 1);
+  };
+  const [deckHint, setDeckHint] = useState<string | null>(null);
+  useEffect(() => { if (!deckHint) return; const t = window.setTimeout(() => setDeckHint(null), 3000); return () => window.clearTimeout(t); }, [deckHint]);
   const deck = useMemo<Item[]>(() => {
     const rs = records.data ?? [];
     if (sort !== 'section' || section || shelf === 'backroom') return rs.map((r) => ({ kind: 'record', r }));
@@ -42,10 +52,14 @@ export function CratePage() {
     return out;
   }, [records.data, sort, section, shelf]);
   const [i, setI] = useState(0);
-  useEffect(() => setI(0), [deck]);
+  useEffect(() => setI(0), [shelf, section, sort]);
+  useEffect(() => { setI((x) => Math.min(x, Math.max(0, deck.length - 1))); }, [deck.length]);
   const next = useCallback(() => setI((x) => Math.min(deck.length - 1, x + 1)), [deck.length]);
   const prev = useCallback(() => setI((x) => Math.max(0, x - 1)), []);
   const jumpTo = (sec: string) => { const k = deck.findIndex((d) => d.kind === 'divider' && d.section === sec); if (k >= 0) setI(k); };
+  const hasDividers = deck.some((d) => d.kind === 'divider');
+  const front = deck[i];
+  const currentSection = front ? (front.kind === 'divider' ? front.section : (front.r.section ?? 'unsorted')) : null;
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => { if ((e.target as HTMLElement)?.tagName === 'INPUT' || (e.target as HTMLElement)?.tagName === 'SELECT') return; if (e.key === 'ArrowRight' || e.key === ' ') { e.preventDefault(); next(); } if (e.key === 'ArrowLeft') { e.preventDefault(); prev(); } if (e.key === 'Home') setI(0); if (e.key === 'End') setI(deck.length - 1); };
     window.addEventListener('keydown', onKey); return () => window.removeEventListener('keydown', onKey);
@@ -65,30 +79,36 @@ export function CratePage() {
       <p className="mb-5 text-sm text-dust">{SHELVES.find((s) => s.id === shelf)?.blurb}</p>
 
       {sections.data && sections.data.length > 0 && (
-        <div className="mb-6 flex flex-wrap gap-1.5" aria-label="Sections">
-          <button onClick={() => setSection(null)} className={`rounded-md border-b-2 px-2 py-1 text-xs ${section === null ? 'border-amber text-cream' : 'border-line text-dust hover:text-cream'}`}>all sections</button>
-          {sections.data.map((s) => <button key={s.section} onClick={() => { if (section === null && sort === 'section' && shelf !== 'backroom') jumpTo(s.section); else setSection(s.section === 'unsorted' ? null : s.section); }} onDoubleClick={() => setSection(s.section === 'unsorted' ? null : s.section)} title={`${s.records} records · ${fmtHours(s.hours)} — click to jump, double-click to filter`} className={`rounded-md border-b-2 px-2 py-1 text-xs capitalize ${section === s.section ? 'border-amber text-cream' : 'border-line text-dust hover:text-cream'}`}>{sectionLabel(s.section)} <span className="num text-dust/70">{s.records}</span></button>)}
+        <div className="mb-6 flex items-center gap-1.5 overflow-x-auto pb-1" aria-label="Sections" role="tablist">
+          <button onClick={() => { setSection(null); setI(0); }} className={`shrink-0 rounded-md border-b-2 px-2 py-1 text-xs ${section === null && !currentSection ? 'border-amber text-cream' : 'border-line text-dust hover:text-cream'}`}>all</button>
+          {sections.data.map((s) => { const active = section === s.section || (section === null && currentSection === s.section); return (
+            <button key={s.section} role="tab" aria-selected={active} onClick={() => { if (section === null && hasDividers) jumpTo(s.section); else setSection(s.section === 'unsorted' ? null : s.section); }} onDoubleClick={() => setSection(s.section === 'unsorted' ? null : s.section)}
+              title={`${s.records} records · ${fmtHours(s.hours)} — click to jump, double-click to filter to this section only`}
+              className={`shrink-0 rounded-md border-b-2 px-2 py-1 text-xs capitalize transition-colors ${active ? 'border-amber text-cream' : 'border-line text-dust hover:text-cream'}`}>{sectionLabel(s.section)} <span className="num text-dust/70">{s.records}</span></button>
+          ); })}
+          {section && <button onClick={() => setSection(null)} className="shrink-0 px-2 py-1 text-xs text-amber hover:text-cream">× show every section</button>}
         </div>
       )}
+      {deckHint && <p className="mb-3 text-xs text-moss">{deckHint}</p>}
 
       {records.error ? <ErrorBox message={records.error} /> : !records.data ? <Loading label="Pulling the crate out…" /> : deck.length === 0 ? (
         <Card><p className="py-10 text-center text-sm text-dust">{shelf === 'backroom' ? 'No record has an obscurity score yet — connect Last.fm and give it a little while.' : shelf === 'fresh' ? 'Nothing pulled once and abandoned. You commit.' : shelf === 'rediscover' ? 'No album you loved and then left for a year. Steady.' : 'No albums under this lens.'}</p></Card>
       ) : (
-        <Stack deck={deck} i={i} next={next} prev={prev} setI={setI} />
+        <Stack deck={deck} i={i} next={next} prev={prev} setI={setI} decide={decide} />
       )}
     </div>
   );
 }
 
-function Stack({ deck, i, next, prev, setI }: { deck: Item[]; i: number; next: () => void; prev: () => void; setI: (n: number) => void }) {
+function Stack({ deck, i, next, prev, setI, decide }: { deck: Item[]; i: number; next: () => void; prev: () => void; setI: (n: number) => void; decide: (r: CrateRecord, v: 'dismissed' | 'accepted') => Promise<void> }) {
   const [leaving, setLeaving] = useState<number | null>(null);
   const flip = () => { if (i >= deck.length - 1) return; setLeaving(i); window.setTimeout(() => { setLeaving(null); next(); }, 260); };
   const behind = deck.slice(i + 1, i + 8);
-  const upcomingDivider = behind.findIndex((d) => d.kind === 'divider');
+  const nextDividerAt = deck.findIndex((d, k) => k > i && d.kind === 'divider');
   const front = deck[i];
   const recordsBefore = deck.slice(0, i).filter((d) => d.kind === 'record').length, recordsTotal = deck.filter((d) => d.kind === 'record').length;
   return (
-    <div className="grid gap-8 lg:grid-cols-[minmax(0,420px)_1fr]">
+    <div className="grid gap-8 lg:grid-cols-[minmax(0,420px)_minmax(0,1fr)]">
       <div>
         <div className="relative mx-auto h-[400px] w-full max-w-[400px] select-none" style={{ perspective: 1200 }} aria-live="polite">
           {/* the crate's back wall */}
@@ -113,11 +133,11 @@ function Stack({ deck, i, next, prev, setI }: { deck: Item[]; i: number; next: (
           <button onClick={prev} disabled={i === 0} className="rounded-full border border-line px-3 py-1 hover:text-cream disabled:opacity-30" aria-label="Previous record">← back</button>
           <span className="num">{recordsBefore + (front?.kind === 'record' ? 1 : 0)} / {recordsTotal}</span>
           <button onClick={flip} disabled={i >= deck.length - 1} className="rounded-full border border-line px-3 py-1 hover:text-cream disabled:opacity-30" aria-label="Next record">flip →</button>
-          {upcomingDivider >= 0 && behind[upcomingDivider].kind === 'divider' && <button onClick={() => setI(i + 1 + upcomingDivider)} className="ml-2 capitalize hover:text-cream">skip to {sectionLabel((behind[upcomingDivider] as { section: string }).section)} ⤴</button>}
+          {nextDividerAt > 0 && <button onClick={() => setI(nextDividerAt)} className="ml-2 capitalize hover:text-cream">skip to {sectionLabel((deck[nextDividerAt] as { section: string }).section)} ⤴</button>}
         </div>
         <p className="mt-1 text-center text-[11px] text-dust/60">click the front record or press → · ← goes back · Home / End</p>
       </div>
-      <div>{front?.kind === 'record' ? <RecordNotes r={front.r} /> : front ? <DividerNotes section={front.section} count={front.count} onSkip={next} /> : null}</div>
+      <div className="min-w-0">{front?.kind === 'record' ? <RecordNotes key={front.r.albumId} r={front.r} onSkip={() => decide(front.r, 'dismissed')} onKeep={() => decide(front.r, 'accepted')} /> : front ? <DividerNotes section={front.section} count={front.count} onSkip={next} /> : null}</div>
     </div>
   );
 }
@@ -126,19 +146,40 @@ const itemKey = (d: Item) => (d.kind === 'record' ? d.r.albumId : `div:${d.secti
 
 /** The front record: the cover with its wear and its state stamped on it, not in a sidebar. */
 function FrontCover({ r }: { r: CrateRecord }) {
-  const scuff = Math.round(r.wear * 100);
+  const w = r.wear, scuff = Math.round(w * 100);
+  // Wear as a physical thing: a pristine cover is crisp and saturated; a loved one is faded, creased along the
+  // spine, ring-worn in the middle, scuffed at the corners, with a paper-grain overlay that gets heavier.
+  const filter = `saturate(${1 - w * 0.45}) contrast(${1 - w * 0.18}) brightness(${1 - w * 0.08}) sepia(${w * 0.25})`;
+  const seed = [...r.albumId].reduce((h, c) => (h * 31 + c.charCodeAt(0)) >>> 0, 7);
   return (
-    <div className="relative overflow-hidden rounded-lg border border-line shadow-2xl">
-      <CoverTile id={r.albumId} title={r.album} subtitle={r.artist} imageUrl={r.imageUrl} textClass="text-lg" />
-      {/* wear: a ring worn into the sleeve, corner scuffs and a faded edge, all scaled to play count */}
-      <div aria-hidden className="pointer-events-none absolute inset-0" style={{ opacity: 0.15 + r.wear * 0.75, background: `radial-gradient(circle at 50% 50%, transparent 44%, rgba(255,255,255,${0.05 + r.wear * 0.2}) 46%, transparent 49%), radial-gradient(ellipse at 0% 0%, rgba(255,255,255,${r.wear * 0.25}) 0, transparent 30%), radial-gradient(ellipse at 100% 100%, rgba(255,255,255,${r.wear * 0.2}) 0, transparent 26%), linear-gradient(180deg, rgba(0,0,0,0) 80%, rgba(0,0,0,${r.wear * 0.45}))`, mixBlendMode: 'overlay' }} />
-      <div aria-hidden className="pointer-events-none absolute inset-0 rounded-lg" style={{ boxShadow: `inset 0 0 0 1px rgba(255,255,255,${0.04 + r.wear * 0.1}), inset 0 -${2 + r.wear * 10}px ${8 + r.wear * 24}px rgba(0,0,0,${0.2 + r.wear * 0.35})` }} />
+    <div className="relative overflow-hidden rounded-lg border border-line shadow-2xl" style={{ borderColor: `rgba(255,255,255,${0.08 + w * 0.12})` }}>
+      <div style={{ filter }}><CoverTile id={r.albumId} title={r.album} subtitle={r.artist} imageUrl={r.imageUrl} textClass="text-lg" /></div>
+      <svg aria-hidden className="pointer-events-none absolute inset-0 h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none">
+        <defs>
+          <filter id={`grain-${seed}`}><feTurbulence type="fractalNoise" baseFrequency="0.9" numOctaves="2" seed={seed % 100} /><feColorMatrix type="saturate" values="0" /><feComponentTransfer><feFuncA type="linear" slope={0.05 + w * 0.35} /></feComponentTransfer></filter>
+          <radialGradient id={`ring-${seed}`}><stop offset="43%" stopColor="white" stopOpacity="0" /><stop offset="46%" stopColor="white" stopOpacity={w * 0.5} /><stop offset="48%" stopColor="white" stopOpacity={w * 0.18} /><stop offset="51%" stopColor="white" stopOpacity="0" /></radialGradient>
+          <linearGradient id={`spine-${seed}`} x1="0" x2="1"><stop offset="0" stopColor="black" stopOpacity={w * 0.55} /><stop offset="0.06" stopColor="white" stopOpacity={w * 0.25} /><stop offset="0.1" stopColor="black" stopOpacity="0" /></linearGradient>
+        </defs>
+        <rect width="100" height="100" filter={`url(#grain-${seed})`} style={{ mixBlendMode: 'overlay' }} />
+        <circle cx="50" cy="50" r="50" fill={`url(#ring-${seed})`} style={{ mixBlendMode: 'screen' }} />
+        <rect width="100" height="100" fill={`url(#spine-${seed})`} />
+        {/* corner scuffs and a crease or two, drawn only once the record is actually handled */}
+        {w > 0.35 && <>
+          <path d="M0 0 L9 0 L0 9 Z" fill="white" opacity={(w - 0.35) * 0.55} />
+          <path d="M100 100 L91 100 L100 91 Z" fill="white" opacity={(w - 0.35) * 0.45} />
+          <path d="M100 0 L94 0 L100 6 Z" fill="white" opacity={(w - 0.35) * 0.3} />
+        </>}
+        {w > 0.55 && <path d={`M${20 + (seed % 30)} 0 L${25 + (seed % 30)} 100`} stroke="white" strokeWidth="0.35" opacity={(w - 0.55) * 0.9} />}
+        {w > 0.75 && <path d={`M0 ${60 + (seed % 25)} L100 ${55 + (seed % 25)}`} stroke="white" strokeWidth="0.3" opacity={(w - 0.75) * 1.2} />}
+        <rect width="100" height="100" fill="none" stroke="black" strokeWidth={0.6 + w * 2.2} opacity={0.15 + w * 0.35} />
+      </svg>
       <div className="absolute left-2 top-2 flex flex-col items-start gap-1 text-[10px]">
+        {r.kept && <span className="rounded bg-ink/85 px-1.5 py-0.5 text-moss backdrop-blur">kept up front</span>}
         {r.abandoned && <span className="rounded bg-ink/85 px-1.5 py-0.5 text-coral backdrop-blur">pulled once, never put back</span>}
         {r.rediscover && <span className="rounded bg-ink/85 px-1.5 py-0.5 text-moss backdrop-blur">loved, then left {Math.round(r.daysSilent / 365)} yr{r.daysSilent >= 730 ? 's' : ''} ago</span>}
       </div>
       <div className="absolute bottom-2 right-2 rounded bg-ink/85 px-1.5 py-0.5 text-[10px] backdrop-blur"><ObscurityStamp r={r} /></div>
-      <span className="num absolute bottom-2 left-2 rounded bg-ink/85 px-1.5 py-0.5 text-[10px] text-dust backdrop-blur" title={`${r.plays} plays — wear ${scuff}%`}>{fmtInt(r.plays)}× · {scuff}% worn</span>
+      <span className="num absolute bottom-2 left-2 rounded bg-ink/85 px-1.5 py-0.5 text-[10px] text-dust backdrop-blur" title={`${r.plays} plays — wear ${scuff}%`}>{fmtInt(r.plays)}× · {w >= 0.85 ? 'well loved' : w >= 0.6 ? 'handled' : w >= 0.3 ? 'a few spins' : 'mint'}</span>
     </div>
   );
 }
@@ -161,25 +202,73 @@ function DividerCard({ section, count, peek = false }: { section: string; count:
 }
 const hueOf = (s: string) => { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) % 360; return h; };
 
-function RecordNotes({ r }: { r: CrateRecord }) {
+function RecordNotes({ r, onSkip, onKeep }: { r: CrateRecord; onSkip: () => void; onKeep: () => void }) {
+  const { filter } = useFilter();
+  const { queueMany, connected } = useQueue();
+  const tracks = useAsync(() => albumTracks(r.albumId), [r.albumId, filter]);
+  const rel = useAsync(() => related(r.albumId, r.artistId), [r.albumId, filter]);
+  const [busy, setBusy] = useState(false);
   const coverage = r.totalTracks ? r.tracksPlayed / r.totalTracks : null;
+  const queueable = (tracks.data ?? []).filter((t) => !t.trackId.startsWith('local:'));
   return (
     <Card>
-      <p className="text-xs text-dust">{r.section ? <span className="capitalize">{sectionLabel(r.section)} · </span> : null}first pulled {fmtDate(r.firstPlayed, { month: 'short', year: 'numeric' })} · last {fmtDate(r.lastPlayed, { month: 'short', day: 'numeric', year: 'numeric' })}</p>
-      <h2 className="mt-1 font-display text-3xl leading-tight"><Link to={albumHref(r.albumId)} className="hover:text-amber">{r.album}</Link></h2>
-      <p className="mt-1 text-lg text-dust">{r.artistId ? <Link to={artistHref(r.artistId)} className="hover:text-amber">{r.artist}</Link> : r.artist}</p>
+      <p className="truncate text-xs text-dust">{r.section ? <span className="capitalize">{sectionLabel(r.section)} · </span> : null}first pulled {fmtDate(r.firstPlayed, { month: 'short', year: 'numeric' })} · last {fmtDate(r.lastPlayed, { month: 'short', day: 'numeric', year: 'numeric' })}{r.kept ? <span className="text-moss"> · kept up front</span> : ''}</p>
+      <h2 className="mt-1 break-words font-display text-3xl leading-tight"><Link to={albumHref(r.albumId)} className="hover:text-amber">{r.album}</Link></h2>
+      <p className="mt-1 truncate text-lg text-dust">{r.artistId ? <Link to={artistHref(r.artistId)} className="hover:text-amber">{r.artist}</Link> : r.artist}</p>
       <ul className="num mt-4 grid gap-3 text-sm sm:grid-cols-3">
-        <li><span className="block font-display text-2xl">{fmtInt(r.plays)}</span><span className="text-xs text-dust">plays over {r.days} day{r.days === 1 ? '' : 's'} · {fmtHours(r.hours)}</span></li>
-        <li><span className="block font-display text-2xl">{r.tracksPlayed}{r.totalTracks ? <span className="text-base text-dust"> / {r.totalTracks}</span> : ''}</span><span className="text-xs text-dust">{coverage == null ? 'tracks played' : coverage >= 0.95 ? 'played front to back' : coverage >= 0.5 ? 'most of it played' : 'barely opened'}</span></li>
-        <li><span className="block font-display text-2xl">{r.obscurity == null ? '—' : `${Math.round(r.obscurity * 100)}`}</span><span className="text-xs text-dust">{r.obscurity == null ? 'obscurity unknown yet' : `obscurity · ${compact(r.listeners ?? 0)} Last.fm listeners`}</span></li>
+        <li className="min-w-0"><span className="block font-display text-2xl">{fmtInt(r.plays)}</span><span className="text-xs text-dust">plays over {r.days} day{r.days === 1 ? '' : 's'} · {fmtHours(r.hours)}</span></li>
+        <li className="min-w-0"><span className="block font-display text-2xl">{r.tracksPlayed}{r.totalTracks ? <span className="text-base text-dust"> / {r.totalTracks}</span> : ''}</span><span className="text-xs text-dust">{coverage == null ? 'tracks played' : coverage >= 0.95 ? 'played front to back' : coverage >= 0.5 ? 'most of it played' : 'barely opened'}</span></li>
+        <li className="min-w-0"><span className="block font-display text-2xl">{r.obscurity == null ? '—' : `${Math.round(r.obscurity * 100)}`}</span><span className="text-xs text-dust">{r.obscurity == null ? 'obscurity unknown yet' : `obscurity · ${compact(r.listeners ?? 0)} Last.fm listeners`}</span></li>
       </ul>
       {(r.abandoned || r.rediscover) && <p className="mt-4 rounded-xl border border-line bg-ink/40 p-3 text-sm text-dust">{r.abandoned ? <>You pulled this once{r.plays > 1 ? ' or twice' : ''} and never came back — <span className="text-cream">{r.daysSilent} days</span> on the shelf. Worth a second spin?</> : <>You played this hard — {fmtInt(r.plays)} times — then left it for <span className="text-cream">{Math.round(r.daysSilent / 30)} months</span>. A rediscovery candidate.</>}</p>}
-      <div className="mt-5 flex flex-wrap items-center gap-3 text-sm">
-        {r.topTrackId && <span className="flex items-center gap-2 rounded-full border border-line px-3 py-1.5"><QueueButton trackId={r.topTrackId} always size={14} /><span className="text-dust">queue</span> <Link to={trackHref(r.topTrackId)} className="truncate hover:text-amber">{r.topTrack ?? 'top track'}</Link></span>}
+
+      <div className="mt-5 flex flex-wrap items-center gap-2 text-sm">
+        <button disabled={!connected || busy || !queueable.length} onClick={async () => { setBusy(true); await queueMany(queueable.map((t) => t.trackId), r.album); setBusy(false); }} title={!connected ? 'Connect Spotify in Services to queue' : `Queue all ${queueable.length} tracks, in album order`} className="rounded-full bg-amber px-4 py-1.5 font-medium text-ink disabled:opacity-40">{busy ? 'Queueing…' : `Queue the album${queueable.length ? ` · ${queueable.length}` : ''}`}</button>
         <Link to={albumHref(r.albumId)} className="rounded-full border border-line px-4 py-1.5 text-dust hover:border-dust hover:text-cream">Open album</Link>
-        {r.artistId && <Link to={artistHref(r.artistId)} className="text-xs text-dust hover:text-cream">Dig deeper into {r.artist} →</Link>}
+        <span className="ml-auto flex gap-2 text-xs">
+          <button onClick={onSkip} title="Take this record out of the crate for 90 days" className="rounded-full border border-line px-3 py-1.5 text-dust hover:border-coral hover:text-coral">Put away 90 days</button>
+          <button onClick={onKeep} disabled={r.kept} title="Keep this record at the front of the crate for 90 days" className="rounded-full border border-line px-3 py-1.5 text-dust hover:border-moss hover:text-moss disabled:border-moss/40 disabled:text-moss/60">{r.kept ? 'Kept' : 'Keep up front'}</button>
+        </span>
       </div>
+
+      <div className="mt-5">
+        <p className="mb-1 text-xs text-dust">Tracks you've played from it{tracks.data && r.totalTracks && tracks.data.length < r.totalTracks ? ` · ${r.totalTracks - tracks.data.length} never played` : ''}</p>
+        {!tracks.data ? <p className="text-sm text-dust">Reading the sleeve…</p> : (
+          <ol className="max-h-72 divide-y divide-line/60 overflow-y-auto text-sm">
+            {tracks.data.map((t) => <li key={t.trackId} className="flex items-center gap-3 py-1.5">
+              <span className="num w-6 shrink-0 text-right text-xs text-dust">{t.trackNumber ?? '·'}</span>
+              <Link to={trackHref(t.trackId)} className="min-w-0 flex-1 truncate hover:text-amber">{t.track}</Link>
+              <span className="num shrink-0 text-xs text-dust">{fmtInt(t.plays)}×{t.skipRate >= 0.3 ? <span className="text-coral"> · {Math.round(t.skipRate * 100)}% skipped</span> : ''}</span>
+              <QueueButton trackId={t.trackId} always size={13} />
+            </li>)}
+          </ol>
+        )}
+      </div>
+
+      <Related albumId={r.albumId} artist={r.artist} data={rel.data} />
     </Card>
+  );
+}
+
+/** Owner request: records adjacent to this one that you haven't opened — same artist, unknown neighbours, dormant neighbours. */
+function Related({ artist, data }: { albumId: string; artist: string; data: Awaited<ReturnType<typeof related>> | null }) {
+  if (!data) return null;
+  if (!data.albums.length && !data.unknown.length && !data.dormant.length) return <p className="mt-5 text-xs text-dust/70">Nothing adjacent yet — neighbours arrive as Last.fm / ListenBrainz similar-artist data and Spotify enrichment fill in.</p>;
+  return (
+    <div className="mt-5 border-t border-line pt-4">
+      <p className="text-xs text-dust">Nearby in the crate — things you haven't really opened</p>
+      {data.albums.length > 0 && (
+        <ul className="mt-2 grid grid-cols-3 gap-2 sm:grid-cols-6">
+          {data.albums.map((a) => <li key={a.albumId} className="min-w-0"><Link to={albumHref(a.albumId)} className="block overflow-hidden rounded-md border border-line" title={`${a.album} — ${a.reason}`}><CoverTile id={a.albumId} title={a.album} subtitle={a.artist} imageUrl={a.imageUrl} textClass="text-[10px]" /></Link><p className="mt-1 truncate text-[11px]">{a.album}</p><p className="truncate text-[10px] text-dust">{a.reason}</p></li>)}
+        </ul>
+      )}
+      {(data.unknown.length > 0 || data.dormant.length > 0) && (
+        <div className="mt-3 grid gap-3 text-sm sm:grid-cols-2">
+          {data.unknown.length > 0 && <div className="min-w-0"><p className="text-xs text-dust">Artists near {artist} you don't know yet</p><ul className="mt-1 space-y-0.5">{data.unknown.map((a) => <li key={a.key} className="flex items-baseline gap-2"><span className="truncate">{a.artist}</span><Link to={`/discover?q=${encodeURIComponent(a.artist)}`} className="shrink-0 text-[11px] text-dust hover:text-amber">discover</Link></li>)}</ul></div>}
+          {data.dormant.length > 0 && <div className="min-w-0"><p className="text-xs text-dust">Neighbours you know but haven't played in a year</p><ul className="mt-1 space-y-0.5">{data.dormant.map((a) => <li key={a.key} className="flex items-baseline gap-2">{a.artistId ? <Link to={artistHref(a.artistId)} className="truncate hover:text-amber">{a.artist}</Link> : <span className="truncate">{a.artist}</span>}{a.lastPlayed && <span className="num shrink-0 text-[11px] text-dust">last {a.lastPlayed.slice(0, 7)}</span>}</li>)}</ul></div>}
+        </div>
+      )}
+    </div>
   );
 }
 

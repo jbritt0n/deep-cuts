@@ -19,6 +19,7 @@
 import { query, num, str } from './db';
 import { playsWhere } from './filter';
 import { localToday } from './queries';
+import { numSetting } from './settings';
 
 export type ThreadWeek = { week: string; hours: number; share: number };
 export type GenreThread = {
@@ -27,6 +28,8 @@ export type GenreThread = {
 };
 export type ThreadParams = { minWeeks: number; shareFloor: number; tagFloor: number; maxThreads: number };
 export const THREAD_DEFAULTS: ThreadParams = { minWeeks: 3, shareFloor: 0.08, tagFloor: 0.2, maxThreads: 12 };
+/** Defaults with the owner's tag floor applied (Settings → Tuning). */
+const threadDefaults = (): ThreadParams => ({ ...THREAD_DEFAULTS, tagFloor: numSetting('tag_floor') });
 
 /** Contiguous runs of weeks where `share >= floor`, at least `minWeeks` long. Weeks are consecutive ISO Mondays; a missing week breaks the run. */
 export function findRuns(weeks: ThreadWeek[], floor: number, minWeeks: number): ThreadWeek[][] {
@@ -72,7 +75,7 @@ async function threadArtists(tag: string, from: string, toExclusive: string, tag
  * so the chart stays legible; the same tag can produce several threads if it rose, fell and rose again.
  */
 export async function genreThreads(params?: Partial<ThreadParams>): Promise<GenreThread[]> {
-  const p = { ...THREAD_DEFAULTS, ...(params ?? {}) };
+  const p = { ...threadDefaults(), ...(params ?? {}) };
   const rows = await tagWeekShares(p.tagFloor);
   const byTag = new Map<string, ThreadWeek[]>();
   for (const r of rows) { const arr = byTag.get(r.tag) ?? []; arr.push({ week: r.week, hours: r.hours, share: r.share }); byTag.set(r.tag, arr); }

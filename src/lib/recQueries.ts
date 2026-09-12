@@ -11,6 +11,7 @@
  * Feedback: recommendation_feedback — dismissed keys are hidden for 90 days; accepted seeds get a boost.
  */
 import { query, num, str } from './db';
+import { intSetting } from './settings';
 import { playsWhere } from './filter';
 
 export type Rec = {
@@ -25,8 +26,8 @@ export type Rec = {
   spotifySearch: string;     // fallback: search query for Spotify
 };
 
-const NOT_DISMISSED = `NOT EXISTS (SELECT 1 FROM recommendation_feedback f WHERE f.subject_key = %KEY% AND f.verdict = 'dismissed' AND f.decided_at >= now() - INTERVAL 90 DAY)`;
-const nd = (expr: string) => NOT_DISMISSED.replace('%KEY%', expr);
+const NOT_DISMISSED = () => `NOT EXISTS (SELECT 1 FROM recommendation_feedback f WHERE f.subject_key = %KEY% AND f.verdict = 'dismissed' AND f.decided_at >= now() - INTERVAL ${intSetting('feedback_memory_days')} DAY)`;
+const nd = (expr: string) => NOT_DISMISSED().replace('%KEY%', expr);
 
 /** Artists you already have, by normalised name — used to filter candidates and to weight seeds. */
 const OWNED = () => `(SELECT a.artist_id, lower(a.name) AS lname, a.mbid, SUM(p.ms_played)/3600000.0 AS hours, COUNT(*) AS plays,
@@ -126,7 +127,7 @@ export async function structural(limit = 20): Promise<Rec[]> {
   const forgotten = await query(`
     SELECT artist_id, artist_name, SUM(ms_played)/3600000.0 AS h, MAX(played_at) AS last_at, COUNT(*) AS plays
     FROM plays_resolved WHERE artist_id IS NOT NULL ${PW} GROUP BY 1, 2
-    HAVING SUM(ms_played)/3600000.0 >= 5 AND MAX(played_at) < CAST(now() AS DATE) - INTERVAL 540 DAY AND ${nd("'forgotten:' || artist_id")}
+    HAVING SUM(ms_played)/3600000.0 >= 5 AND MAX(played_at) < CAST(now() AS DATE) - INTERVAL ${intSetting('forgotten_days')} DAY AND ${nd("'forgotten:' || artist_id")}
     ORDER BY h DESC LIMIT ${limit}`);
   // (d) one-track wonders: an artist where a single track is ≥ 70% of ≥ 15 plays — you never looked past the hit
   const oneTrack = await query(`

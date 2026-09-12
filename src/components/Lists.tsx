@@ -128,6 +128,13 @@ export function OnThisDay({ data, todayLabel }: { data: OnThisDayRow[]; todayLab
   );
 }
 
+/** Phase 9d: session chaos as a dot — blue-grey calm → coral jarring. */
+export const chaosColor = (c: number) => `hsl(${Math.round(200 - c * 200)} ${Math.round(45 + c * 35)}% ${Math.round(58 - c * 8)}%)`;
+export const chaosWord = (c: number) => (c < 0.25 ? 'coherent' : c < 0.5 ? 'varied' : c < 0.75 ? 'scattered' : 'jarring');
+export function ChaosDot({ chaos }: { chaos: number }) {
+  return <span className="ml-1 inline-flex items-center gap-1 text-[10px] text-dust" title={`Chaos ${chaos.toFixed(2)} — ${chaosWord(chaos)}: how far apart consecutive artists' genres sit`}><span className="inline-block h-2 w-2 rounded-full" style={{ background: chaosColor(chaos) }} />{chaosWord(chaos)}</span>;
+}
+
 export function ShapeDot({ shape }: { shape: string }) {
   return <span className="inline-block h-2 w-2 rounded-full" style={{ background: SHAPE_LABELS[shape]?.color ?? C.dust }} />;
 }
@@ -138,7 +145,7 @@ export function SessionCard({ s, href }: { s: SessionRow; href?: string }) {
     <>
       <div className="flex items-baseline justify-between gap-3">
         <p className="num text-xs text-dust"><span className="text-cream/80">{fmtDate(s.startAt, { month: 'short', day: 'numeric', year: 'numeric' })}</span> · {fmtTime(s.startAt)} → {fmtTime(s.endAt)} · {DAY_PART_LABELS[s.dayPart] ?? s.dayPart}</p>
-        <span className="flex items-center gap-1.5 text-xs"><ShapeDot shape={s.shape} /><span title={meta.note}>{meta.label}</span></span>
+        <span className="flex items-center gap-1.5 text-xs"><ShapeDot shape={s.shape} /><span title={meta.note}>{meta.label}</span>{s.chaos != null && <ChaosDot chaos={s.chaos} />}</span>
       </div>
       <p className="num mt-2 font-display text-xl">{fmtHours(s.totalMs / 3600000)}</p>
       <p className="num mt-0.5 text-xs text-dust">

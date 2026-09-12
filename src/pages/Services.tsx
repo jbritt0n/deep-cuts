@@ -51,7 +51,7 @@ export function ServicesPage() {
           <WildBody row={wd} busy={busy} run={run} lastfmConnected={lf?.status === 'connected'} />
         </ServiceCard>}
         {mb && <ServiceCard row={mb} busy={busy} onSync={() => run('musicbrainz', () => invoke<string>('sync_now', { service: 'musicbrainz' }), (r) => String(r))}>
-          <p className="text-xs text-dust">{fmtInt(Number(mb.extra.resolvedArtists ?? 0))} artists resolved · {fmtInt(Number(mb.extra.taggedArtists ?? 0))} tagged. Works through your library a batch at a time, one request a second.</p>
+          <p className="text-xs text-dust">{fmtInt(Number(mb.extra.resolvedArtists ?? 0))} artists resolved · {fmtInt(Number(mb.extra.taggedArtists ?? 0))} tagged · catalogue sizes for {fmtInt(Number(mb.extra.catalogueArtists ?? 0))} · credits on {fmtInt(Number(mb.extra.creditedTracks ?? 0))} tracks. Works through your library a batch at a time, one request a second.</p>
           <div className="mt-4">
             {mb.status === 'connected'
               ? <button disabled={!!busy} onClick={() => run('mb', () => invoke('musicbrainz_disconnect'), () => 'MusicBrainz disconnected.')} className="text-sm text-dust hover:text-cream">Disconnect</button>

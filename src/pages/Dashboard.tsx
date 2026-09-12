@@ -52,7 +52,7 @@ export function Dashboard({ status }: { status: AppStatus }) {
           </p>
           <div className="mt-7 flex flex-wrap gap-3">
             <Link to="/sessions" className="rounded-full bg-amber px-5 py-2.5 text-sm font-medium text-ink transition hover:shadow-glow">How you listen</Link>
-            <Link to="/insights" className="rounded-full border border-line px-5 py-2.5 text-sm text-dust transition hover:border-dust hover:text-cream">Insights</Link>
+            <Link to="/eras" className="rounded-full border border-line px-5 py-2.5 text-sm text-dust transition hover:border-dust hover:text-cream">Eras</Link>
             <Link to="/review" className="rounded-full border border-line px-5 py-2.5 text-sm text-dust transition hover:border-dust hover:text-cream">In Review</Link>
           </div>
         </div>
@@ -90,8 +90,8 @@ export function Dashboard({ status }: { status: AppStatus }) {
       </section>
 
       {ins.data && ins.data.length > 0 && (
-        <div className="mt-6"><Card title="Fresh insights" subtitle="Computed nightly. Tap one to mark it seen." aside={<Link to="/insights" className="text-xs text-dust hover:text-amber">all insights</Link>}>
-          <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{ins.data.map((i) => { const p = i.payload; const text = i.kind === 'obsession' ? `${p.artist}: ${p.plays} plays in a week (usual ${p.usual})` : i.kind === 'scene_phase' ? `A ${String(p.scene).replace('-', ' ')} week — ${p.hours} h, led by ${p.lead}` : i.kind === 'comeback' ? `${p.artist} is back after ${p.days_silent} days` : i.kind === 'earworm' ? `Earworm: ${p.track} — ${p.artist}` : i.kind; const href = i.subjectType === 'artist' ? `/artist/${encodeURIComponent(i.subjectId)}` : i.subjectType === 'track' ? `/track/${encodeURIComponent(i.subjectId)}` : '/insights'; return <li key={i.id} className={`rounded-xl border px-3 py-2 text-sm ${i.surfaced ? 'border-line/50 bg-ink/30 text-dust' : 'border-line bg-ink/40'}`}><Link to={href} onClick={() => invoke('mark_insight_surfaced', { id: i.id }).catch(() => {})} className="block truncate hover:text-amber">{text}</Link><p className="num text-xs text-dust">{i.kind.replace('_', ' ')} · {i.periodStart}</p></li>; })}</ul>
+        <div className="mt-6"><Card title="Fresh insights" subtitle="Computed nightly. Tap one to mark it seen." aside={<Link to="/eras" className="text-xs text-dust hover:text-amber">on Eras</Link>}>
+          <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{ins.data.map((i) => { const p = i.payload; const text = i.kind === 'obsession' ? `${p.artist}: ${p.plays} plays in a week (usual ${p.usual})` : i.kind === 'scene_phase' ? `A ${String(p.scene).replace('-', ' ')} week — ${p.hours} h, led by ${p.lead}` : i.kind === 'comeback' ? `${p.artist} is back after ${p.days_silent} days` : i.kind === 'earworm' ? `Earworm: ${p.track} — ${p.artist}` : i.kind; const href = i.subjectType === 'artist' ? `/artist/${encodeURIComponent(i.subjectId)}` : i.subjectType === 'track' ? `/track/${encodeURIComponent(i.subjectId)}` : '/eras'; return <li key={i.id} className={`rounded-xl border px-3 py-2 text-sm ${i.surfaced ? 'border-line/50 bg-ink/30 text-dust' : 'border-line bg-ink/40'}`}><Link to={href} onClick={() => invoke('mark_insight_surfaced', { id: i.id }).catch(() => {})} className="block truncate hover:text-amber">{text}</Link><p className="num text-xs text-dust">{i.kind.replace('_', ' ')} · {i.periodStart}</p></li>; })}</ul>
         </Card></div>
       )}
       {ms.data && ms.data.length > 0 && (
