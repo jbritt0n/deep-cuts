@@ -22,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
 /// Bump when the SQL pipeline changes so existing records rebuild on first launch.
-pub const PIPELINE_REV: &str = "8";
+pub const PIPELINE_REV: &str = "9";
 
 pub struct AppState {
     pub paths: paths::DataPaths,
@@ -179,6 +179,7 @@ pub fn run() {
             commands::spotify_tracks_for_artists,
             commands::lastfm_wild_connect,
             commands::lastfm_wild_disconnect,
+            commands::lastfm_wild_reset,
         ])
         .on_window_event(|window, event| {
             // Close hides to the tray so the poller keeps running (ING-05). Quit from the tray menu.

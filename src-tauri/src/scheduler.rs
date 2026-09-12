@@ -27,18 +27,26 @@ pub fn start(app: AppHandle) {
         }
     });
 
-    // Spotify: enrichment trickle every 10 min (budget-aware inside), library daily.
+    // Spotify: enrichment trickle, library daily.
+    //
+    // Phase 9 (owner report): enrichment and polling share one Spotify quota, and enrichment
+    // was landing first — on a quota-tight day it could eat the headroom before the poll ran,
+    // and a missed poll is a permanently lost play (Spotify only keeps the last 50). Polling is
+    // the one job that must never be starved; enrichment is retryable forever. So enrichment
+    // now (a) starts only after the first poll has had its turn, (b) runs on the poll's 20-min
+    // cadence but offset 5 minutes AFTER each poll, and (c) skips its tick while the quota
+    // pause is active so it can't re-trigger the pause the poll is waiting out.
     let a = app.clone();
     tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(Duration::from_secs(60)).await;
+        tokio::time::sleep(Duration::from_secs(15 + 5 * 60)).await;
         let mut ticks: u64 = 0;
         loop {
             run_blocking(&a, "enrich", |st| {
-                if !st.spotify.is_connected() { return Ok(()); }
+                if !st.spotify.is_connected() || st.spotify.is_paused() { return Ok(()); }
                 sync::enrich_batch(&st.spotify_ref(), &st.real)?;
                 Ok(())
             }).await;
-            if ticks % (budget::LIBRARY_SYNC_EVERY_SECS / 600) == 0 {
+            if ticks % (budget::LIBRARY_SYNC_EVERY_SECS / budget::POLL_EVERY_SECS) == 0 {
                 run_blocking(&a, "sync", |st| {
                     if !st.spotify.is_connected() { return Ok(()); }
                     let c = st.spotify_ref();
@@ -49,7 +57,7 @@ pub fn start(app: AppHandle) {
                 }).await;
             }
             ticks += 1;
-            tokio::time::sleep(Duration::from_secs(600)).await;
+            tokio::time::sleep(Duration::from_secs(budget::POLL_EVERY_SECS)).await;
         }
     });
 

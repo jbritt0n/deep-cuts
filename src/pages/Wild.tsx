@@ -42,7 +42,7 @@ export function WildPage() {
 
   const feedback = async (s: WildSong, verdict: 'accepted' | 'dismissed') => {
     try { await invoke('rec_feedback', { subjectType: 'wild_song', subjectKey: s.key, engine: 'wild', verdict }); } catch (e) { setMsg(String(e)); return; }
-    if (verdict === 'dismissed') { setHidden(new Set([...hidden, s.key])); setMsg(`Hidden ${s.track}.`); } else { setMsg(`Pinned ${s.track}.`); songs.reload(); }
+    if (verdict === 'dismissed') { setHidden(new Set([...hidden, s.key])); setMsg(`Hidden “${s.track}”.`); } else { setMsg(`Pinned “${s.track}”.`); songs.reload(); }
   };
   const radar = async (s: WildSong) => {
     setMsg(`Adding ${s.track} to your Radar playlist…`);

@@ -40,5 +40,8 @@ Fixtures: `test_wild_never_touches_core_record`, `test_wild_drops_own_spotify_pl
 ## 5. Files
 `src-tauri/sql/schema.sql` (view + connector row) · `src-tauri/sql/wild_insert.sql` · `src-tauri/src/connectors/lastfm_wild.rs` · `commands.rs` (`lastfm_wild_connect/disconnect`, `sync_now`, `get_connectors` extras) · `scheduler.rs` (30-min tick) · `src/lib/wildQueries.ts` · `src/pages/Wild.tsx` · `src/pages/Services.tsx` (`WildBody`) · `scripts/smoke-wild.ts` · fixtures in `scripts/test_sql_fixtures.py`.
 
-## 6. Ideas queued
+## 6. What the first real run taught (Phase 9a)
+The owner's first import was **entirely their own Spotify plays**. Two things combined: Pano was writing to a Last.fm account that Spotify also scrobbled to, and — because Spotify quota had been starving the poller — those plays had never reached the record, so §2's temporal check had nothing to match against. Lesson: **the desktop dedup can only catch what the record already holds; the phone-side account separation is the primary defence, not a nicety.** 9a added `lastfm_wild_reset` (purge + re-point) and a Services guard that fires when ≥ 60 % of captured songs are already in the record.
+
+## 7. Ideas queued
 Day-page strip (`wildOnDay()` exists, UI not wired) · "heard near a show" once Setlist.fm lands · monthly *new to you* digest via the Liner Notes composer · export the never-streamed list as a playlist in one click (the `MakePlaylistButton` needs Spotify track ids; `add_to_radar` by search works today).

@@ -55,6 +55,19 @@ pub fn connect(db: &Db, username: &str, since: &str) -> Result<String> {
     Ok(name)
 }
 
+/// Phase 9: the owner's first import pulled their own Spotify history because Pano was scrobbling to a
+/// Last.fm account Spotify also wrote to. Wipe every capture and point at a new (Pano-only) account.
+/// Captures are the only `wild_play` rows, so this touches nothing in the core record. Returns rows purged.
+pub fn reset_and_repoint(db: &Db, username: &str, since: &str) -> Result<(i64, String)> {
+    let purged = db.scalar_i64("SELECT COUNT(*) FROM events WHERE event_type = 'wild_play'")?;
+    db.exec("DELETE FROM events WHERE event_type = 'wild_play'", &[])?;
+    db.exec("DELETE FROM recommendation_feedback WHERE engine = 'wild'", &[])?;
+    db.exec("UPDATE connector_state SET plays_added = 0, last_sync_at = NULL, last_error = NULL WHERE service = 'lastfm_wild'", &[])?;
+    db.log_activity("wild", "warn", &format!("Heard in the Wild reset: {purged} captures purged (they were the owner's own Spotify playback)"), None);
+    let name = connect(db, username, since)?;
+    Ok((purged, name))
+}
+
 pub fn disconnect(db: &Db) -> Result<()> {
     set_state(db, "lastfm_wild", "disconnected", None, None);
     db.log_activity("wild", "info", "Heard in the Wild disconnected (captures already imported are kept)", None);

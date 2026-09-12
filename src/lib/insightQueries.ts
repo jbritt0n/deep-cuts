@@ -71,6 +71,21 @@ export async function obsessions(limit = 12): Promise<Obsession[]> {
 
 // INS-03 — lifecycle: status per artist with ≥ 20 plays, relative to `today`.
 export type Lifecycle = { artistId: string; artist: string; status: string; plays: number; hours: number; firstPlayed: string; lastPlayed: string; peakMonth: string; recentHours: number; priorHours: number; daysSilent: number };
+export type RetentionArtist = { artistId: string; artist: string; plays: number; hours: number; lastPlayed: string; daysSilent: number; stillPlayed: boolean };
+/** Phase 9: who you found in `year` (5+ plays) and whether they're still with you — the drill-down behind the retention bars. */
+export async function retentionDetail(year: number): Promise<RetentionArtist[]> {
+  const today = localToday();
+  return (await query(`
+    WITH first AS (SELECT artist_id, arg_max(artist_name, ms_played) AS name, EXTRACT(year FROM MIN(played_at))::INT AS y, COUNT(*) AS plays, SUM(ms_played)/3600000.0 AS hours, MAX(played_at) AS last_at
+                   FROM plays_resolved WHERE artist_id IS NOT NULL ${PW()} GROUP BY 1 HAVING COUNT(*) >= 5)
+    SELECT artist_id, name, plays, ROUND(hours, 1) AS hours, CAST(last_at AS VARCHAR) AS last_at,
+           CAST(CAST($1 AS DATE) - CAST(last_at AS DATE) AS INTEGER) AS days_silent,
+           last_at >= CAST($1 AS DATE) - INTERVAL 365 DAY AS still
+    FROM first WHERE y = $2 ORDER BY still ASC, hours DESC`, [today, year])).map((r) => ({
+    artistId: String(r.artist_id), artist: String(r.name), plays: num(r.plays), hours: num(r.hours), lastPlayed: String(r.last_at), daysSilent: num(r.days_silent), stillPlayed: Boolean(r.still),
+  }));
+}
+
 export async function lifecycle(): Promise<{ rising: Lifecycle[]; fading: Lifecycle[]; returned: Lifecycle[]; dormant: Lifecycle[]; retention: { year: number; discovered: number; stillPlayed: number }[] }> {
   const today = localToday();
   const rows = await query(`
@@ -188,25 +203,48 @@ export async function personas(): Promise<{ weekday: Persona; weekend: Persona; 
 
 // INS-01 — eras: adjacent months whose top-artist share vectors are similar belong to one era.
 // Spec suggests cosine ≥ 0.6; on a varied listener that yields almost no eras, so 0.3 is the default (owner to confirm).
-export type Era = { start: string; end: string; months: number; hours: number; topArtists: { artistId: string; artist: string; hours: number }[]; skipRate: number; noveltyRate: number; lateShare: number; topShape: string | null; topTag: string | null; name: string };
-export async function eras(minMonths = 2, similarity = 0.3): Promise<Era[]> {
-  const rows = await query(`
+//
+// Phase 9 fix (owner saw no eras for 2025–26, twice): the old query DROPPED any era shorter than
+// `minMonths`, so on a record whose recent months are varied (every adjacent cosine < 0.3) each month
+// became its own 1-month era and was filtered out — the timeline simply ended. Now every month is
+// kept: a RUN of consecutive short eras that together span `minMonths`+ becomes its own era (a restless
+// stretch is still a stretch), and an isolated short era is absorbed into the era before it (or after,
+// at the very start), so the timeline always reaches the present. The month floor also dropped 3 h → 1 h so
+// light months don't punch holes that then force spurious breaks. The current month is flagged
+// `inProgress`. `eraDiagnostic()` below exposes the per-month numbers behind the boundaries.
+export type Era = { start: string; end: string; months: number; hours: number; topArtists: { artistId: string; artist: string; hours: number }[]; skipRate: number; noveltyRate: number; lateShare: number; topShape: string | null; topTag: string | null; name: string; inProgress: boolean };
+const ERA_MONTH_FLOOR_H = 1;
+const ERA_CTES = (similarity: number) => `
     WITH m AS (
       SELECT DATE_TRUNC('month', played_at)::DATE AS mo, artist_id, artist_name, SUM(ms_played)/3600000.0 AS h
       FROM plays_resolved WHERE artist_id IS NOT NULL ${PW()} GROUP BY 1, 2, 3),
-    tot AS (SELECT mo, SUM(h) AS th FROM m GROUP BY 1 HAVING SUM(h) >= 3),
+    tot AS (SELECT mo, SUM(h) AS th FROM m GROUP BY 1 HAVING SUM(h) >= ${ERA_MONTH_FLOOR_H}),
     v AS (SELECT m.mo, m.artist_id, m.artist_name, m.h, m.h / t.th AS share FROM m JOIN tot t USING (mo)
           QUALIFY ROW_NUMBER() OVER (PARTITION BY m.mo ORDER BY m.h DESC) <= 40),
     months AS (SELECT DISTINCT mo FROM v ORDER BY mo),
-    pairs AS (
-      SELECT a.mo AS mo, LAG(a.mo) OVER (ORDER BY a.mo) AS prev FROM months a),
+    pairs AS (SELECT a.mo AS mo, LAG(a.mo) OVER (ORDER BY a.mo) AS prev FROM months a),
     sim AS (
       SELECT p.mo, p.prev,
              COALESCE(SUM(x.share * y.share), 0) / NULLIF(SQRT(SUM(x.share * x.share)) * SQRT((SELECT SUM(share * share) FROM v WHERE mo = p.prev)), 0) AS cos
       FROM pairs p JOIN v x ON x.mo = p.mo LEFT JOIN v y ON y.mo = p.prev AND y.artist_id = x.artist_id
       GROUP BY p.mo, p.prev),
-    flagged AS (SELECT mo, CASE WHEN prev IS NULL OR cos < ${similarity} OR (mo - prev) > 40 THEN 1 ELSE 0 END AS brk FROM sim),
-    grp AS (SELECT mo, SUM(brk) OVER (ORDER BY mo ROWS UNBOUNDED PRECEDING) AS era FROM flagged),
+    flagged AS (SELECT mo, prev, cos, CASE WHEN prev IS NULL OR cos < ${similarity} OR (mo - prev) > 40 THEN 1 ELSE 0 END AS brk FROM sim),
+    raw AS (SELECT mo, prev, cos, brk, SUM(brk) OVER (ORDER BY mo ROWS UNBOUNDED PRECEDING) AS era0 FROM flagged)`;
+
+export async function eras(minMonths = 2, similarity = 0.3): Promise<Era[]> {
+  const rows = await query(`${ERA_CTES(similarity)},
+    sizes AS (SELECT era0, COUNT(*) AS n FROM raw GROUP BY 1),
+    big AS (SELECT r.mo, r.era0, s.n < ${minMonths} AS short FROM raw r JOIN sizes s USING (era0)),
+    starts AS (SELECT mo, era0, short, CASE WHEN short AND NOT COALESCE(LAG(short) OVER (ORDER BY mo), FALSE) THEN 1 ELSE 0 END AS run_start FROM big),
+    runs AS (SELECT mo, era0, short, SUM(run_start) OVER (ORDER BY mo ROWS UNBOUNDED PRECEDING) AS run FROM starts),
+    run_len AS (SELECT run, COUNT(*) AS n, MIN(era0) AS era_id FROM runs WHERE short GROUP BY 1),
+    assigned AS (SELECT r.mo, CASE WHEN NOT r.short THEN r.era0 WHEN rl.n >= ${minMonths} THEN rl.era_id END AS era1
+                 FROM runs r LEFT JOIN run_len rl ON rl.run = r.run AND r.short),
+    grp AS (
+      SELECT mo, COALESCE(
+        LAST_VALUE(era1 IGNORE NULLS) OVER (ORDER BY mo ROWS UNBOUNDED PRECEDING),
+        FIRST_VALUE(era1 IGNORE NULLS) OVER (ORDER BY mo ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING),
+        0) AS era FROM assigned),
     era_art AS (SELECT g.era, v.artist_id, v.artist_name, SUM(v.h) AS h FROM grp g JOIN v USING (mo) GROUP BY 1, 2, 3),
     span AS (SELECT era, MIN(mo) AS s, MAX(mo) + INTERVAL 1 MONTH AS e FROM grp GROUP BY 1),
     beh AS (SELECT sp.era, AVG(CASE WHEN p.was_skipped THEN 1.0 ELSE 0 END) AS sr, AVG(CASE WHEN p.is_first_play THEN 1.0 ELSE 0 END) AS nov,
@@ -216,18 +254,30 @@ export async function eras(minMonths = 2, similarity = 0.3): Promise<Era[]> {
     tg AS (SELECT ea.era, arg_max(t.tag, ea.h * t.weight) AS tag FROM era_art ea JOIN artist_tags t USING (artist_id) GROUP BY 1)
     SELECT g.era, CAST(MIN(g.mo) AS VARCHAR) AS s, CAST(MAX(g.mo) AS VARCHAR) AS e, COUNT(DISTINCT g.mo) AS n,
            SUM(t.th) AS hours, MAX(b.sr) AS sr, MAX(b.nov) AS nov, MAX(b.late) AS late, MAX(sh.shape) AS shape, MAX(tg.tag) AS tag,
+           MAX(g.mo) = DATE_TRUNC('month', CAST($1 AS DATE))::DATE AS in_progress,
            (SELECT list(struct_pack(artist_id := artist_id, artist_name := artist_name, h := ROUND(h, 1)) ORDER BY h DESC) FROM (SELECT * FROM era_art ea WHERE ea.era = g.era ORDER BY h DESC LIMIT 3)) AS top
     FROM grp g JOIN tot t USING (mo) LEFT JOIN beh b ON b.era = g.era LEFT JOIN shp sh ON sh.era = g.era LEFT JOIN tg ON tg.era = g.era
-    GROUP BY g.era HAVING COUNT(DISTINCT g.mo) >= ${minMonths} ORDER BY MIN(g.mo) DESC`);
+    GROUP BY g.era ORDER BY MIN(g.mo) DESC`, [localToday()]);
   return rows.map((r) => {
     const e: Era = {
       start: String(r.s), end: String(r.e), months: num(r.n), hours: num(r.hours),
       topArtists: ((r.top as { artist_id: string; artist_name: string; h: number }[]) ?? []).map((t) => ({ artistId: t.artist_id, artist: t.artist_name, hours: num(t.h) })),
-      skipRate: num(r.sr), noveltyRate: num(r.nov), lateShare: num(r.late), topShape: str(r.shape), topTag: str(r.tag), name: '',
+      skipRate: num(r.sr), noveltyRate: num(r.nov), lateShare: num(r.late), topShape: str(r.shape), topTag: str(r.tag), name: '', inProgress: Boolean(r.in_progress),
     };
     e.name = nameEra(e);
     return e;
   });
+}
+
+export type EraMonth = { month: string; hours: number; cosToPrev: number | null; breaks: boolean; topArtist: string | null };
+/** Why the era boundaries fall where they do: per-month hours, similarity to the previous month, and whether it opened a new era. */
+export async function eraDiagnostic(similarity = 0.3, months = 30): Promise<EraMonth[]> {
+  return (await query(`${ERA_CTES(similarity)},
+    ta AS (SELECT mo, arg_max(artist_name, h) AS top FROM v GROUP BY 1)
+    SELECT CAST(r.mo AS VARCHAR) AS mo, t.th AS hours, r.cos, r.brk, ta.top
+    FROM raw r JOIN tot t USING (mo) LEFT JOIN ta USING (mo) ORDER BY r.mo DESC LIMIT ${months}`)).map((r) => ({
+    month: String(r.mo).slice(0, 7), hours: num(r.hours), cosToPrev: r.cos == null ? null : num(r.cos), breaks: num(r.brk) === 1, topArtist: str(r.top),
+  })).reverse();
 }
 
 /** Deterministic, a little wry: a mood word only when the behaviour is notable; otherwise the season and the lead artists carry it. */

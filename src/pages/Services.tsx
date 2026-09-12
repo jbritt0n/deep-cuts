@@ -171,11 +171,32 @@ function WildBody({ row, busy, run, lastfmConnected }: { row: Row; busy: string 
   const [user, setUser] = useState('');
   const [since, setSince] = useState(() => new Date().toISOString().slice(0, 10));
   const x = row.extra;
+  const songs = Number(x.songs ?? 0), matched = Number(x.matchedSongs ?? 0);
+  const suspicious = songs >= 20 && matched / songs >= 0.6;   // most captures are songs already in your record → the phone is scrobbling Spotify
+  const [resetOpen, setResetOpen] = useState(false);
   if (row.status === 'connected') return (
     <div className="text-xs text-dust">
-      <p className="num">{fmtInt(Number(x.captures ?? 0))} captures · {fmtInt(Number(x.neverStreamed ?? 0))} songs you've never streamed · {fmtInt(Number(x.dropped ?? 0))} dropped as your own Spotify playback{x.since ? ` · since ${String(x.since)}` : ''}{x.backfillDone === false ? ' · still back-filling' : ''}</p>
-      <p className="mt-2">Pulls every 30 minutes. A capture that lands while your own Spotify was playing the same artist is treated as your speakers being overheard and is skipped — that check runs on every import, so duplicates can't reach the numbers. <Link to="/wild" className="underline hover:text-cream">Open Heard in the Wild</Link>.</p>
-      <button disabled={!!busy} onClick={() => run('wild', () => invoke('lastfm_wild_disconnect'), () => 'Heard in the Wild disconnected. Captures already imported are kept.')} className="mt-2 text-dust hover:text-cream">Disconnect</button>
+      <p className="num">{fmtInt(Number(x.captures ?? 0))} captures · {fmtInt(Number(x.neverStreamed ?? 0))} songs you've never streamed · {fmtInt(Number(x.dropped ?? 0))} dropped as your own Spotify playback{x.account ? ` · account ${String(x.account)}` : ''}{x.since ? ` · since ${String(x.since)}` : ''}{x.backfillDone === false ? ' · still back-filling' : ''}</p>
+      {suspicious && (
+        <div className="mt-2 rounded-xl border border-coral/50 bg-coral/5 p-3 text-coral">
+          <p><span className="font-medium">This looks like your own Spotify, not the wild.</span> {fmtInt(matched)} of {fmtInt(songs)} captured songs are already in your record — that's the pattern when Pano is scrobbling the Spotify app, or when the Last.fm account it writes to is also fed by Spotify. Point Pano at a Last.fm account only it uses, then purge and re-point here.</p>
+        </div>
+      )}
+      <div className="mt-2 flex flex-wrap items-center gap-3">
+        <button disabled={!!busy} onClick={() => run('wild', () => invoke('lastfm_wild_disconnect'), () => 'Heard in the Wild disconnected. Captures already imported are kept.')} className="text-dust hover:text-cream">Disconnect</button>
+        <button onClick={() => setResetOpen(!resetOpen)} className={suspicious ? 'text-coral hover:text-cream' : 'text-dust hover:text-cream'}>Purge & re-point to another account…</button>
+      </div>
+      {resetOpen && (
+        <div className="mt-2 rounded-xl border border-line bg-ink/40 p-3">
+          <p>Deletes every capture (and your pins/hides on them), then connects to the account below. Your Spotify record is untouched — captures live in their own class.</p>
+          <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_auto_auto]">
+            <input value={user} onChange={(e) => setUser(e.target.value)} placeholder="Last.fm account only Pano writes to" className="rounded-lg border border-line bg-ink px-3 py-1.5 text-xs" />
+            <input value={since} onChange={(e) => setSince(e.target.value)} type="date" className="num rounded-lg border border-line bg-ink px-3 py-1.5 text-xs" />
+            <button disabled={!!busy || !user.trim()} onClick={() => run('wild', () => invoke<{ purged: number; account: string }>('lastfm_wild_reset', { username: user.trim(), since: since || null }), (r) => { const v = r as { purged: number; account: string }; setResetOpen(false); return `Purged ${fmtInt(v.purged)} captures and re-pointed Heard in the Wild at ${v.account}. Sync now to pull from the new account.`; })} className="rounded-full bg-coral px-3 py-1.5 text-xs font-medium text-ink disabled:opacity-40">Purge & re-point</button>
+          </div>
+        </div>
+      )}
+      <p className="mt-2">Pulls every 30 minutes. The desktop check drops a capture that lands while your own Spotify was playing the same artist — but it can only do that for plays that reached the record, so the real defence is a Last.fm account only Pano writes to. <Link to="/wild" className="underline hover:text-cream">Open Heard in the Wild</Link>.</p>
     </div>
   );
   return (

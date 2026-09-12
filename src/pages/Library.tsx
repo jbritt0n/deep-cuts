@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { likedAlbums, likedArtists, likedFacets, likedSongs, playlistDetail, playlistsOverview, pruneLists, type LikedFilters } from '@/lib/phase4Queries';
+import { likedAlbums, likedArtists, likedFacets, likedSongs, pruneLists, type LikedFilters } from '@/lib/phase4Queries';
+import { playlistHealth, playlistRevisit, playlistTotals, playlistTracks, type PlaylistScope, type PlaylistSort, type PlaylistTrack } from '@/lib/playlistQueries';
 import { earworms, followedPlaylists, madeByDeepCuts } from '@/lib/phase7Queries';
 import { useAsync, useFilter } from '@/lib/hooks';
 import { albumHref, artistHref, fmtDate, fmtHours, fmtInt, fmtPct, trackHref } from '@/lib/format';
@@ -71,22 +72,80 @@ function LikedArtists() {
   return <Card title="Artists by liked tracks"><RankedBars data={data.map((a) => ({ ...a, artist: `${a.artist} · ${a.liked} liked` }))} /></Card>;
 }
 function Playlists() {
-  const { filter } = useFilter(); const { data, error } = useAsync(playlistsOverview, [filter]);
+  const { filter } = useFilter();
+  const [scope, setScope] = useState<PlaylistScope>('all');
+  const [sort, setSort] = useState<PlaylistSort>('most_played');
+  const [q, setQ] = useState('');
+  const health = useAsync(() => playlistHealth(scope, sort, q), [scope, sort, q, filter]);
+  const totals = useAsync(playlistTotals, [filter]);
+  const revisit = useAsync(() => playlistRevisit(), [filter]);
   const [open, setOpen] = useState<string | null>(null);
-  const detail = useAsync(() => (open ? playlistDetail(open) : Promise.resolve(null)), [open, filter]);
-  if (error) return <ErrorBox message={error} />; if (!data) return <Loading />;
-  if (!data.length) return <SyncNudge what="playlists" />;
-  const cur = data.find((p) => p.playlistId === open);
+  const [kindFilter, setKindFilter] = useState<'all' | 'gem' | 'dead' | 'unheard' | 'core'>('all');
+  const tracks = useAsync(() => (open ? playlistTracks(open) : Promise.resolve(null)), [open, filter]);
+  const [msg, setMsg] = useState<string | null>(null);
+  if (health.error) return <ErrorBox message={health.error} />; if (!health.data) return <Loading />;
+  if (!health.data.length && !q && scope === 'all') return <SyncNudge what="playlists" />;
+  const cur = health.data.find((p) => p.playlistId === open);
+  const T = totals.data;
+  const SORTS: [PlaylistSort, string][] = [['most_played', 'Most played'], ['least_played', 'Least played'], ['fewest_heard', 'Fewest songs heard'], ['most_complete', 'Most complete'], ['most_gems', 'Most hidden gems'], ['most_dead', 'Most dead weight'], ['stalest', 'Longest untouched'], ['biggest', 'Biggest'], ['newest', 'Recently added to']];
+  const badge = (k: PlaylistTrack['kind']) => k === 'gem' ? <span className="rounded-full border border-amber/50 px-1.5 text-[10px] text-amber">gem</span> : k === 'dead' ? <span className="rounded-full border border-coral/50 px-1.5 text-[10px] text-coral">dead weight</span> : k === 'unheard' ? <span className="rounded-full border border-line px-1.5 text-[10px] text-dust">unheard</span> : k === 'core' ? <span className="rounded-full border border-moss/50 px-1.5 text-[10px] text-moss">core</span> : null;
+  const shownTracks = (tracks.data ?? []).filter((t) => kindFilter === 'all' || t.kind === kindFilter);
   return (
-    <div className="grid gap-6 lg:grid-cols-[1fr_1.4fr]">
-      <Card title="Your playlists" subtitle="Plays counted only after a song was added to the playlist.">
-        <ul className="divide-y divide-line/60 text-sm">{data.map((p) => <li key={p.playlistId}><button onClick={() => setOpen(p.playlistId)} className={`w-full py-2 text-left hover:text-amber ${open === p.playlistId ? 'text-amber' : ''}`}><span className="flex justify-between gap-3"><span className="truncate">{p.name}{!p.ownerIsMe && <span className="ml-2 text-xs text-dust">followed</span>}</span><span className="num shrink-0 text-xs text-dust">{p.trackCount} tracks · {fmtInt(p.playsWithin)} plays · {fmtHours(p.hoursWithin)}</span></span></button></li>)}</ul>
-      </Card>
-      <Card title={cur ? cur.name : 'Pick a playlist'} subtitle={cur ? `${cur.trackCount} tracks · skip rate inside ${fmtPct(cur.skipRate)}${cur.isPublic === null ? '' : cur.isPublic ? ' · public' : ' · private'}` : undefined} aside={detail.data ? <MakePlaylistButton small label="Refresh as new playlist" name={`${cur?.name} · refreshed`} tracks={detail.data.tracks.filter((t) => t.skipRate < 0.5)} note={`playlist:${open}`} /> : undefined}>
-        {!open ? <p className="text-sm text-dust">Plays within, plays before it was added, skips — per track.</p> : !detail.data ? <Loading label="Reading…" /> : (
-          <ol className="divide-y divide-line/60 text-sm">{detail.data.tracks.map((t) => <li key={`${t.trackId}-${t.position}`} className="flex items-center gap-3 py-2"><span className="num w-6 text-xs text-dust">{t.position + 1}</span><div className="min-w-0 flex-1"><Link to={trackHref(t.trackId)} className="block truncate hover:text-amber">{t.track}</Link><p className="truncate text-xs text-dust">{t.artist}</p></div><span className="num shrink-0 text-right text-xs text-dust">{t.plays} in · {t.playsOutside} before<br /><span className={t.skipRate >= 0.5 ? 'text-coral' : ''}>{fmtPct(t.skipRate)} skips</span></span></li>)}</ol>
-        )}
-      </Card>
+    <div>
+      {T && (
+        <div className="mb-4 flex flex-wrap items-center gap-x-6 gap-y-2 rounded-xl border border-line bg-ink/40 px-4 py-3 text-xs text-dust">
+          <span><span className="num text-cream">{T.playlists}</span> playlists · <span className="num text-cream">{T.mine}</span> yours</span>
+          <span><span className="num text-cream">{fmtInt(T.synced)}</span> of <span className="num">{fmtInt(T.expected)}</span> tracks synced{T.partial > 0 && <span className="text-amber"> · {T.partial} playlists only partly synced</span>}</span>
+          <span>you've reached <span className="num text-cream">{fmtPct(T.synced ? T.heard / T.synced : 0)}</span> of what's in them</span>
+          <span><span className="num text-amber">{T.gems}</span> hidden gems · <span className="num text-coral">{T.dead}</span> dead weight</span>
+          {T.partial > 0 && <button onClick={() => { setMsg('Finishing the playlist sync… this pulls every playlist\'s tracks and can take a few minutes under Spotify\'s quota.'); invoke<string>('sync_now', { service: 'spotify' }).then((r) => { setMsg(String(r)); health.reload(); totals.reload(); }).catch((e) => setMsg(String(e))); }} className="ml-auto rounded-full border border-amber/50 px-3 py-1 text-amber hover:bg-amber/10">Finish syncing playlists</button>}
+        </div>
+      )}
+      {msg && <p className="mb-3 text-xs text-dust">{msg}</p>}
+      {revisit.data && revisit.data.length > 0 && (
+        <Card title="Worth revisiting" subtitle="Playlists you loved and drifted from, or that hold songs you love but never reach through them.">
+          <ul className="grid gap-2 md:grid-cols-2 lg:grid-cols-3">
+            {revisit.data.map((r) => <li key={r.playlistId}><button onClick={() => setOpen(r.playlistId)} className="w-full rounded-xl border border-line bg-ink/40 p-3 text-left hover:border-amber/50"><p className="truncate text-sm">{r.name}{!r.ownerIsMe && <span className="ml-2 text-xs text-dust">followed</span>}</p><p className="mt-0.5 text-xs text-dust">{r.reason}</p></button></li>)}
+          </ul>
+        </Card>
+      )}
+      <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_1.4fr]">
+        <Card title="Your playlists" subtitle="Plays counted only after a song was added. Completion = songs you've heard since adding them."
+          aside={<span className="num text-xs text-dust">{health.data.length}</span>}>
+          <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
+            {(['all', 'mine', 'followed'] as PlaylistScope[]).map((s) => <button key={s} onClick={() => setScope(s)} className={`rounded-full px-3 py-1 ${scope === s ? 'bg-raised text-cream' : 'border border-line text-dust hover:text-cream'}`}>{s === 'all' ? 'All' : s === 'mine' ? 'Mine' : 'Followed'}</button>)}
+            <select value={sort} onChange={(e) => setSort(e.target.value as PlaylistSort)} className="rounded-full border border-line bg-transparent px-3 py-1 text-dust hover:text-cream">{SORTS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Find a playlist" className="ml-auto rounded-full border border-line bg-transparent px-3 py-1 text-dust placeholder:text-dust/60 focus:text-cream" />
+          </div>
+          <ul className="divide-y divide-line/60 text-sm">
+            {health.data.map((p) => (
+              <li key={p.playlistId}>
+                <button onClick={() => { setOpen(p.playlistId); setKindFilter('all'); }} className={`w-full py-2 text-left hover:text-amber ${open === p.playlistId ? 'text-amber' : ''}`}>
+                  <span className="flex items-baseline justify-between gap-3"><span className="truncate">{p.name}{!p.ownerIsMe && <span className="ml-2 text-xs text-dust">followed</span>}{p.partial && <span className="ml-2 text-[10px] text-amber" title={`${p.synced} of ${p.trackCount} tracks synced`}>partial</span>}</span><span className="num shrink-0 text-xs text-dust">{fmtInt(p.playsWithin)} plays · {fmtHours(p.hoursWithin)}</span></span>
+                  <span className="mt-1 flex items-center gap-2">
+                    <span className="h-1 flex-1 overflow-hidden rounded-full bg-raised"><span className="block h-full rounded-full bg-moss/70" style={{ width: `${p.completion * 100}%` }} /></span>
+                    <span className="num w-44 shrink-0 text-right text-[11px] text-dust">{p.heard}/{p.synced} heard{p.gems ? <span className="text-amber"> · {p.gems} gems</span> : ''}{p.deadWeight ? <span className="text-coral"> · {p.deadWeight} dead</span> : ''}{p.daysSinceTouched != null && p.daysSinceTouched >= 90 ? ` · ${Math.round(p.daysSinceTouched / 30)} mo quiet` : ''}</span>
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </Card>
+        <Card title={cur ? cur.name : 'Pick a playlist'}
+          subtitle={cur ? `${cur.heard} of ${cur.synced} heard (${fmtPct(cur.completion)}) · ${fmtInt(cur.playsWithin)} plays · skips ${fmtPct(cur.skipRate)}${cur.lastPlayedWithin ? ` · last ${fmtDate(cur.lastPlayedWithin, { month: 'short', year: 'numeric' })}` : ''}${cur.partial ? ` · only ${cur.synced} of ${cur.trackCount} tracks synced` : ''}` : undefined}
+          aside={tracks.data ? <MakePlaylistButton small label="Refresh as new playlist" name={`${cur?.name} · refreshed`} tracks={tracks.data.filter((t) => t.kind !== 'dead').map((t) => ({ trackId: t.trackId, track: t.track, artistId: t.artistId, artist: t.artist, plays: t.playsIn, hours: 0, skipRate: t.skipIn }))} note={`playlist:${open}`} /> : undefined}>
+          {!open ? <p className="text-sm text-dust">Every song classified: <span className="text-amber">gems</span> you love but never reach here, <span className="text-coral">dead weight</span> you skip or ignore, <span className="text-moss">core</span> songs the playlist is really for, and what's still <span className="text-cream">unheard</span>.</p> : !tracks.data ? <Loading label="Reading…" /> : (
+            <div>
+              <div className="mb-3 flex flex-wrap gap-2 text-xs">
+                {([['all', 'All', tracks.data.length], ['gem', 'Gems', cur?.gems ?? 0], ['dead', 'Dead weight', cur?.deadWeight ?? 0], ['unheard', 'Unheard', cur?.unheard ?? 0], ['core', 'Core', tracks.data.filter((t) => t.kind === 'core').length]] as const).map(([k, l, n]) => <button key={k} onClick={() => setKindFilter(k)} className={`rounded-full px-3 py-1 ${kindFilter === k ? 'bg-raised text-cream' : 'border border-line text-dust hover:text-cream'}`}>{l} · {n}</button>)}
+              </div>
+              <ol className="divide-y divide-line/60 text-sm">
+                {shownTracks.map((t) => <li key={`${t.trackId}-${t.position}`} className="flex items-center gap-3 py-2"><span className="num w-6 text-xs text-dust">{t.position + 1}</span><div className="min-w-0 flex-1"><Link to={trackHref(t.trackId)} className="block truncate hover:text-amber">{t.track} {badge(t.kind)}</Link><p className="truncate text-xs text-dust">{t.artist}</p></div><span className="num shrink-0 text-right text-xs text-dust">{t.playsIn} in · {t.playsAll} total<br /><span className={t.skipIn >= 0.5 ? 'text-coral' : ''}>{fmtPct(t.skipIn)} skips</span></span></li>)}
+              </ol>
+            </div>
+          )}
+        </Card>
+      </div>
     </div>
   );
 }

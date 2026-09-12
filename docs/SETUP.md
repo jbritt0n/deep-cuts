@@ -111,7 +111,7 @@ In `src-tauri/Cargo.toml` change the duckdb line to `features = ["json", "parque
 
 **Heard in the Wild** (Phase 8 — songs your phone recognises out in the world)
 1. On the phone: install **Pano Scrobbler**, sign it in to Last.fm, enable scrobbling for **Now Playing** (Pixel ambient recognition) and **Shazam**.
-2. **Turn Spotify off** in Pano's app list — your Spotify history is already in the record. Better: give Pano its own Last.fm account so nothing you play on purpose can ever land in this class.
+2. **Give Pano its own Last.fm account** — one that Spotify does not scrobble to — and turn Spotify off in Pano's app list. This is the real defence: the app's duplicate check can only catch plays that already reached your record, and on a quota-tight day they may not have. If you set it up on your main account first, use *Purge & re-point to another account…* on the card afterwards.
 3. In Deep Cuts: Last.fm must be connected (the key is reused). Services → Heard in the Wild → enter the account Pano writes to (blank = same as Last.fm above) → keep *Since* at today unless the account is Pano-only → **Set up** → **Sync now**.
 4. Captures land on the **Heard in the Wild** page every 30 minutes. They never count toward hours, streaks or records. The card's *dropped* counter is how many captures were your own Spotify playback being overheard — it should be near zero if step 2 is right.
 

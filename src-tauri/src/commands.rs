@@ -292,6 +292,7 @@ pub fn get_connectors(state: State<'_, AppState>) -> CmdResult<Vec<ConnectorRow>
     let has_lastfm_key = secrets::get(secrets::LASTFM_KEY).ok().flatten().map(|s| !s.is_empty()).unwrap_or(false);
     let wild_meta = state.real.query("SELECT key, value FROM app_meta WHERE key IN ('wild_since', 'wild_lastfm_user')", &[]).map_err(err)?;
     let wild_count = state.real.scalar_i64("SELECT COUNT(*) FROM wild_plays").map_err(err)?;
+    let wild_songs = state.real.scalar_i64("SELECT COUNT(DISTINCT track_key || '|' || artist_key) FROM wild_plays").map_err(err)?;
     let wild_new = state.real.scalar_i64("SELECT COUNT(DISTINCT w.track_key || '|' || w.artist_key) FROM wild_plays w WHERE NOT EXISTS (SELECT 1 FROM plays_resolved p WHERE lower(trim(p.artist_name)) = w.artist_key AND lower(trim(regexp_replace(regexp_replace(p.track_name, '\\s*[\\(\\[].*$', ''), '\\s+-\\s+.*$', ''))) = w.track_key)").map_err(err)?;
     Ok(rows.into_iter().map(|r| {
         let g = |k: &str| r.get(k).and_then(|v| v.as_str().map(str::to_string));
@@ -306,7 +307,9 @@ pub fn get_connectors(state: State<'_, AppState>) -> CmdResult<Vec<ConnectorRow>
                 let since = wild_meta.iter().find(|m| m.get("key").and_then(|v| v.as_str()) == Some("wild_since")).and_then(|m| m.get("value")).and_then(|v| v.as_str()).and_then(|v| v.parse::<i64>().ok())
                     .and_then(|u| chrono::DateTime::<chrono::Utc>::from_timestamp(u, 0)).map(|d| d.format("%Y-%m-%d").to_string());
                 serde_json::json!({ "lastfmConnected": has_lastfm_key, "dropped": d["dropped"].as_i64().unwrap_or(0), "backfillDone": d["backfillDone"].as_bool().unwrap_or(false),
-                    "since": since, "captures": wild_count, "neverStreamed": wild_new })
+                    "since": since, "captures": wild_count, "neverStreamed": wild_new, "account": wild_meta.iter().find(|m| m.get("key").and_then(|v| v.as_str()) == Some("wild_lastfm_user")).and_then(|m| m.get("value")).cloned(),
+                    // Phase 9 guard: captures that match songs already in the record. A high share means the phone is still scrobbling Spotify.
+                    "matchedSongs": wild_songs - wild_new, "songs": wild_songs })
             }
             _ => serde_json::json!({}),
         };
@@ -420,6 +423,14 @@ pub async fn lastfm_wild_connect(state: State<'_, AppState>, app: AppHandle, use
 }
 #[tauri::command]
 pub fn lastfm_wild_disconnect(state: State<'_, AppState>) -> CmdResult<()> { crate::connectors::lastfm_wild::disconnect(&state.real).map_err(err) }
+/// Phase 9: purge every capture and re-point at a Pano-only Last.fm account. Returns {purged, account}.
+#[tauri::command]
+pub async fn lastfm_wild_reset(state: State<'_, AppState>, app: AppHandle, username: Option<String>, since: Option<String>) -> CmdResult<serde_json::Value> {
+    let real = state.real.clone();
+    let (purged, name) = tauri::async_runtime::spawn_blocking(move || crate::connectors::lastfm_wild::reset_and_repoint(&real, username.as_deref().unwrap_or(""), since.as_deref().unwrap_or(""))).await.map_err(err)?.map_err(err)?;
+    events::emit(&app, events::DATA_CHANGED, serde_json::json!({ "reason": "wild_reset" }));
+    Ok(serde_json::json!({ "purged": purged, "account": name }))
+}
 
 /// DIS-03: the feedback loop. Verdict 'accepted' | 'dismissed'.
 #[tauri::command]

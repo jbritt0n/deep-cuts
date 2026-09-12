@@ -22,6 +22,7 @@ export function InsightsPage() {
   const seas = useAsync(I.seasonality, [filter]);
   const pers = useAsync(I.personas, [filter]);
   const eras = useAsync(() => I.eras(), [filter]);
+  const [retYear, setRetYear] = useState<number | null>(null);
   const sc = useAsync(scenes, [filter]);
 
   return (
@@ -35,7 +36,7 @@ export function InsightsPage() {
               <li key={e.start} className="relative mb-5">
                 <span className="absolute -left-[31px] top-1.5 h-2.5 w-2.5 rounded-full bg-amber" />
                 <p className="num text-xs text-dust">{fmtDate(e.start, { month: 'short', year: 'numeric' })} → {fmtDate(e.end, { month: 'short', year: 'numeric' })} · {e.months} months · {fmtHours(e.hours)}{e.skipRate >= 0.18 ? ` · skipped ${Math.round(e.skipRate * 100)}%` : ''}{e.noveltyRate >= 0.5 ? ` · ${Math.round(e.noveltyRate * 100)}% new to you` : ''}</p>
-                <p className="font-display text-2xl">{e.name}</p>
+                <p className="font-display text-2xl">{e.name}{e.inProgress && <span className="ml-3 align-middle rounded-full border border-amber/50 px-2 py-0.5 font-sans text-[10px] uppercase tracking-wide text-amber">in progress</span>}</p>
                 <p className="mt-0.5 text-sm text-dust">{e.topArtists.map((a, i) => <span key={a.artistId}>{i > 0 ? (i === e.topArtists.length - 1 ? ' & ' : ', ') : ''}<Link to={artistHref(a.artistId)} className="hover:text-amber">{a.artist}</Link></span>)} · {seasonWord(e.start, e.end)}</p>
                 <EraExport era={e} />
               </li>
@@ -43,6 +44,7 @@ export function InsightsPage() {
           </ol>
         )}
       </Section>
+      <EraDiagnostic />
 
       <Section title="Scenes" subtitle="Clusters of artists that share tags or origin — afrobeat, Turkish, post-punk. Needs Last.fm or MusicBrainz tags; origins arrive from MusicBrainz." state={sc}>
         {(rows) => rows.length === 0 ? <Muted>No scenes yet — connect Last.fm or MusicBrainz and let tags fill in.</Muted> : (
@@ -79,10 +81,14 @@ export function InsightsPage() {
               <p className="text-xs text-dust">Retention — of the artists you found each year (5+ plays), how many you still played in the last 12 months</p>
               <ul className="mt-2 space-y-1.5">
                 {l.retention.map((r) => (
-                  <li key={r.year} className="flex items-center gap-3 text-sm">
-                    <span className="num w-10 text-dust">{r.year}</span>
-                    <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-raised"><div className="h-full rounded-full bg-moss/80" style={{ width: `${(r.stillPlayed / Math.max(r.discovered, 1)) * 100}%` }} /></div>
-                    <span className="num w-24 text-right text-xs text-dust">{r.stillPlayed}/{r.discovered} · {fmtPct(r.stillPlayed / Math.max(r.discovered, 1))}</span>
+                  <li key={r.year}>
+                    <button onClick={() => setRetYear(retYear === r.year ? null : r.year)} className="flex w-full items-center gap-3 text-left text-sm hover:text-cream">
+                      <span className="num w-10 text-dust">{r.year}</span>
+                      <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-raised"><div className="h-full rounded-full bg-moss/80" style={{ width: `${(r.stillPlayed / Math.max(r.discovered, 1)) * 100}%` }} /></div>
+                      <span className="num w-24 text-right text-xs text-dust">{r.stillPlayed}/{r.discovered} · {fmtPct(r.stillPlayed / Math.max(r.discovered, 1))}</span>
+                      <span className="text-xs text-dust">{retYear === r.year ? '▾' : '▸'}</span>
+                    </button>
+                    {retYear === r.year && <RetentionDetail year={r.year} />}
                   </li>
                 ))}
               </ul>
@@ -221,3 +227,42 @@ function seasonWord(start: string, end: string) {
   return a === b ? `${a}` : `${a} into ${b}`;
 }
 export { fmtInt };
+
+/** Phase 9: the artists behind one retention bar — who went quiet, who stayed. */
+function RetentionDetail({ year }: { year: number }) {
+  const { filter } = useFilter();
+  const d = useAsync(() => I.retentionDetail(year), [year, filter]);
+  const [showAll, setShowAll] = useState(false);
+  if (!d.data) return <p className="ml-13 mt-1 text-xs text-dust">Looking back…</p>;
+  const quiet = d.data.filter((a) => !a.stillPlayed), kept = d.data.filter((a) => a.stillPlayed);
+  const shown = showAll ? quiet : quiet.slice(0, 8);
+  return (
+    <div className="ml-13 mt-2 rounded-xl border border-line bg-ink/40 p-3 text-xs">
+      <p className="text-dust"><span className="text-coral">Went quiet</span> — {quiet.length} artists from {year} you haven't played in a year, biggest first</p>
+      <ul className="mt-1.5 space-y-1">
+        {shown.map((a) => <li key={a.artistId} className="flex items-baseline gap-3"><Link to={artistHref(a.artistId)} className="min-w-0 flex-1 truncate hover:text-amber">{a.artist}</Link><span className="num text-dust">{fmtHours(a.hours)} · {fmtInt(a.plays)} plays</span><span className="num w-28 text-right text-dust">silent {Math.round(a.daysSilent / 30)} mo</span></li>)}
+      </ul>
+      {quiet.length > 8 && <button onClick={() => setShowAll(!showAll)} className="mt-1.5 text-dust hover:text-cream">{showAll ? 'fewer' : `all ${quiet.length}`}</button>}
+      {kept.length > 0 && <p className="mt-3 text-dust"><span className="text-moss">Still with you</span> — {kept.slice(0, 10).map((a, i) => <span key={a.artistId}>{i > 0 ? ', ' : ''}<Link to={artistHref(a.artistId)} className="hover:text-amber">{a.artist}</Link></span>)}{kept.length > 10 ? ` and ${kept.length - 10} more` : ''}</p>}
+    </div>
+  );
+}
+
+/** Phase 9: why the era boundaries fall where they do. Collapsed by default; the numbers the owner needs to tune the detector on a real record. */
+function EraDiagnostic() {
+  const { filter } = useFilter();
+  const [open, setOpen] = useState(false);
+  const d = useAsync(() => (open ? I.eraDiagnostic() : Promise.resolve([])), [open, filter]);
+  return (
+    <div className="-mt-4 mb-8 ml-9">
+      <button onClick={() => setOpen(!open)} className="text-xs text-dust hover:text-cream">{open ? '▾' : '▸'} how the boundaries were drawn (last 30 months)</button>
+      {open && d.data && (
+        <div className="mt-2 overflow-x-auto rounded-xl border border-line bg-ink/40 p-3 text-xs">
+          <p className="mb-2 text-dust">Each month's attended hours and how similar its top-40 mix is to the month before (cosine, 0–1). A new era opens when similarity drops below 0.3 or a month is missing; eras shorter than 2 months are folded into the one before.</p>
+          <table className="num w-full text-left"><thead><tr className="text-dust"><th className="pr-3 font-normal">month</th><th className="pr-3 font-normal">hours</th><th className="pr-3 font-normal">similarity</th><th className="pr-3 font-normal">top artist</th></tr></thead>
+            <tbody>{d.data.map((m) => <tr key={m.month} className={m.breaks ? 'text-amber' : ''}><td className="pr-3">{m.month}{m.breaks ? ' ⟵' : ''}</td><td className="pr-3">{m.hours.toFixed(1)}</td><td className="pr-3">{m.cosToPrev == null ? '—' : m.cosToPrev.toFixed(2)}</td><td className="pr-3 font-sans">{m.topArtist ?? ''}</td></tr>)}</tbody></table>
+        </div>
+      )}
+    </div>
+  );
+}

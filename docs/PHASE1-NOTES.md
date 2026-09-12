@@ -92,3 +92,11 @@ Three errors, all fixed: `Mb::get` visibility; `urlencoding::encode(&format!(..)
 - **CI**: tests on every push, Rust builds only on tags / manual dispatch, gated on tests. `scripts/seed_dev_db.py` exists so CI has a database without the owner's export.
 - **Session cards**: top artists are computed only for the 40 rows on the current page (CTE over `page`), not for all sessions, so the list stays fast on the 99k-play record.
 - **`likedSongs` filters** now bind `$n`; the manual `replace(/'/g, "''")` pattern is gone from the codebase.
+
+## Phase 9a notes (Sep 11 2026)
+- **Eras: dropping ≠ absorbing.** `HAVING COUNT(month) >= minMonths` silently erased every restless month; on the owner's varied 2025–26 the timeline ended at 2024. Runs of short eras now become their own era (LAST_VALUE/FIRST_VALUE IGNORE NULLS carry-forward, no monotonic-id assumption). DuckDB won't nest a window inside a CASE inside another window — compute the run-start flag in its own CTE.
+- **`assert_read_only` bit us**: a `;` inside a `--` comment in a query string. Rule: no prose in SQL strings.
+- **Playlist "within"** = play after the item's `added_at`; the export doesn't record which playlist a play came from, so this is the honest proxy. **Gem** = 15+ total plays, ≤20 % skips, ≤1 play within. **Dead** = ≥3 plays within with ≥60 % skips, or unplayed 90+ days after adding.
+- **Poll priority**: enrichment now runs 5 min after each poll and skips while `is_paused()`. Enough for the owner's symptom; a hard reservation in the budget module is the next step if quota stays tight.
+- **Wild reset** deletes only `wild_play` events + `engine='wild'` feedback; the core record is untouched by construction.
+- **Obsessions**: not in Last.fm's API (confirmed) — dropped rather than scraped.
