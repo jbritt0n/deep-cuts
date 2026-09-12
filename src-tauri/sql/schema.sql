@@ -565,3 +565,31 @@ WHERE event_type = 'wild_play';
 
 INSERT INTO connector_state (service, status) VALUES ('lastfm_wild', 'disconnected')
 ON CONFLICT (service) DO NOTHING;
+
+-- ------------------------------------------------------------
+-- Phase 9b — artist popularity (Last.fm listener counts) → obscurity score.
+--
+-- `artist_popularity` holds the latest snapshot per artist; `artist_popularity_history`
+-- is appended on every enrichment pass and never overwritten, so "you found them at
+-- 5,000 listeners, they're at 2,000,000 now" becomes answerable once enough snapshots
+-- have accumulated. The score is an inverse log of the listener count on a FIXED
+-- reference (10^7 listeners → 0, a single listener → 1) so it is stable over time and
+-- comparable across records; it deliberately does not renormalise to this library's max.
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS artist_popularity (
+    artist_id   VARCHAR PRIMARY KEY,
+    listeners   BIGINT,
+    playcount   BIGINT,
+    source      VARCHAR DEFAULT 'lastfm',
+    fetched_at  TIMESTAMPTZ DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS artist_popularity_history (
+    artist_id    VARCHAR,
+    listeners    BIGINT,
+    playcount    BIGINT,
+    snapshot_at  TIMESTAMPTZ DEFAULT now()
+);
+CREATE OR REPLACE VIEW artist_obscurity AS
+SELECT artist_id, listeners, playcount, fetched_at,
+       GREATEST(0.0, LEAST(1.0, 1.0 - LOG10(COALESCE(listeners, 0) + 1) / 7.0)) AS obscurity
+FROM artist_popularity;

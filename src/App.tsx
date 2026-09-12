@@ -27,7 +27,9 @@ import { LibraryPage } from './pages/Library';
 import { BlendPage } from './pages/Blend';
 import { NotesPage } from './pages/Notes';
 import { WildPage } from './pages/Wild';
+import { CratePage } from './pages/Crate';
 import { PlaylistMakerProvider } from './components/PlaylistMaker';
+import { QueueProvider } from './components/QueueButton';
 import { ServicesPage } from './pages/Services';
 import { SettingsPage } from './pages/Settings';
 
@@ -68,6 +70,7 @@ export function App() {
     <FilterContext.Provider value={ctx}>
       <PlaylistMakerProvider>
       <HashRouter>
+        <QueueProvider>
         <Routes>
           <Route path="/welcome" element={<Onboarding status={status} onDone={refresh} />} />
           <Route element={<Shell status={status} />}>
@@ -86,6 +89,7 @@ export function App() {
             <Route path="/drift" element={<DriftPage />} />
             <Route path="/compare" element={<ComparePage />} />
             <Route path="/library" element={<LibraryPage />} />
+            <Route path="/crate" element={<CratePage />} />
             <Route path="/blend" element={<BlendPage />} />
             <Route path="/wild" element={<WildPage />} />
             <Route path="/review" element={<ReviewPage />} />
@@ -97,6 +101,7 @@ export function App() {
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>
+        </QueueProvider>
       </HashRouter>
       </PlaylistMakerProvider>
     </FilterContext.Provider>

@@ -8,6 +8,7 @@ const NAV: { to: string; label: string; group?: string }[] = [
   { to: '/', label: 'Dashboard' },
   { to: '/explore', label: 'Explore' },
   { to: '/library', label: 'Library' },
+  { to: '/crate', label: 'The Crate' },
   { to: '/sessions', label: 'Sessions', group: 'Understand' },
   { to: '/insights', label: 'Insights' },
   { to: '/notes', label: 'Liner Notes' },

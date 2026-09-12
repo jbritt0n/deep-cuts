@@ -167,7 +167,7 @@ fn release_date(album: &Value) -> (Option<String>, Option<String>) {
 pub fn enrich_batch(client: &SpotifyClient, db: &Db) -> Result<usize> {
     if client.is_paused() { return Ok(0); }
     let used = client.calls_last_hour(db);
-    let room = ep::budget::ENRICH_PER_HOUR.saturating_sub(used).min(ep::budget::ENRICH_BATCH);
+    let room = ep::budget::enrich_per_hour(db).saturating_sub(used).min(ep::budget::ENRICH_BATCH);
     if room == 0 { return Ok(0); }
     let rows = db.query(&format!(
         "SELECT t.track_id FROM tracks t JOIN (SELECT track_id, COUNT(*) c FROM plays_resolved GROUP BY 1) p USING (track_id)
@@ -179,10 +179,10 @@ pub fn enrich_batch(client: &SpotifyClient, db: &Db) -> Result<usize> {
             Ok(v) => { enrich_track_from_json(db, &v)?; done += 1; }
             Err(ApiError::Quota) => break,
             Err(ApiError::Unauthorized) => break,
-            Err(ApiError::Other(e)) => {
+            Err(e @ (ApiError::Other(_) | ApiError::Http { .. })) => {
                 // 404s etc: mark so we don't retry forever
                 db.exec("UPDATE tracks SET enriched_at = now() WHERE track_id = ?", &[json!(id)])?;
-                log::warn!("enrich {id}: {e:#}");
+                log::warn!("enrich {id}: {e}");
             }
         }
         std::thread::sleep(std::time::Duration::from_millis(250));

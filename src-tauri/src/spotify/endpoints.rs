@@ -10,7 +10,10 @@ pub const REDIRECT_URI: &str = "http://127.0.0.1:8888/callback";
 pub const LOOPBACK_BIND: &str = "127.0.0.1:8888";
 
 /// API-02
-pub const SCOPES: &str = "user-read-recently-played user-library-read playlist-read-private playlist-modify-private playlist-modify-public";
+/// Phase 9b added `user-modify-playback-state` for add-to-queue. Scopes are fixed at consent time, so
+/// users who connected before 9b must reconnect once; `SpotifyClient::has_scope` drives that prompt.
+pub const SCOPES: &str = "user-read-recently-played user-library-read playlist-read-private playlist-modify-private playlist-modify-public user-modify-playback-state";
+pub const SCOPE_QUEUE: &str = "user-modify-playback-state";
 
 pub fn me() -> String { format!("{API_BASE}/me") }
 /// ING-05: max 50 per call.
@@ -27,6 +30,8 @@ pub fn create_playlist() -> String { format!("{API_BASE}/me/playlists") }
 pub fn track(id: &str) -> String { format!("{API_BASE}/tracks/{id}") }
 pub fn album(id: &str) -> String { format!("{API_BASE}/albums/{id}") }
 pub fn artist(id: &str) -> String { format!("{API_BASE}/artists/{id}") }
+/// Phase 9b: add one track to the end of the active playback queue. 404 NO_ACTIVE_DEVICE when nothing is playing anywhere.
+pub fn queue(uri: &str) -> String { format!("{API_BASE}/me/player/queue?uri={}", urlencoding::encode(uri)) }
 
 /// Field names, so `sync.rs` never spells them.
 pub mod f {
@@ -68,6 +73,16 @@ pub mod f {
 pub mod budget {
     pub const POLL_EVERY_SECS: u64 = 20 * 60;          // 3/hour
     pub const LIBRARY_SYNC_EVERY_SECS: u64 = 24 * 3600; // daily
-    pub const ENRICH_PER_HOUR: usize = 200;            // adaptive ceiling
+    /// Default adaptive ceiling. Phase 9b lowered 200 → 100 for daily-quota headroom and made it
+    /// owner-tunable (app_meta `enrich_per_hour`, read by `enrich_per_hour()` below).
+    pub const ENRICH_PER_HOUR: usize = 100;
+    pub const ENRICH_PER_HOUR_MIN: usize = 25;
+    pub const ENRICH_PER_HOUR_MAX: usize = 300;
+    /// The effective hourly ceiling: the stored setting clamped into [MIN, MAX], else the default.
+    pub fn enrich_per_hour(db: &crate::db::Db) -> usize {
+        db.query("SELECT value FROM app_meta WHERE key = 'enrich_per_hour'", &[]).ok()
+            .and_then(|r| r.first().and_then(|m| m.get("value")).and_then(|v| v.as_str()).and_then(|v| v.trim().parse::<usize>().ok()))
+            .map(|v| v.clamp(ENRICH_PER_HOUR_MIN, ENRICH_PER_HOUR_MAX)).unwrap_or(ENRICH_PER_HOUR)
+    }
     pub const ENRICH_BATCH: usize = 25;                // per scheduler tick
 }

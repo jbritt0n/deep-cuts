@@ -161,6 +161,7 @@ pub fn run() {
             commands::rec_feedback,
             commands::create_playlist,
             commands::add_to_radar,
+            commands::queue_track,
             commands::save_text_file,
             commands::import_blend,
             commands::clear_blend,

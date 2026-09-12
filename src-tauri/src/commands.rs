@@ -162,7 +162,9 @@ pub fn get_settings(state: State<'_, AppState>) -> CmdResult<Vec<db::Row>> {
 /// Whitelisted user settings live in app_meta on both records.
 #[tauri::command]
 pub fn set_setting(state: State<'_, AppState>, key: String, value: String) -> CmdResult<()> {
-    const ALLOWED: &[&str] = &["attention_gap_min", "theme", "lyrics_enabled", "album_threshold"];
+    const ALLOWED: &[&str] = &["attention_gap_min", "theme", "lyrics_enabled", "album_threshold",
+        // Phase 9b: weekly-era tuning (design brief §3.5) and the Spotify enrichment ceiling
+        "era_similarity", "era_min_weeks", "era_floor_h", "era_max_gap_weeks", "enrich_per_hour"];
     if !ALLOWED.contains(&key.as_str()) {
         return Err(format!("Unknown setting: {key}"));
     }
@@ -299,8 +301,11 @@ pub fn get_connectors(state: State<'_, AppState>) -> CmdResult<Vec<ConnectorRow>
         let service = g("service").unwrap_or_default();
         let extra = match service.as_str() {
             "spotify" => serde_json::json!({ "hasClientId": has_client, "connected": state.spotify.is_connected(), "paused": state.spotify.is_paused(),
+                // Phase 9b: queueing needs a scope older consents lack; the Services card asks for a one-time reconnect when this is false.
+                "canQueue": state.spotify_ref().has_scope(crate::spotify::endpoints::SCOPE_QUEUE),
+                "callsLastHour": state.spotify_ref().calls_last_hour(&state.real), "enrichPerHour": crate::spotify::endpoints::budget::enrich_per_hour(&state.real),
                 "enrichedTracks": enriched.first().and_then(|x| x.get("e")).and_then(|v| v.as_i64()).unwrap_or(0), "totalTracks": enriched.first().and_then(|x| x.get("n")).and_then(|v| v.as_i64()).unwrap_or(0), "likedSongs": liked }),
-            "lastfm" => serde_json::json!({ "taggedArtists": tag_of("lastfm") }),
+            "lastfm" => serde_json::json!({ "taggedArtists": tag_of("lastfm"), "popularityArtists": state.real.scalar_i64("SELECT COUNT(*) FROM artist_popularity").unwrap_or(0) }),
             "musicbrainz" => serde_json::json!({ "taggedArtists": tag_of("musicbrainz"), "resolvedArtists": mbids }),
             "lastfm_wild" => {
                 let d = r.get("detail").and_then(|v| v.as_str()).and_then(|x| serde_json::from_str::<serde_json::Value>(x).ok()).unwrap_or(serde_json::json!({}));
@@ -372,7 +377,7 @@ pub async fn sync_now(state: State<'_, AppState>, app: AppHandle, service: Strin
                 let enriched = sync::enrich_batch(&client, &real)?;
                 format!("Spotify: +{added} plays, {liked} liked songs, {pls} playlists, {enriched} tracks enriched")
             }
-            "lastfm" => { let t = lastfm::enrich_tags(&real, 60)?; let s = lastfm::enrich_similar(&real, 15)?; format!("Last.fm: tagged {t} artists, {s} similar-artist seeds") }
+            "lastfm" => { let t = lastfm::enrich_tags(&real, 60)?; let s = lastfm::enrich_similar(&real, 15)?; let l = lastfm::enrich_popularity(&real, 30)?; format!("Last.fm: tagged {t} artists, {s} similar-artist seeds, listener counts for {l}") }
             "musicbrainz" => { let n = musicbrainz::resolve_batch(&real, 40)?; let r = musicbrainz::enrich_relations(&real, 15)?; format!("MusicBrainz: resolved {n} artists, relationships for {r}") }
             "statsfm" => { let n = crate::connectors::statsfm::import(&real, 10)?; format!("stats.fm: +{n} plays") }
             "listenbrainz" => { let n = crate::connectors::listenbrainz::enrich_similar(&real, 20)?; format!("ListenBrainz: similar artists for {n} seeds") }
@@ -446,6 +451,13 @@ pub fn rec_feedback(state: State<'_, AppState>, subject_type: String, subject_ke
 pub async fn create_playlist(state: State<'_, AppState>, playlist: crate::playlists::NewPlaylist) -> CmdResult<crate::playlists::CreatedPlaylist> {
     let real = state.real.clone(); let client = state.spotify_ref();
     tauri::async_runtime::spawn_blocking(move || crate::playlists::create(&client, &real, &playlist)).await.map_err(err)?.map_err(err)
+}
+
+/// Phase 9b: drop one track on the end of the active Spotify queue. Returns an outcome, not an error, so the UI can branch (no device / needs reconnect).
+#[tauri::command]
+pub async fn queue_track(state: State<'_, AppState>, track_id: String) -> CmdResult<crate::spotify::queue::QueueOutcome> {
+    let real = state.real.clone(); let client = state.spotify_ref();
+    tauri::async_runtime::spawn_blocking(move || crate::spotify::queue::queue_track(&client, &real, &track_id)).await.map_err(err)
 }
 
 /// DIS-02: add a recommendation (by Spotify search) or explicit track ids to the Radar playlist.

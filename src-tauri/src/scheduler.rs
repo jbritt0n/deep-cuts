@@ -66,7 +66,7 @@ pub fn start(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_secs(90)).await;
         loop {
-            run_blocking(&a, "lastfm", |st| { lastfm::enrich_tags(&st.real, 40)?; lastfm::enrich_similar(&st.real, 10)?; Ok(()) }).await;
+            run_blocking(&a, "lastfm", |st| { lastfm::enrich_tags(&st.real, 40)?; lastfm::enrich_similar(&st.real, 10)?; lastfm::enrich_popularity(&st.real, 15)?; Ok(()) }).await;
             run_blocking(&a, "musicbrainz", |st| {
                 let connected = st.real.query("SELECT status FROM connector_state WHERE service = 'musicbrainz'", &[])
                     .ok().and_then(|r| r.first().and_then(|m| m.get("status")).and_then(|v| v.as_str().map(str::to_string)));

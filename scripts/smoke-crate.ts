@@ -1,0 +1,11 @@
+(globalThis as unknown as { window: object }).window = {};
+import { crateRecords, crateSections, crateSummary } from '../src/lib/crateQueries';
+import { setActiveFilter } from '../src/lib/filter';
+setActiveFilter({ attentiveOnly: true, fromYear: null, toYear: null });
+const time = async <T,>(label: string, fn: () => Promise<T>): Promise<T> => { const t0 = performance.now(); try { const r = await fn(); console.log(`✓ ${label.padEnd(24)} ${(performance.now() - t0).toFixed(0).padStart(5)} ms`); return r; } catch (e) { console.log(`✗ ${label}\n   ${String((e as Error).message ?? e).slice(0, 600)}`); throw e; } };
+const s = await time('crateSummary', crateSummary); console.log('  ', s);
+const secs = await time('crateSections', () => crateSections('all')); console.log('  ', secs.map((x) => `${x.section}:${x.records}`).join(' '));
+const all = await time('crateRecords all/section', () => crateRecords({ sort: 'section' })); console.log(`   ${all.length} records`); for (const r of all.slice(0, 5)) console.log(`   [${r.section ?? '—'}] ${r.album} — ${r.artist} · ${r.plays} plays · wear ${r.wear.toFixed(2)} · obsc ${r.obscurity?.toFixed(2) ?? 'n/a'} · top ${r.topTrack} · ${r.abandoned ? 'ABANDONED' : ''}${r.rediscover ? 'REDISCOVER' : ''}`);
+const back = await time('crateRecords backroom', () => crateRecords({ shelf: 'backroom', sort: 'obscurity' })); console.log('  ', back.slice(0, 3).map((r) => `${r.album} (${r.listeners})`).join(' · '));
+const fresh = await time('crateRecords fresh', () => crateRecords({ shelf: 'fresh' })); console.log('  ', fresh.length);
+const sec = await time('crateRecords section=psych', () => crateRecords({ section: 'psych', sort: 'plays' })); console.log('  ', sec.map((r) => r.artist).join(' · '));

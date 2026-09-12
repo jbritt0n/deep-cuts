@@ -111,3 +111,36 @@ pub fn enrich_similar(db: &Db, max_seeds: usize) -> Result<usize> {
     if n > 0 { db.log_activity("lastfm", "info", &format!("Similar-artist graph: {n} seeds"), None); }
     Ok(n)
 }
+
+/// Phase 9b — obscurity metrics: Last.fm listener counts per artist (`artist.getInfo` → `stats.listeners`).
+/// Artists with no snapshot yet come first (most-played first); once everyone has one, rows older than
+/// 90 days are refreshed. Every fetch appends to `artist_popularity_history` so trajectories accumulate
+/// ("you found them at 5,000 listeners") — the latest snapshot lives in `artist_popularity`.
+pub fn enrich_popularity(db: &Db, max_artists: usize) -> Result<usize> {
+    let Some(key) = secrets::get(secrets::LASTFM_KEY)? else { return Ok(0) };
+    let rows = db.query(&format!(
+        "SELECT a.artist_id, a.name FROM artists a
+         JOIN (SELECT artist_id, COUNT(*) c FROM plays_resolved GROUP BY 1) p USING (artist_id)
+         LEFT JOIN artist_popularity ap USING (artist_id)
+         WHERE (ap.artist_id IS NULL OR ap.fetched_at < now() - INTERVAL 90 DAY)
+           AND NOT EXISTS (SELECT 1 FROM api_calls c WHERE c.service = 'lastfm' AND c.endpoint = 'pop:' || a.artist_id AND c.called_at >= now() - INTERVAL 7 DAY)
+         ORDER BY (ap.artist_id IS NULL) DESC, p.c DESC LIMIT {max_artists}"), &[])?;
+    let mut n = 0;
+    for r in rows {
+        let (Some(id), Some(name)) = (r.get("artist_id").and_then(|v| v.as_str()), r.get("name").and_then(|v| v.as_str())) else { continue };
+        let v = match call(db, &key, "artist.getInfo", &[("artist", name), ("autocorrect", "1")]) {
+            Ok(v) => v, Err(e) => { set_state(db, "lastfm", "connected", None, Some(&e.to_string())); break; }
+        };
+        // remember we looked, even when Last.fm has no stats, so one unknown artist can't block the queue for a week
+        db.exec("INSERT INTO api_calls (service, endpoint, status) VALUES ('lastfm', ?, 200)", &[json!(format!("pop:{id}"))])?;
+        let stats = &v["artist"]["stats"];
+        let parse = |k: &str| stats[k].as_str().and_then(|x| x.parse::<i64>().ok()).or(stats[k].as_i64());
+        let (Some(listeners), playcount) = (parse("listeners"), parse("playcount")) else { continue };
+        db.exec("INSERT INTO artist_popularity (artist_id, listeners, playcount, source, fetched_at) VALUES (?, ?, ?, 'lastfm', now()) ON CONFLICT (artist_id) DO UPDATE SET listeners = excluded.listeners, playcount = excluded.playcount, fetched_at = now()",
+            &[json!(id), json!(listeners), json!(playcount)])?;
+        db.exec("INSERT INTO artist_popularity_history (artist_id, listeners, playcount) VALUES (?, ?, ?)", &[json!(id), json!(listeners), json!(playcount)])?;
+        n += 1;
+    }
+    if n > 0 { db.log_activity("lastfm", "info", &format!("Listener counts for {n} artists"), None); }
+    Ok(n)
+}

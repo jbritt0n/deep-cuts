@@ -56,7 +56,7 @@ Built against the four advisory documents in `docs/recommendations/` plus two ow
 
 **Phase 8 real-data findings** (owner tested the installed build): Heard in the Wild's first import was entirely the owner's own Spotify plays — Pano was scrobbling to a Last.fm account Spotify also fed, and those plays had never reached the record (quota), so the desktop dedup had nothing to match. Fixed at the source (owner created a Pano-only Last.fm account) and in 9a below. Eras still empty for 2025–26 (root cause found, fixed in 9a). Only 7 playlists synced — quota, not code. Enrichment observed landing before polls — real, fixed in 9a.
 
-### Phase 9a — data integrity, eras, playlists (this build)
+### Phase 9a — data integrity, eras, playlists
 SQL/TS verified end-to-end here; **Rust changes uncompiled** (scheduler, `lastfm_wild_reset`).
 - **Eras fixed.** Root cause: the detector *dropped* eras shorter than 2 months, so on a record whose recent months are varied (adjacent cosine < 0.3) every month became a 1-month era and was filtered out — the timeline ended before 2025. Now a run of consecutive short eras that spans 2+ months becomes its own ("restless") era, an isolated short era is absorbed into its neighbour, the month floor dropped 3 h → 1 h, the current era is flagged **in progress**, and an **"how the boundaries were drawn"** panel under Eras shows per-month hours + similarity so the owner can tune on real data. Reproduced and verified against a synthetic varied 2025–26 tail (`insightQueries.eras`, `eraDiagnostic`).
 - **Retention drill-down.** Click any year's retention bar → the artists you found that year who **went quiet** (biggest first, months silent) and who stayed (`retentionDetail`).
@@ -65,16 +65,23 @@ SQL/TS verified end-to-end here; **Rust changes uncompiled** (scheduler, `lastfm
 - **Poll priority over enrichment** (`scheduler.rs`): enrichment starts only after the first poll, runs on the poll's 20-min cadence offset 5 min *after* it, and skips its tick while the quota pause is active. A missed poll is a permanently lost play; enrichment is retryable forever.
 - `PIPELINE_REV` → 9.
 
-**Pivoted / dropped this phase:** Last.fm obsessions export (the obsession isn't in Last.fm's API — read or write; scrape-only, rejected); journal/notes (owner deprioritised); Setlist.fm as next connector (owner chose an audio-features source — see 9b).
+### Phase 9b — weekly eras + genre threads, add-to-queue, quota control, The Crate (this build)
+SQL/TS verified end-to-end (tsc, 21 vitest, 12 fixtures, 6 smoke scripts incl. a structured eras fixture, `vite build`, screenshots in the browser harness); **Rust changes uncompiled** — see `docs/HANDOFF-PHASE-9C.md` §1.
+- **Eras at weekly grain, two layers.** Backbone switched month → ISO week (`insightQueries.eras`); the cosine chain is a reusable `similarityChain()` (norms once per period, inner-join dot product). Defaults 0.04 / 4 wk / 0.5 h / 6 wk from the owner benchmark (`docs/DESIGN-BRIEF-EXPLORATORY-FEATURES.md` §3.2), bounds + presets in `eraParams.ts`, **owner-tunable in Settings with live preview**. **Genre threads** (`threadQueries.ts`): per-tag weekly share ≥ 8 % for ≥ 3 weeks, independent of the backbone, so an "afrobeat thread" can run under three artist-named eras. **Chart** (`charts/EraChart.tsx`): overlapping alpha areas / swimlane toggle, hover-isolate, scroll-to-present, click → list entry.
+- **Add to queue** (`spotify/queue.rs`, `QueueButton.tsx`): a per-track icon in every track row (Explore/Dashboard/Review lists, plays tables, Sessions detail, Library playlists, PlaylistMaker, Track page, The Crate). Structured outcome — *queued / no device / needs reconnect* — and a **one-time reconnect prompt** on Services because the new `user-modify-playback-state` scope postdates existing consents.
+- **Enrichment quota**: `ENRICH_PER_HOUR` 200 → 100 and read at runtime from `app_meta.enrich_per_hour` (Settings slider, 25–300). Services shows calls-in-the-last-hour.
+- **The Crate** (`/crate`, `crateQueries.ts`, `Crate.tsx`): a fanned rolodex of album covers — click/→ flips; **genre dividers** (from `artist_scene`, the same tag-family vocabulary as Scenes) peek up a few flips early; **wear** (log play count) and **abandonment** stamped on the cover; shelves *Whole crate / Fresh crate / Back room / Rediscover*; `CoverTile` fallback shared with `Collage`. **Obscurity** = inverse-log Last.fm listeners on a fixed 10⁷ reference (`artist_obscurity` view) — new `artist_popularity` + `artist_popularity_history` tables, filled by `lastfm::enrich_popularity` (15/tick; history appends every pass so trajectories accumulate).
+
+**Pivoted / dropped in 9a:** Last.fm obsessions export (the obsession isn't in Last.fm's API — read or write; scrape-only, rejected); journal/notes (owner deprioritised); Setlist.fm as next connector (owner chose an audio-features source — see 9b).
 
 ---
 
 ## 2. Known issues — read this before doing anything else
 
 1. **Everything in the Rust layer is undertested.** Phase 8's `lastfm_wild.rs` compiled and ran on the owner's machine (first real cycle). Phase 9a's Rust — the scheduler reordering and `lastfm_wild_reset` — is **uncompiled**. When the owner reports "X doesn't work", the first hypotheses remain: (a) stale record (should self-heal on `PIPELINE_REV` bump — verify), (b) a genuine Rust bug in that connector/command.
-2. **Spotify quota is the binding constraint on the owner's account.** Playlist sync stopped at 7 playlists; polls were being crowded out by enrichment. 9a reorders the scheduler; the *Finish syncing playlists* button re-runs the sync deliberately. If quota is still exhausted daily, the next lever is lowering `budget::ENRICH_PER_HOUR`.
+2. **Spotify quota is the binding constraint on the owner's account.** Playlist sync stopped at 7 playlists; polls were being crowded out by enrichment. 9a reorders the scheduler; the *Finish syncing playlists* button re-runs the sync deliberately. 9b lowered the default enrichment ceiling to 100/h and exposed it in Settings.
 3. **Heard in the Wild's dedup can only match plays that reached the record.** With quota-starved polling, the owner's own plays were missing from the record, so the temporal check had nothing to catch them against. The dedicated Pano-only Last.fm account is the real defence; the desktop check is the safety net. The Services guard now flags the misconfigured state.
-4. **Eras are tuned on synthetic data.** The 9a fix is verified against a synthetic varied tail that reproduces the symptom; the owner's real 2025–26 months should be checked with the new diagnostic panel, and `ERA_MONTH_FLOOR_H` / the 0.3 cosine adjusted from what it shows.
+4. **Era defaults come from one listener's benchmark.** 0.04 / 4 / 0.5 / 6 was tuned on the owner's own weekly history and verified here on a structured fixture; genre-thread thresholds (8 % / 3 weeks) were **not** benchmarked. Both are owner-tunable in Settings (eras) / parameters (threads). Threads are per raw tag, so 'psychedelic' and 'psychedelic rock' can produce twin threads — collapsing to scene families is an open choice.
 5. **stats.fm has no public API.** Marked experimental; will likely never work as built.
 6. **Session-shape rules deserve more fixture coverage** (two were satisfiable by skip-mashing until Phase 6). The short-*playlist*-looping variant of the stuck-repeat class is still unhandled.
 7. **The browser harness has no keyring/OAuth/HTTP connectors.** Anything involving sign-in or connector calls is desktop-only; stubs exist.
@@ -85,7 +92,7 @@ SQL/TS verified end-to-end here; **Rust changes uncompiled** (scheduler, `lastfm
 
 ## 3. What's next
 
-**Read `docs/HANDOFF-PHASE-9B.md`.** It carries the committed 9b scope (audio-features connector, dynamic playlists, world map, weekly review + Liner Notes redesign, remaining owner items) and the longer menu after that. Nothing is duplicated here so the two files can't drift.
+**Read `docs/HANDOFF-PHASE-9C.md`** for what 9b shipped, what must be compiled first, and what remains. `docs/HANDOFF-PHASE-9B.md` still carries the un-started 9b menu items (audio-features connector, dynamic playlists, world map, weekly review + Liner Notes redesign, remaining owner items) and the longer menu after that. Nothing is duplicated here so the two files can't drift.
 
 ---
 

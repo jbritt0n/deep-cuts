@@ -8,8 +8,12 @@ import { RankedBars, TrackList } from '@/components/Lists';
 import { ClockFace } from '@/components/charts/ClockFace';
 import { YearLines } from '@/components/charts/Bars';
 import { MakePlaylistButton } from '@/components/PlaylistMaker';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { spanTracks } from '@/lib/insightQueries';
+import { genreThreads, threadTracks, type GenreThread } from '@/lib/threadQueries';
+import { eraParamsFromSettings, matchingPreset } from '@/lib/eraParams';
+import { EraChart, type EraView } from '@/components/charts/EraChart';
+import { useSettings } from '@/lib/hooks';
 import { sceneTracks, scenes, spanDeepCuts } from '@/lib/phase7Queries';
 import type { TrackRow } from '@/lib/types';
 
@@ -21,7 +25,13 @@ export function InsightsPage() {
   const skips = useAsync(I.skipForensics, [filter]);
   const seas = useAsync(I.seasonality, [filter]);
   const pers = useAsync(I.personas, [filter]);
-  const eras = useAsync(() => I.eras(), [filter]);
+  const settings = useSettings();
+  const eraParams = useMemo(() => eraParamsFromSettings(settings.data ?? []), [settings.data]);
+  const eras = useAsync(() => I.eras(eraParams), [filter, eraParams]);
+  const eraWeeks = useAsync(() => I.eraDiagnostic(eraParams, null), [filter, eraParams]);
+  const threads = useAsync(() => genreThreads(), [filter]);
+  const [eraView, setEraView] = useState<EraView>('areas');
+  const [picked, setPicked] = useState<string | null>(null);
   const [retYear, setRetYear] = useState<number | null>(null);
   const sc = useAsync(scenes, [filter]);
 
@@ -29,22 +39,46 @@ export function InsightsPage() {
     <div className="mx-auto max-w-6xl">
       <Sleeve kicker="Insights" title="What the record says about you" meta="Every card is computed from behaviour alone: skips, repeats, timing, loyalty. No genres needed." />
 
-      <Section title="Eras" subtitle="Stretches of months where the same artists ruled. Adjacent months with similar top-40 mixes are stitched together." state={eras}>
-        {(rows) => rows.length === 0 ? <Muted>Your months don't cluster into eras — you change it up faster than the detector can follow.</Muted> : (
-          <ol className="relative ml-3 border-l border-line pl-6">
-            {rows.map((e) => (
-              <li key={e.start} className="relative mb-5">
-                <span className="absolute -left-[31px] top-1.5 h-2.5 w-2.5 rounded-full bg-amber" />
-                <p className="num text-xs text-dust">{fmtDate(e.start, { month: 'short', year: 'numeric' })} → {fmtDate(e.end, { month: 'short', year: 'numeric' })} · {e.months} months · {fmtHours(e.hours)}{e.skipRate >= 0.18 ? ` · skipped ${Math.round(e.skipRate * 100)}%` : ''}{e.noveltyRate >= 0.5 ? ` · ${Math.round(e.noveltyRate * 100)}% new to you` : ''}</p>
-                <p className="font-display text-2xl">{e.name}{e.inProgress && <span className="ml-3 align-middle rounded-full border border-amber/50 px-2 py-0.5 font-sans text-[10px] uppercase tracking-wide text-amber">in progress</span>}</p>
-                <p className="mt-0.5 text-sm text-dust">{e.topArtists.map((a, i) => <span key={a.artistId}>{i > 0 ? (i === e.topArtists.length - 1 ? ' & ' : ', ') : ''}<Link to={artistHref(a.artistId)} className="hover:text-amber">{a.artist}</Link></span>)} · {seasonWord(e.start, e.end)}</p>
-                <EraExport era={e} />
-              </li>
-            ))}
-          </ol>
+      <Section title="Eras" subtitle="Stretches of weeks where the same artists ruled, stitched from ISO weeks whose top-40 mixes look alike. Underneath, genre threads: tags that carried a real share of your listening for weeks on end, free to overlap the eras and each other." state={eras}>
+        {(rows) => (
+          <div>
+            <div className="mb-6">
+              {eraWeeks.data ? <EraChart weeks={eraWeeks.data} eras={rows} threads={threads.data ?? []} view={eraView} onView={setEraView} onPick={(s) => { setPicked(s.key); document.getElementById(`span-${s.key}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }); }} /> : <Loading label="Drawing the timeline…" />}
+            </div>
+            {rows.length === 0 ? <Muted>Your weeks don't cluster into eras — you change it up faster than the detector can follow. Loosen the similarity threshold in Settings.</Muted> : (
+              <div className="grid gap-8 lg:grid-cols-[1.3fr_1fr]">
+                <ol className="relative ml-3 border-l border-line pl-6">
+                  {rows.map((e) => (
+                    <li key={e.start} id={`span-era:${e.start}`} className={`relative mb-5 rounded-lg transition ${picked === `era:${e.start}` ? 'bg-raised/60 -mx-2 px-2 py-1' : ''}`}>
+                      <span className="absolute -left-[31px] top-1.5 h-2.5 w-2.5 rounded-full bg-amber" />
+                      <p className="num text-xs text-dust">{fmtDate(e.start, { month: 'short', day: 'numeric', year: 'numeric' })} → {fmtDate(e.end, { month: 'short', day: 'numeric', year: 'numeric' })} · {e.weeks} weeks · {fmtHours(e.hours)}{e.skipRate >= 0.18 ? ` · skipped ${Math.round(e.skipRate * 100)}%` : ''}{e.noveltyRate >= 0.5 ? ` · ${Math.round(e.noveltyRate * 100)}% new to you` : ''}</p>
+                      <p className="font-display text-2xl">{e.name}{e.inProgress && <span className="ml-3 align-middle rounded-full border border-amber/50 px-2 py-0.5 font-sans text-[10px] uppercase tracking-wide text-amber">in progress</span>}</p>
+                      <p className="mt-0.5 text-sm text-dust">{e.topArtists.map((a, i) => <span key={a.artistId}>{i > 0 ? (i === e.topArtists.length - 1 ? ' & ' : ', ') : ''}<Link to={artistHref(a.artistId)} className="hover:text-amber">{a.artist}</Link></span>)} · {seasonWord(e.start, e.end)}</p>
+                      <EraExport era={e} />
+                    </li>
+                  ))}
+                </ol>
+                <div>
+                  <p className="mb-2 text-xs text-dust">Genre threads — a tag holding 8%+ of a week's listening for 3+ weeks running. Independent of the eras, so they overlap freely.</p>
+                  {threads.error ? <ErrorBox message={threads.error} /> : !threads.data ? <Muted>Looking for threads…</Muted> : threads.data.length === 0 ? <Muted>No thread long enough yet. Threads need tags — connect Last.fm or MusicBrainz — and a genre that held on for a few weeks.</Muted> : (
+                    <ul className="space-y-3">
+                      {threads.data.map((t) => (
+                        <li key={t.tag + t.start} id={`span-thread:${t.tag}:${t.start}`} className={`rounded-xl border border-line bg-ink/40 p-3 transition ${picked === `thread:${t.tag}:${t.start}` ? 'border-amber/60' : ''}`}>
+                          <p className="num text-xs text-dust">{fmtDate(t.start, { month: 'short', day: 'numeric', year: 'numeric' })} → {fmtDate(t.end, { month: 'short', day: 'numeric', year: 'numeric' })} · {t.weeks} weeks · {fmtHours(t.hours)} · peak {Math.round(t.peakShare * 100)}%</p>
+                          <p className="font-display text-lg"><span className="capitalize">{t.tag}</span> thread{t.inProgress && <span className="ml-2 align-middle rounded-full border border-amber/50 px-2 py-0.5 font-sans text-[10px] uppercase tracking-wide text-amber">live</span>}</p>
+                          <p className="mt-0.5 truncate text-sm text-dust">{t.topArtists.map((a, i) => <span key={a.artistId}>{i > 0 ? ', ' : ''}<Link to={artistHref(a.artistId)} className="hover:text-amber">{a.artist}</Link></span>)}</p>
+                          <ThreadExport t={t} />
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
         )}
       </Section>
-      <EraDiagnostic />
+      <EraDiagnostic params={eraParams} presetName={matchingPreset(eraParams)?.name ?? null} />
 
       <Section title="Scenes" subtitle="Clusters of artists that share tags or origin — afrobeat, Turkish, post-punk. Needs Last.fm or MusicBrainz tags; origins arrive from MusicBrainz." state={sc}>
         {(rows) => rows.length === 0 ? <Muted>No scenes yet — connect Last.fm or MusicBrainz and let tags fill in.</Muted> : (
@@ -209,11 +243,16 @@ function PersonaCol({ label, p }: { label: string; p: I.Persona }) {
 }
 function EraExport({ era }: { era: I.Era }) {
   const [tracks, setTracks] = useState<TrackRow[] | null>(null);
-  const endExcl = (() => { const d = new Date(era.end + 'T00:00:00'); d.setMonth(d.getMonth() + 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-01`; })();
+  const endExcl = era.endExclusive;
   const [deep, setDeep] = useState<TrackRow[] | null>(null);
-  if (tracks) return <div className="mt-2 flex flex-wrap items-center gap-3"><MakePlaylistButton small label={`Export era · ${tracks.length} tracks`} name={era.name} tracks={tracks} kind="insight" description={`${fmtDate(era.start, { month: 'short', year: 'numeric' })} → ${fmtDate(era.end, { month: 'short', year: 'numeric' })}. ${fmtHours(era.hours)}. Made with Deep Cuts.`} note={`era:${era.start}:${endExcl}`} poolRange={[era.start, endExcl]} />
+  if (tracks) return <div className="mt-2 flex flex-wrap items-center gap-3"><MakePlaylistButton small label={`Export era · ${tracks.length} tracks`} name={era.name} tracks={tracks} kind="insight" description={`${fmtDate(era.start, { month: 'short', day: 'numeric', year: 'numeric' })} → ${fmtDate(era.end, { month: 'short', day: 'numeric', year: 'numeric' })}. ${fmtHours(era.hours)}. Made with Deep Cuts.`} note={`era:${era.start}:${endExcl}`} poolRange={[era.start, endExcl]} />
     {deep ? <span className="text-xs text-dust">also in rotation: {deep.slice(0, 8).map((t, i) => <span key={t.trackId}>{i > 0 ? ' · ' : ''}<Link to={trackHref(t.trackId)} className="hover:text-amber">{t.track}</Link></span>)}</span> : <button onClick={() => spanDeepCuts(era.start, endExcl, 10, 12).then(setDeep)} className="text-xs text-dust hover:text-amber">also in rotation…</button>}</div>;
   return <button onClick={() => spanTracks(era.start, endExcl, 30).then(setTracks)} className="mt-2 text-xs text-dust hover:text-amber">Export era as playlist</button>;
+}
+function ThreadExport({ t }: { t: GenreThread }) {
+  const [tracks, setTracks] = useState<TrackRow[] | null>(null);
+  if (tracks) return <div className="mt-2"><MakePlaylistButton small label={`Export thread · ${tracks.length} tracks`} name={`${t.tag} thread · ${fmtDate(t.start, { month: 'short', year: 'numeric' })}`} tracks={tracks} kind="insight" note={`thread:${t.tag}:${t.start}:${t.endExclusive}`} pool={tracks} /></div>;
+  return <button onClick={() => threadTracks(t.tag, t.start, t.endExclusive, 30).then(setTracks)} className="mt-2 text-xs text-dust hover:text-amber">Export thread as playlist</button>;
 }
 function SceneExport({ scene }: { scene: string }) {
   const [tracks, setTracks] = useState<TrackRow[] | null>(null);
@@ -248,19 +287,19 @@ function RetentionDetail({ year }: { year: number }) {
   );
 }
 
-/** Phase 9: why the era boundaries fall where they do. Collapsed by default; the numbers the owner needs to tune the detector on a real record. */
-function EraDiagnostic() {
+/** Phase 9: why the era boundaries fall where they do. Collapsed by default; the numbers the owner needs to tune the detector on a real record (the sliders live in Settings). */
+function EraDiagnostic({ params, presetName }: { params: I.EraParams; presetName: string | null }) {
   const { filter } = useFilter();
   const [open, setOpen] = useState(false);
-  const d = useAsync(() => (open ? I.eraDiagnostic() : Promise.resolve([])), [open, filter]);
+  const d = useAsync(() => (open ? I.eraDiagnostic(params, 52) : Promise.resolve([])), [open, filter, params]);
   return (
     <div className="-mt-4 mb-8 ml-9">
-      <button onClick={() => setOpen(!open)} className="text-xs text-dust hover:text-cream">{open ? '▾' : '▸'} how the boundaries were drawn (last 30 months)</button>
+      <button onClick={() => setOpen(!open)} className="text-xs text-dust hover:text-cream">{open ? '▾' : '▸'} how the boundaries were drawn (last 52 weeks)</button>
       {open && d.data && (
         <div className="mt-2 overflow-x-auto rounded-xl border border-line bg-ink/40 p-3 text-xs">
-          <p className="mb-2 text-dust">Each month's attended hours and how similar its top-40 mix is to the month before (cosine, 0–1). A new era opens when similarity drops below 0.3 or a month is missing; eras shorter than 2 months are folded into the one before.</p>
-          <table className="num w-full text-left"><thead><tr className="text-dust"><th className="pr-3 font-normal">month</th><th className="pr-3 font-normal">hours</th><th className="pr-3 font-normal">similarity</th><th className="pr-3 font-normal">top artist</th></tr></thead>
-            <tbody>{d.data.map((m) => <tr key={m.month} className={m.breaks ? 'text-amber' : ''}><td className="pr-3">{m.month}{m.breaks ? ' ⟵' : ''}</td><td className="pr-3">{m.hours.toFixed(1)}</td><td className="pr-3">{m.cosToPrev == null ? '—' : m.cosToPrev.toFixed(2)}</td><td className="pr-3 font-sans">{m.topArtist ?? ''}</td></tr>)}</tbody></table>
+          <p className="mb-2 text-dust">Each week's hours under the current lens and how similar its top-40 artist mix is to the week before (cosine, 0–1). A new era opens when similarity drops below <span className="num text-cream">{params.similarity}</span> or the gap exceeds <span className="num text-cream">{params.maxGapWeeks}</span> weeks; runs shorter than <span className="num text-cream">{params.minWeeks}</span> weeks are folded into a neighbour; weeks under <span className="num text-cream">{params.floorH} h</span> are ignored. {presetName ? <>Preset: <span className="text-cream">{presetName}</span>.</> : 'Custom tuning.'} <Link to="/settings" className="underline hover:text-cream">Tune in Settings</Link>.</p>
+          <table className="num w-full text-left"><thead><tr className="text-dust"><th className="pr-3 font-normal">week of</th><th className="pr-3 font-normal">hours</th><th className="pr-3 font-normal">similarity</th><th className="pr-3 font-normal">top artist</th></tr></thead>
+            <tbody>{d.data.map((m) => <tr key={m.week} className={m.breaks ? 'text-amber' : ''}><td className="pr-3">{m.week}{m.breaks ? ' ⟵' : ''}</td><td className="pr-3">{m.hours.toFixed(1)}</td><td className="pr-3">{m.cosToPrev == null ? '—' : m.cosToPrev.toFixed(3)}</td><td className="pr-3 font-sans">{m.topArtist ?? ''}</td></tr>)}</tbody></table>
         </div>
       )}
     </div>

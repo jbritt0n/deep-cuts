@@ -1,6 +1,7 @@
 import { C } from '@/lib/theme';
 import { Link } from 'react-router-dom';
 import type { AlbumRow, ArtistRow, OnThisDayRow, PlayRow, RecordItem, SessionRow, TrackRow } from '@/lib/types';
+import { QueueButton } from './QueueButton';
 import { DAY_PART_LABELS, SHAPE_LABELS, albumHref, artistHref, dayHref, fmtHours, fmtInt, fmtMs, fmtPct, fmtTime, trackHref, fmtDate } from '@/lib/format';
 
 export function PlaysTable({ data, showDate = false, limit }: { data: PlayRow[]; showDate?: boolean; limit?: number }) {
@@ -21,6 +22,7 @@ export function PlaysTable({ data, showDate = false, limit }: { data: PlayRow[];
           </div>
           {!p.attended && <span className="text-[10px] text-violet" title="Autoplay with no interaction for a long stretch">unattended</span>}
           <span className="num shrink-0 text-xs text-dust">{p.skipped ? <span className="text-coral">skip</span> : fmtMs(p.msPlayed)}</span>
+          <QueueButton trackId={p.trackId} />
         </li>
       ))}
     </ul>
@@ -41,6 +43,7 @@ export function TrackList({ data, showArtist = true }: { data: TrackRow[]; showA
             <div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-raised"><div className="h-full rounded-full bg-amber/70" style={{ width: `${(t.plays / max) * 100}%` }} /></div>
           </div>
           <span className="num shrink-0 text-right text-xs text-dust">{fmtInt(t.plays)} plays<br /><span className={t.skipRate >= 0.3 ? 'text-coral' : ''}>{fmtPct(t.skipRate)} skips</span></span>
+          <QueueButton trackId={t.trackId} />
         </li>
       ))}
     </ol>

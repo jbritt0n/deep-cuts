@@ -7,6 +7,8 @@ import { query, num, str } from './db';
 import { playsWhere, sessionsWhere } from './filter';
 import type { ArtistRow, TrackRow, SessionShapeRow, HourSlice, DayCell } from './types';
 import { localToday } from './queries';
+import { sanitizeEraParams, type EraParams } from './eraParams';
+export type { EraParams } from './eraParams';
 
 const PW = () => playsWhere();
 const toA = (r: Record<string, unknown>): ArtistRow => ({ artistId: String(r.artistId), artist: String(r.artist), plays: num(r.plays), hours: num(r.hours), skipRate: num(r.skipRate) });
@@ -201,66 +203,91 @@ export async function personas(): Promise<{ weekday: Persona; weekend: Persona; 
   return { weekday, weekend, commute };
 }
 
-// INS-01 — eras: adjacent months whose top-artist share vectors are similar belong to one era.
-// Spec suggests cosine ≥ 0.6; on a varied listener that yields almost no eras, so 0.3 is the default (owner to confirm).
+// INS-01 — eras: adjacent WEEKS whose top-artist share vectors are similar belong to one era.
+//
+// Phase 9b (design brief §3): the backbone moved from month → ISO week (Monday start) so eras
+// land at the 6–12 week scale the owner actually experiences them at. The CTE chain is generic
+// over one truncated-date column, `wk`, so the swap did not restructure it — but the numbers
+// did change shape: weekly top-40 vectors are ~10× noisier than monthly ones (median cosine
+// 0.068 vs ~0.3 on the owner's record), so the threshold dropped from 0.3 to 0.04 and the
+// minimum run from 2 months to 4 weeks. Defaults, bounds and presets live in `eraParams.ts`
+// and are owner-tunable in Settings; the Phase 9 "keep every period" merge logic is unchanged.
 //
 // Phase 9 fix (owner saw no eras for 2025–26, twice): the old query DROPPED any era shorter than
-// `minMonths`, so on a record whose recent months are varied (every adjacent cosine < 0.3) each month
-// became its own 1-month era and was filtered out — the timeline simply ended. Now every month is
-// kept: a RUN of consecutive short eras that together span `minMonths`+ becomes its own era (a restless
-// stretch is still a stretch), and an isolated short era is absorbed into the era before it (or after,
-// at the very start), so the timeline always reaches the present. The month floor also dropped 3 h → 1 h so
-// light months don't punch holes that then force spurious breaks. The current month is flagged
-// `inProgress`. `eraDiagnostic()` below exposes the per-month numbers behind the boundaries.
-export type Era = { start: string; end: string; months: number; hours: number; topArtists: { artistId: string; artist: string; hours: number }[]; skipRate: number; noveltyRate: number; lateShare: number; topShape: string | null; topTag: string | null; name: string; inProgress: boolean };
-const ERA_MONTH_FLOOR_H = 1;
-const ERA_CTES = (similarity: number) => `
-    WITH m AS (
-      SELECT DATE_TRUNC('month', played_at)::DATE AS mo, artist_id, artist_name, SUM(ms_played)/3600000.0 AS h
-      FROM plays_resolved WHERE artist_id IS NOT NULL ${PW()} GROUP BY 1, 2, 3),
-    tot AS (SELECT mo, SUM(h) AS th FROM m GROUP BY 1 HAVING SUM(h) >= ${ERA_MONTH_FLOOR_H}),
-    v AS (SELECT m.mo, m.artist_id, m.artist_name, m.h, m.h / t.th AS share FROM m JOIN tot t USING (mo)
-          QUALIFY ROW_NUMBER() OVER (PARTITION BY m.mo ORDER BY m.h DESC) <= 40),
-    months AS (SELECT DISTINCT mo FROM v ORDER BY mo),
-    pairs AS (SELECT a.mo AS mo, LAG(a.mo) OVER (ORDER BY a.mo) AS prev FROM months a),
-    sim AS (
-      SELECT p.mo, p.prev,
-             COALESCE(SUM(x.share * y.share), 0) / NULLIF(SQRT(SUM(x.share * x.share)) * SQRT((SELECT SUM(share * share) FROM v WHERE mo = p.prev)), 0) AS cos
-      FROM pairs p JOIN v x ON x.mo = p.mo LEFT JOIN v y ON y.mo = p.prev AND y.artist_id = x.artist_id
-      GROUP BY p.mo, p.prev),
-    flagged AS (SELECT mo, prev, cos, CASE WHEN prev IS NULL OR cos < ${similarity} OR (mo - prev) > 40 THEN 1 ELSE 0 END AS brk FROM sim),
-    raw AS (SELECT mo, prev, cos, brk, SUM(brk) OVER (ORDER BY mo ROWS UNBOUNDED PRECEDING) AS era0 FROM flagged)`;
+// the minimum, so on a varied record every period became its own short era and was filtered out —
+// the timeline simply ended. Now every week is kept: a RUN of consecutive short eras that together
+// span `minWeeks`+ becomes its own era, and an isolated short era is absorbed into the era before
+// it (or after, at the very start), so the timeline always reaches the present. The current week
+// is flagged `inProgress`. `eraDiagnostic()` exposes the per-week numbers behind the boundaries.
 
-export async function eras(minMonths = 2, similarity = 0.3): Promise<Era[]> {
-  const rows = await query(`${ERA_CTES(similarity)},
+export type Era = {
+  start: string; end: string; endExclusive: string; weeks: number; hours: number;
+  topArtists: { artistId: string; artist: string; hours: number }[];
+  skipRate: number; noveltyRate: number; lateShare: number; topShape: string | null; topTag: string | null; name: string; inProgress: boolean;
+};
+
+/**
+ * Cosine similarity between each period's vector and the previous period's, as a chain of CTEs.
+ * Expects a CTE `${vectors}` with columns (${period}, ${id}, ${value}) and produces:
+ *   `norms(${period}, n)`, `pairs(${period}, prev)`, `dots(${period}, dot)`, `sim(${period}, prev, cos)`.
+ * Norms are computed once per period instead of via a correlated subquery per pair, and the dot
+ * product is an INNER join on the shared id, so a period with no overlap simply has no `dots` row
+ * (COALESCE → 0). Shared by the artist backbone; any other per-period vector (tags, albums) can
+ * reuse it by naming its CTE.
+ */
+export function similarityChain({ vectors, period, id, value }: { vectors: string; period: string; id: string; value: string }) {
+  return `
+    norms AS (SELECT ${period}, SQRT(SUM(${value} * ${value})) AS n FROM ${vectors} GROUP BY 1),
+    pairs AS (SELECT ${period}, LAG(${period}) OVER (ORDER BY ${period}) AS prev FROM norms),
+    dots AS (SELECT p.${period}, SUM(x.${value} * y.${value}) AS dot
+             FROM pairs p JOIN ${vectors} x ON x.${period} = p.${period} JOIN ${vectors} y ON y.${period} = p.prev AND y.${id} = x.${id}
+             GROUP BY 1),
+    sim AS (SELECT p.${period}, p.prev, COALESCE(d.dot, 0) / NULLIF(nx.n * ny.n, 0) AS cos
+            FROM pairs p LEFT JOIN dots d USING (${period}) JOIN norms nx ON nx.${period} = p.${period} LEFT JOIN norms ny ON ny.${period} = p.prev)`;
+}
+
+const ERA_CTES = (p: EraParams) => `
+    WITH m AS (
+      SELECT DATE_TRUNC('week', played_at)::DATE AS wk, artist_id, artist_name, SUM(ms_played)/3600000.0 AS h
+      FROM plays_resolved WHERE artist_id IS NOT NULL ${PW()} GROUP BY 1, 2, 3),
+    tot AS (SELECT wk, SUM(h) AS th FROM m GROUP BY 1 HAVING SUM(h) >= ${p.floorH}),
+    v AS (SELECT m.wk, m.artist_id, m.artist_name, m.h, m.h / t.th AS share FROM m JOIN tot t USING (wk)
+          QUALIFY ROW_NUMBER() OVER (PARTITION BY m.wk ORDER BY m.h DESC) <= 40),
+    ${similarityChain({ vectors: 'v', period: 'wk', id: 'artist_id', value: 'share' })},
+    flagged AS (SELECT wk, prev, cos, CASE WHEN prev IS NULL OR cos < ${p.similarity} OR (wk - prev) > ${p.maxGapWeeks * 7} THEN 1 ELSE 0 END AS brk FROM sim),
+    raw AS (SELECT wk, prev, cos, brk, SUM(brk) OVER (ORDER BY wk ROWS UNBOUNDED PRECEDING) AS era0 FROM flagged)`;
+
+export async function eras(params?: Partial<EraParams>): Promise<Era[]> {
+  const p = sanitizeEraParams(params);
+  const rows = await query(`${ERA_CTES(p)},
     sizes AS (SELECT era0, COUNT(*) AS n FROM raw GROUP BY 1),
-    big AS (SELECT r.mo, r.era0, s.n < ${minMonths} AS short FROM raw r JOIN sizes s USING (era0)),
-    starts AS (SELECT mo, era0, short, CASE WHEN short AND NOT COALESCE(LAG(short) OVER (ORDER BY mo), FALSE) THEN 1 ELSE 0 END AS run_start FROM big),
-    runs AS (SELECT mo, era0, short, SUM(run_start) OVER (ORDER BY mo ROWS UNBOUNDED PRECEDING) AS run FROM starts),
+    big AS (SELECT r.wk, r.era0, s.n < ${p.minWeeks} AS short FROM raw r JOIN sizes s USING (era0)),
+    starts AS (SELECT wk, era0, short, CASE WHEN short AND NOT COALESCE(LAG(short) OVER (ORDER BY wk), FALSE) THEN 1 ELSE 0 END AS run_start FROM big),
+    runs AS (SELECT wk, era0, short, SUM(run_start) OVER (ORDER BY wk ROWS UNBOUNDED PRECEDING) AS run FROM starts),
     run_len AS (SELECT run, COUNT(*) AS n, MIN(era0) AS era_id FROM runs WHERE short GROUP BY 1),
-    assigned AS (SELECT r.mo, CASE WHEN NOT r.short THEN r.era0 WHEN rl.n >= ${minMonths} THEN rl.era_id END AS era1
+    assigned AS (SELECT r.wk, CASE WHEN NOT r.short THEN r.era0 WHEN rl.n >= ${p.minWeeks} THEN rl.era_id END AS era1
                  FROM runs r LEFT JOIN run_len rl ON rl.run = r.run AND r.short),
     grp AS (
-      SELECT mo, COALESCE(
-        LAST_VALUE(era1 IGNORE NULLS) OVER (ORDER BY mo ROWS UNBOUNDED PRECEDING),
-        FIRST_VALUE(era1 IGNORE NULLS) OVER (ORDER BY mo ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING),
+      SELECT wk, COALESCE(
+        LAST_VALUE(era1 IGNORE NULLS) OVER (ORDER BY wk ROWS UNBOUNDED PRECEDING),
+        FIRST_VALUE(era1 IGNORE NULLS) OVER (ORDER BY wk ROWS BETWEEN CURRENT ROW AND UNBOUNDED FOLLOWING),
         0) AS era FROM assigned),
-    era_art AS (SELECT g.era, v.artist_id, v.artist_name, SUM(v.h) AS h FROM grp g JOIN v USING (mo) GROUP BY 1, 2, 3),
-    span AS (SELECT era, MIN(mo) AS s, MAX(mo) + INTERVAL 1 MONTH AS e FROM grp GROUP BY 1),
+    era_art AS (SELECT g.era, v.artist_id, v.artist_name, SUM(v.h) AS h FROM grp g JOIN v USING (wk) GROUP BY 1, 2, 3),
+    span AS (SELECT era, MIN(wk) AS s, MAX(wk) + INTERVAL 7 DAY AS e FROM grp GROUP BY 1),
     beh AS (SELECT sp.era, AVG(CASE WHEN p.was_skipped THEN 1.0 ELSE 0 END) AS sr, AVG(CASE WHEN p.is_first_play THEN 1.0 ELSE 0 END) AS nov,
                    AVG(CASE WHEN EXTRACT(hour FROM p.played_at) >= 23 OR EXTRACT(hour FROM p.played_at) < 4 THEN 1.0 ELSE 0 END) AS late
             FROM span sp JOIN plays_resolved p ON p.played_at >= sp.s AND p.played_at < sp.e WHERE 1=1 ${PW()} GROUP BY 1),
-    shp AS (SELECT sp.era, arg_max(s.session_shape, c) AS shape FROM span sp JOIN (SELECT session_shape, start_at, COUNT(*) OVER (PARTITION BY session_shape, DATE_TRUNC('month', start_at)) c FROM sessions WHERE track_count >= 3 AND session_shape <> 'steady') s ON s.start_at >= sp.s AND s.start_at < sp.e GROUP BY 1),
+    shp AS (SELECT sp.era, arg_max(s.session_shape, c) AS shape FROM span sp JOIN (SELECT session_shape, start_at, COUNT(*) OVER (PARTITION BY session_shape, DATE_TRUNC('week', start_at)) c FROM sessions WHERE track_count >= 3 AND session_shape <> 'steady') s ON s.start_at >= sp.s AND s.start_at < sp.e GROUP BY 1),
     tg AS (SELECT ea.era, arg_max(t.tag, ea.h * t.weight) AS tag FROM era_art ea JOIN artist_tags t USING (artist_id) GROUP BY 1)
-    SELECT g.era, CAST(MIN(g.mo) AS VARCHAR) AS s, CAST(MAX(g.mo) AS VARCHAR) AS e, COUNT(DISTINCT g.mo) AS n,
+    SELECT g.era, CAST(MIN(g.wk) AS VARCHAR) AS s, CAST(MAX(g.wk) AS VARCHAR) AS e, CAST(MAX(g.wk) + INTERVAL 7 DAY AS DATE)::VARCHAR AS ex, COUNT(DISTINCT g.wk) AS n,
            SUM(t.th) AS hours, MAX(b.sr) AS sr, MAX(b.nov) AS nov, MAX(b.late) AS late, MAX(sh.shape) AS shape, MAX(tg.tag) AS tag,
-           MAX(g.mo) = DATE_TRUNC('month', CAST($1 AS DATE))::DATE AS in_progress,
+           MAX(g.wk) = DATE_TRUNC('week', CAST($1 AS DATE))::DATE AS in_progress,
            (SELECT list(struct_pack(artist_id := artist_id, artist_name := artist_name, h := ROUND(h, 1)) ORDER BY h DESC) FROM (SELECT * FROM era_art ea WHERE ea.era = g.era ORDER BY h DESC LIMIT 3)) AS top
-    FROM grp g JOIN tot t USING (mo) LEFT JOIN beh b ON b.era = g.era LEFT JOIN shp sh ON sh.era = g.era LEFT JOIN tg ON tg.era = g.era
-    GROUP BY g.era ORDER BY MIN(g.mo) DESC`, [localToday()]);
+    FROM grp g JOIN tot t USING (wk) LEFT JOIN beh b ON b.era = g.era LEFT JOIN shp sh ON sh.era = g.era LEFT JOIN tg ON tg.era = g.era
+    GROUP BY g.era ORDER BY MIN(g.wk) DESC`, [localToday()]);
   return rows.map((r) => {
     const e: Era = {
-      start: String(r.s), end: String(r.e), months: num(r.n), hours: num(r.hours),
+      start: String(r.s), end: String(r.e), endExclusive: String(r.ex), weeks: num(r.n), hours: num(r.hours),
       topArtists: ((r.top as { artist_id: string; artist_name: string; h: number }[]) ?? []).map((t) => ({ artistId: t.artist_id, artist: t.artist_name, hours: num(t.h) })),
       skipRate: num(r.sr), noveltyRate: num(r.nov), lateShare: num(r.late), topShape: str(r.shape), topTag: str(r.tag), name: '', inProgress: Boolean(r.in_progress),
     };
@@ -269,32 +296,37 @@ export async function eras(minMonths = 2, similarity = 0.3): Promise<Era[]> {
   });
 }
 
-export type EraMonth = { month: string; hours: number; cosToPrev: number | null; breaks: boolean; topArtist: string | null };
-/** Why the era boundaries fall where they do: per-month hours, similarity to the previous month, and whether it opened a new era. */
-export async function eraDiagnostic(similarity = 0.3, months = 30): Promise<EraMonth[]> {
-  return (await query(`${ERA_CTES(similarity)},
-    ta AS (SELECT mo, arg_max(artist_name, h) AS top FROM v GROUP BY 1)
-    SELECT CAST(r.mo AS VARCHAR) AS mo, t.th AS hours, r.cos, r.brk, ta.top
-    FROM raw r JOIN tot t USING (mo) LEFT JOIN ta USING (mo) ORDER BY r.mo DESC LIMIT ${months}`)).map((r) => ({
-    month: String(r.mo).slice(0, 7), hours: num(r.hours), cosToPrev: r.cos == null ? null : num(r.cos), breaks: num(r.brk) === 1, topArtist: str(r.top),
+export type EraWeek = { week: string; hours: number; cosToPrev: number | null; breaks: boolean; topArtist: string | null };
+/**
+ * Why the era boundaries fall where they do: per-week hours, similarity to the previous week, and
+ * whether it opened a new (pre-merge) era. `limitWeeks = null` returns the whole record — the
+ * eras chart uses that as its weekly hours backbone, so both read one data path.
+ */
+export async function eraDiagnostic(params?: Partial<EraParams>, limitWeeks: number | null = 52): Promise<EraWeek[]> {
+  const p = sanitizeEraParams(params);
+  return (await query(`${ERA_CTES(p)},
+    ta AS (SELECT wk, arg_max(artist_name, h) AS top FROM v GROUP BY 1)
+    SELECT CAST(r.wk AS VARCHAR) AS wk, t.th AS hours, r.cos, r.brk, ta.top
+    FROM raw r JOIN tot t USING (wk) LEFT JOIN ta USING (wk) ORDER BY r.wk DESC ${limitWeeks ? `LIMIT ${Math.max(1, Math.round(limitWeeks))}` : ''}`)).map((r) => ({
+    week: String(r.wk).slice(0, 10), hours: num(r.hours), cosToPrev: r.cos == null ? null : num(r.cos), breaks: num(r.brk) === 1, topArtist: str(r.top),
   })).reverse();
 }
 
-/** Deterministic, a little wry: a mood word only when the behaviour is notable; otherwise the season and the lead artists carry it. */
+/** Deterministic, a little wry: a mood word only when the behaviour is notable; otherwise the season and the lead artists carry it. Season comes from the calendar dates, so it works at any grain. */
 export function nameEra(e: Era): string {
   const m0 = Number(e.start.slice(5, 7)), m1 = Number(e.end.slice(5, 7));
   const season = (m: number) => (m === 12 || m <= 2 ? 'winter' : m <= 5 ? 'spring' : m <= 8 ? 'summer' : 'autumn');
-  const span = season(m0) === season(m1) ? season(m0) : e.months >= 5 ? 'stretch' : `${season(m0)}-into-${season(m1)}`;
+  const span = season(m0) === season(m1) ? season(m0) : e.weeks >= 20 ? 'stretch' : `${season(m0)}-into-${season(m1)}`;
   const lead = e.topArtists[0]?.artist ?? 'Unknown';
   const second = e.topArtists[1]?.artist;
   const cap = (w: string) => w.charAt(0).toUpperCase() + w.slice(1);
-  if (e.months >= 10) return `The year of ${lead}`;
+  if (e.weeks >= 40) return `The year of ${lead}`;
   const aAn = (n: string) => (/^the\s/i.test(n) ? n : `A ${n}`);
   const mood = e.lateShare >= 0.10 ? 'Late nights with' : e.skipRate >= 0.18 ? 'Restless' : e.noveltyRate >= 0.55 ? 'Wide-eyed' : e.topShape === 'album_ride' ? 'Front to back:' : e.topShape === 'comfort_loop' ? 'On repeat:' : e.topShape === 'binge' || e.topShape === 'deep_dive' ? 'All in on' : e.topShape === 'autopilot' ? 'Hands-off' : null;
   if (mood === 'Late nights with' || mood === 'All in on') return `${mood} ${lead}`;
   if (mood === 'Front to back:' || mood === 'On repeat:') return `${mood} ${lead}${second ? ` and ${second}` : ''}`;
   if (mood) return `${mood} ${lead} ${span}`;
-  const v = (e.start.charCodeAt(5) + e.start.charCodeAt(6) + e.months) % 4;
+  const v = (e.start.charCodeAt(5) + e.start.charCodeAt(6) + e.start.charCodeAt(8) + e.weeks) % 4;
   const the = (n: string) => (/^the\s/i.test(n) ? n : `The ${n}`);
   return v === 0 ? `${the(lead)} ${span}` : v === 1 ? `${cap(span)} of ${lead}${second ? ` and ${second}` : ''}` : v === 2 ? `${lead}, ${second ?? 'mostly'}, ${span}` : `${aAn(lead)} ${span}`;
 }

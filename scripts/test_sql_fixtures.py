@@ -128,6 +128,33 @@ def test_wild_start_stamped_sources_and_idempotency():
     assert wild(con, "2024-06-01 09:06:00+00", "Poll Song", "Band") == 0       # exact re-import → idempotent
     assert con.execute("SELECT COUNT(*) FROM wild_plays").fetchone()[0] == 1
 
+def test_obscurity_view_fixed_reference():
+    # Phase 9b: inverse log10 on a FIXED 10^7 reference — stable over time, comparable across records, clamped to [0, 1].
+    con = fresh()
+    for aid, n in [('name:huge', 10_000_000), ('name:mid', 100_000), ('name:tiny', 9), ('name:zero', 0), ('name:absurd', 10**12)]:
+        con.execute("INSERT INTO artist_popularity (artist_id, listeners, playcount) VALUES (?, ?, 0)", [aid, n])
+    o = dict(con.execute("SELECT artist_id, ROUND(obscurity, 3) FROM artist_obscurity").fetchall())
+    assert o['name:huge'] < 0.001, o                 # 10M listeners → ~0
+    assert abs(o['name:mid'] - (1 - 5/7)) < 0.01, o   # 1e5 → 1 - 5/7
+    assert o['name:tiny'] == 1 - 1/7 or abs(o['name:tiny'] - 0.857) < 0.001, o
+    assert o['name:zero'] == 1.0 and o['name:absurd'] == 0.0, o   # clamped both ends
+
+def test_crate_flags_abandoned_and_rediscover():
+    # The Crate's two cover states, computed the same way crateQueries.ts does (plays/days/silence), on a tiny record.
+    con = fresh()
+    play(con, "2024-01-05 20:00:00", "Once", "Solo", album="Left Behind")                              # 1 play, long ago → abandoned
+    for d in range(20): play(con, f"2023-03-{1 + d % 28:02d} 20:00:00", f"Hit {d % 4}", "Loved", album="Old Flame")   # 20 plays, 2023 → rediscover
+    for d in range(5): play(con, f"2024-06-{10 + d:02d} 20:00:00", "Now", "Current", album="Still Spinning")           # recent → neither
+    rebuild(con)
+    rows = con.execute("""
+      WITH p AS (SELECT album_id, arg_max(album_name, ms_played) AS album, COUNT(*) AS plays, COUNT(DISTINCT CAST(played_at AS DATE)) AS days, MAX(played_at) AS last_at FROM plays_resolved WHERE album_id IS NOT NULL GROUP BY 1)
+      SELECT album, (plays <= 2 AND days <= 2 AND CAST(DATE '2024-07-01' - CAST(last_at AS DATE) AS INTEGER) >= 60) AS abandoned,
+             (plays >= 15 AND CAST(DATE '2024-07-01' - CAST(last_at AS DATE) AS INTEGER) >= 365) AS rediscover FROM p""").fetchall()
+    f = {r[0]: (r[1], r[2]) for r in rows}
+    assert f['Left Behind'] == (True, False), f
+    assert f['Old Flame'] == (False, True), f
+    assert f['Still Spinning'] == (False, False), f
+
 if __name__ == '__main__':
     tests = [v for k, v in globals().items() if k.startswith('test_')]
     fails = 0

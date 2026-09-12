@@ -3,6 +3,7 @@ import { inTauri, invoke } from '@/lib/bridge';
 import type { TrackRow } from '@/lib/types';
 import { search, topTracks } from '@/lib/queries';
 import { useDebounced } from '@/lib/hooks';
+import { QueueButton } from './QueueButton';
 
 /**
  * PLY-10: the one preview used by every "Make playlist" button. Remove tracks
@@ -79,6 +80,7 @@ function PlaylistDialog({ draft, onClose }: { draft: Draft; onClose: () => void 
     <li className="flex items-center gap-3 py-1.5 text-sm">
       <span className="min-w-0 flex-1 truncate">{t.track}<span className="ml-2 text-xs text-dust">{t.artist}</span></span>
       <span className="num shrink-0 text-[11px] text-dust">{t.plays ? `${t.plays}×` : ''}</span>
+      <QueueButton trackId={t.trackId} size={12} />
       <button onClick={action} className={`shrink-0 text-xs ${actionLabel === 'remove' ? 'text-dust hover:text-coral' : 'text-dust hover:text-moss'}`}>{actionLabel}</button>
     </li>
   );

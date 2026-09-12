@@ -8,6 +8,7 @@ import { PlaysTable } from '@/components/Lists';
 import { ClockFace } from '@/components/charts/ClockFace';
 import { MonthlySparkline } from '@/components/charts/MonthlySparkline';
 import { Histogram } from '@/components/charts/Bars';
+import { QueueButton } from '@/components/QueueButton';
 
 export function TrackPage() {
   const { id = '' } = useParams();
@@ -25,7 +26,7 @@ export function TrackPage() {
   return (
     <div className="mx-auto max-w-6xl">
       <Sleeve kicker={<>Track{t.rank ? <> · #{t.rank} by plays</> : null} · {t.artistId ? <Link to={artistHref(t.artistId)} className="text-cream/80 hover:text-amber">{t.artist}</Link> : t.artist}{t.album && t.albumId ? <> · <Link to={albumHref(t.albumId)} className="hover:text-amber">{t.album}</Link></> : null}</>}
-        title={t.track}
+        title={<span className="inline-flex items-center gap-4">{t.track}<QueueButton trackId={t.trackId} always size={18} className="p-2" /></span>}
         meta={<>{fmtInt(t.plays)} plays · {fmtHours(t.hours)} · {t.durationMs ? `${fmtMs(t.durationMs)}${t.durationEstimated ? ' (from your longest full play)' : ''}` : 'length unknown'} · first {fmtDate(t.firstPlayed)} · last {fmtDate(t.lastPlayed)}{t.aliases.length ? <> · also listed as {t.aliases.join(', ')}</> : null}</>}>
         {t.earlyExitMs !== null && <p className="mt-4 max-w-xl text-sm text-dust">You bail at the same moment every time: your skips cluster around <span className="num text-cream">{fmtMs(t.earlyExitMs)}</span>.</p>}
       </Sleeve>

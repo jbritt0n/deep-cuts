@@ -3,6 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { DEFAULT_SESSION_FILTERS, PAGE, getSessionDetail, getSessionsOverview, listSessions, type SessionFilters } from '@/lib/sessionQueries';
 import { useAsync, useDebounced, useFilter } from '@/lib/hooks';
+import { QueueButton } from '@/components/QueueButton';
 import { DAY_PART_LABELS, SHAPE_LABELS, SHAPE_RULES, artistHref, fmtDate, fmtHours, fmtInt, fmtMs, fmtPct, fmtTime, trackHref } from '@/lib/format';
 import { Card, Empty, ErrorBox, Loading, Sleeve, StatCard } from '@/components/Card';
 import { invoke } from '@/lib/bridge';
@@ -228,6 +229,7 @@ function SessionDetailPage({ id }: { id: string }) {
                   <div className="mt-1 h-1 overflow-hidden rounded-full bg-raised"><div className="h-full rounded-full" style={{ width: `${(p.msPlayed / maxMs) * 100}%`, background: p.skipped ? C.coral : p.attended ? C.amber : C.violet }} /></div>
                 </div>
                 <span className="num w-12 shrink-0 text-right text-xs text-dust">{fmtMs(p.msPlayed)}</span>
+                <QueueButton trackId={p.trackId} />
               </li>
             ))}
           </ol>

@@ -4,6 +4,7 @@ import { likedAlbums, likedArtists, likedFacets, likedSongs, pruneLists, type Li
 import { playlistHealth, playlistRevisit, playlistTotals, playlistTracks, type PlaylistScope, type PlaylistSort, type PlaylistTrack } from '@/lib/playlistQueries';
 import { earworms, followedPlaylists, madeByDeepCuts } from '@/lib/phase7Queries';
 import { useAsync, useFilter } from '@/lib/hooks';
+import { QueueButton } from '@/components/QueueButton';
 import { albumHref, artistHref, fmtDate, fmtHours, fmtInt, fmtPct, trackHref } from '@/lib/format';
 import { Card, ErrorBox, Loading, Sleeve } from '@/components/Card';
 import { invoke } from '@/lib/bridge';
@@ -140,7 +141,7 @@ function Playlists() {
                 {([['all', 'All', tracks.data.length], ['gem', 'Gems', cur?.gems ?? 0], ['dead', 'Dead weight', cur?.deadWeight ?? 0], ['unheard', 'Unheard', cur?.unheard ?? 0], ['core', 'Core', tracks.data.filter((t) => t.kind === 'core').length]] as const).map(([k, l, n]) => <button key={k} onClick={() => setKindFilter(k)} className={`rounded-full px-3 py-1 ${kindFilter === k ? 'bg-raised text-cream' : 'border border-line text-dust hover:text-cream'}`}>{l} · {n}</button>)}
               </div>
               <ol className="divide-y divide-line/60 text-sm">
-                {shownTracks.map((t) => <li key={`${t.trackId}-${t.position}`} className="flex items-center gap-3 py-2"><span className="num w-6 text-xs text-dust">{t.position + 1}</span><div className="min-w-0 flex-1"><Link to={trackHref(t.trackId)} className="block truncate hover:text-amber">{t.track} {badge(t.kind)}</Link><p className="truncate text-xs text-dust">{t.artist}</p></div><span className="num shrink-0 text-right text-xs text-dust">{t.playsIn} in · {t.playsAll} total<br /><span className={t.skipIn >= 0.5 ? 'text-coral' : ''}>{fmtPct(t.skipIn)} skips</span></span></li>)}
+                {shownTracks.map((t) => <li key={`${t.trackId}-${t.position}`} className="flex items-center gap-3 py-2"><span className="num w-6 text-xs text-dust">{t.position + 1}</span><div className="min-w-0 flex-1"><Link to={trackHref(t.trackId)} className="block truncate hover:text-amber">{t.track} {badge(t.kind)}</Link><p className="truncate text-xs text-dust">{t.artist}</p></div><span className="num shrink-0 text-right text-xs text-dust">{t.playsIn} in · {t.playsAll} total<br /><span className={t.skipIn >= 0.5 ? 'text-coral' : ''}>{fmtPct(t.skipIn)} skips</span></span><QueueButton trackId={t.trackId} /></li>)}
               </ol>
             </div>
           )}

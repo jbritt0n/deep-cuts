@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { invoke } from '@/lib/bridge';
 import type { AppStatus } from '@/lib/types';
-import { useAsync, useFilter } from '@/lib/hooks';
+import { useAsync, useDebounced, useFilter, useSettings } from '@/lib/hooks';
+import { ERA_BOUNDS, ERA_KEYS, ERA_PRESETS, eraParamsFromSettings, matchingPreset, sanitizeEraParams, type EraParams } from '@/lib/eraParams';
+import { eraDiagnostic, eras } from '@/lib/insightQueries';
 import { THEMES } from '@/lib/theme';
 import { fmtInt } from '@/lib/format';
 import { Card, ErrorBox, Sleeve } from '@/components/Card';
@@ -57,6 +59,7 @@ export function SettingsPage({ status, onChanged }: { status: AppStatus; onChang
           </div>
         </Card>
       </div>
+      <div className="mb-6"><EraTuning /></div>
       <div className="grid gap-6 md:grid-cols-2">
         <Card title="Listening history" subtitle="Add a newer export any time. Only new plays are added; the rest is skipped.">
           <Importer compact onDone={onChanged} />
@@ -77,6 +80,8 @@ export function SettingsPage({ status, onChanged }: { status: AppStatus; onChang
             </div>
             <p className="mt-3 text-xs text-dust">120 minutes: a double album with no skips still counts; a laptop left on overnight does not.</p>
           </Card>
+
+          <EnrichmentQuota busy={busy} run={run} />
 
           <Card title="Lyric themes" subtitle="Fetch lyrics from LRCLIB for your most-played tracks and keep only derived themes and keywords — the text itself is never stored.">
             <label className="flex items-center gap-3 text-sm">
@@ -250,6 +255,86 @@ function ReviewOutliers({ busy, run }: { busy: string | null; run: (l: string, f
         </ul>
       ))}
       <p className="mt-3 text-xs text-dust/70">Stuck on repeat = the same track completing naturally 8+ times in a row with no clicks between. Short tracks are ranked by their single busiest day — a loop is a spike, a jingle you love is spread out. Overruns are usually a clock glitch or wrong metadata, listed so you know they exist.</p>
+    </Card>
+  );
+}
+
+/** Phase 9b (design brief §3.5): the four weekly-era knobs, as presets plus bounded sliders with a live preview. Eras aren't materialised, so there's nothing to rebuild — every move re-runs the query. */
+function EraTuning() {
+  const settings = useSettings();
+  const [p, setP] = useState<EraParams | null>(null);
+  useEffect(() => { if (settings.data && !p) setP(eraParamsFromSettings(settings.data)); }, [settings.data, p]);
+  const live = useDebounced(p, 350);
+  const preview = useAsync(async () => { if (!live) return null; const [e, d] = await Promise.all([eras(live), eraDiagnostic(live, 52)]); return { eras: e, weeks: d }; }, [live]);
+  const [saved, setSaved] = useState<string | null>(null);
+  useEffect(() => {
+    if (!live || !settings.data) return;
+    const stored = eraParamsFromSettings(settings.data);
+    const changed = (Object.keys(ERA_KEYS) as (keyof EraParams)[]).filter((k) => stored[k] !== live[k]);
+    if (!changed.length) return;
+    Promise.all(changed.map((k) => invoke('set_setting', { key: ERA_KEYS[k], value: String(live[k]) }))).then(() => { setSaved(new Date().toLocaleTimeString()); settings.reload(); }).catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [live]);
+  if (!p) return <Card title="Eras"><p className="text-sm text-dust">Loading…</p></Card>;
+  const preset = matchingPreset(p);
+  const set = (k: keyof EraParams, v: number) => setP(sanitizeEraParams({ ...p, [k]: v }));
+  const lens = preview.data?.eras.map((e) => e.weeks).sort((a, b) => a - b) ?? [];
+  const median = lens.length ? lens[Math.floor(lens.length / 2)] : 0;
+  const verdict = !preview.data ? null : preview.data.eras.length <= 2 ? 'Everything is one blob — raise the similarity threshold or shorten the minimum era.' : median <= 3 ? 'Every few weeks is its own era — lower the threshold or lengthen the minimum.' : 'Looks textured: a mix of short and long stretches.';
+  return (
+    <Card title="Eras" subtitle="How the Insights timeline is cut into eras. Weekly grain; the recommended bundle came from a benchmark on a real record and won't suit every listener, so tune it here and watch the count respond." aside={saved ? <span className="text-xs text-moss">saved {saved}</span> : undefined}>
+      <div className="grid gap-6 lg:grid-cols-[1fr_1.1fr]">
+        <div>
+          <div className="mb-4 flex flex-wrap gap-2">
+            {ERA_PRESETS.map((x) => (
+              <button key={x.id} onClick={() => setP({ ...x.params })} aria-pressed={preset?.id === x.id} className={`rounded-xl border px-3 py-2 text-left transition ${preset?.id === x.id ? 'border-amber bg-amber/5' : 'border-line hover:border-dust'}`}>
+                <p className="text-sm">{x.name}</p><p className="text-[11px] text-dust">{x.blurb}</p>
+              </button>
+            ))}
+            {!preset && <span className="self-center rounded-full border border-line px-3 py-1 text-xs text-dust">custom</span>}
+          </div>
+          <div className="space-y-4">
+            {(Object.keys(ERA_BOUNDS) as (keyof EraParams)[]).map((k) => { const b = ERA_BOUNDS[k]; return (
+              <div key={k}>
+                <div className="flex items-baseline justify-between text-sm"><label htmlFor={`era-${k}`}>{b.label}</label><span className="num text-xs text-cream">{k === 'similarity' ? p[k].toFixed(3) : p[k]}{b.unit ? ` ${b.unit}` : ''}</span></div>
+                <input id={`era-${k}`} type="range" min={b.min} max={b.max} step={b.step} value={p[k]} onChange={(e) => set(k, Number(e.target.value))} className="mt-1 w-full accent-amber" />
+                <p className="mt-0.5 text-[11px] text-dust/80">{b.why}</p>
+              </div>
+            ); })}
+          </div>
+          <p className="mt-4 text-xs text-dust/70">The knobs interact: a lower threshold wants a longer minimum era. If the preview says every week is its own era, you've gone too far — pick a preset to come back.</p>
+        </div>
+        <div className="rounded-xl border border-line bg-ink/40 p-4">
+          {!preview.data ? <p className="text-sm text-dust">Re-cutting the timeline…</p> : (
+            <div>
+              <p className="font-display text-3xl">{preview.data.eras.length} <span className="text-base text-dust">eras</span>{lens.length > 0 && <span className="num ml-3 text-sm text-dust">{lens[0]}–{lens[lens.length - 1]} weeks · median {median}</span>}</p>
+              <p className={`mt-1 text-xs ${preview.data.eras.length <= 2 || median <= 3 ? 'text-coral' : 'text-moss'}`}>{verdict}</p>
+              <p className="mt-4 text-xs text-dust">Last 52 weeks — each cell is one week; an amber cell opened a new era before merging.</p>
+              <div className="mt-2 flex flex-wrap gap-0.5">{preview.data.weeks.map((w) => <span key={w.week} title={`${w.week}: ${w.hours.toFixed(1)} h · similarity ${w.cosToPrev?.toFixed(3) ?? '—'}`} className={`h-4 w-3 rounded-sm ${w.breaks ? 'bg-amber' : 'bg-raised'}`} />)}</div>
+              <ul className="mt-4 space-y-1.5 text-sm">{preview.data.eras.slice(0, 6).map((e) => <li key={e.start} className="flex items-baseline gap-3"><span className="num w-24 shrink-0 text-xs text-dust">{e.start.slice(0, 7)} · {e.weeks}w</span><span className="truncate">{e.name}</span></li>)}{preview.data.eras.length > 6 && <li className="text-xs text-dust">and {preview.data.eras.length - 6} more</li>}</ul>
+              <Link to="/insights" className="mt-3 inline-block text-xs text-dust underline hover:text-cream">See them on Insights</Link>
+            </div>
+          )}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+/** Phase 9b: the Spotify enrichment ceiling, exposed. Polling and enrichment share one daily quota; enrichment is retryable forever, a missed poll is a lost play. Default lowered 200 → 100 for headroom. */
+function EnrichmentQuota({ busy, run }: { busy: string | null; run: (l: string, fn: () => Promise<unknown>, ok: string) => Promise<void> }) {
+  const settings = useSettings();
+  const stored = useMemo(() => Number(settings.data?.find((r) => r.key === 'enrich_per_hour')?.value ?? 100) || 100, [settings.data]);
+  const [v, setV] = useState<number | null>(null);
+  const val = v ?? stored;
+  return (
+    <Card title="Spotify enrichment budget" subtitle="Track-metadata calls per hour. Polling for new plays is never throttled by this; it only caps the background enrichment that shares Spotify's daily quota with it.">
+      <div className="flex items-center gap-3">
+        <input type="range" min={25} max={300} step={25} value={val} onChange={(e) => setV(Number(e.target.value))} className="flex-1 accent-amber" aria-label="Enrichment calls per hour" />
+        <span className="num w-24 text-right text-sm">{val} / hour</span>
+        <button disabled={!!busy || val === stored} onClick={() => run('enrich', async () => { await invoke('set_setting', { key: 'enrich_per_hour', value: String(val) }); settings.reload(); }, `Enrichment capped at ${val} calls an hour.`)} className="rounded-full bg-amber px-4 py-2 text-sm font-medium text-ink disabled:opacity-40">Apply</button>
+      </div>
+      <p className="mt-3 text-xs text-dust">100 is the safe default: enough to work through a library over a few weeks while leaving room for the 20-minute poll every day. Raise it if enrichment is the only thing you're waiting on; lower it if the Activity log shows quota pauses.</p>
     </Card>
   );
 }

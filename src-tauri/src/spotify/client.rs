@@ -24,13 +24,21 @@ pub struct SpotifyClient {
 pub enum ApiError {
     Quota,          // QUOTA_EXCEEDED — stop for the day
     Unauthorized,   // refresh failed / not connected
+    /// Phase 9b: a non-retryable HTTP status with Spotify's error body, so callers can branch on
+    /// specific cases (404 NO_ACTIVE_DEVICE for the queue, 403 missing scope) instead of parsing text.
+    Http { status: u16, body: String },
     Other(anyhow::Error),
 }
 impl From<anyhow::Error> for ApiError { fn from(e: anyhow::Error) -> Self { ApiError::Other(e) } }
 impl From<reqwest::Error> for ApiError { fn from(e: reqwest::Error) -> Self { ApiError::Other(e.into()) } }
 impl std::fmt::Display for ApiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self { ApiError::Quota => write!(f, "Spotify quota exceeded for today"), ApiError::Unauthorized => write!(f, "Spotify is not connected"), ApiError::Other(e) => write!(f, "{e:#}") }
+        match self {
+            ApiError::Quota => write!(f, "Spotify quota exceeded for today"),
+            ApiError::Unauthorized => write!(f, "Spotify is not connected"),
+            ApiError::Http { status, body } => write!(f, "Spotify {status}: {}", body.chars().take(200).collect::<String>()),
+            ApiError::Other(e) => write!(f, "{e:#}"),
+        }
     }
 }
 
@@ -46,6 +54,10 @@ impl SpotifyClient {
     }
 
     pub fn is_connected(&self) -> bool { self.tokens.lock().map(|t| t.is_some()).unwrap_or(false) }
+    /// Whether the stored consent includes `scope` (Spotify returns the granted scopes space-separated).
+    pub fn has_scope(&self, scope: &str) -> bool {
+        self.tokens.lock().ok().and_then(|g| g.as_ref().map(|t| t.scope.split_whitespace().any(|s| s == scope))).unwrap_or(false)
+    }
     pub fn client_id(&self) -> String { self.client_id.clone() }
     pub fn set_tokens(&self, t: Option<Tokens>) { if let Ok(mut g) = self.tokens.lock() { *g = t; } }
     pub fn is_paused(&self) -> bool { *self.paused_until.lock().unwrap_or_else(|p| p.into_inner()) > auth::now_secs() }
@@ -112,7 +124,7 @@ impl SpotifyClient {
                     delay = (delay * 2).min(120);
                 }
                 500..=599 => { std::thread::sleep(Duration::from_secs(delay)); delay = (delay * 2).min(60); }
-                _ => return Err(anyhow!("Spotify {status} on {url}: {}", text.chars().take(200).collect::<String>()).into()),
+                code => return Err(ApiError::Http { status: code, body: text }),
             }
         }
         Err(anyhow!("Spotify kept rate-limiting {url}; gave up for now").into())

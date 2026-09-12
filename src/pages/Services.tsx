@@ -9,7 +9,7 @@ type Row = { service: string; status: string; account: string | null; lastSyncAt
 
 const META: Record<string, { name: string; adds: string; color: string }> = {
   coverart: { name: 'Cover Art Archive', adds: 'Album art.', color: '#9C93AD' }, lyrics: { name: 'LRCLIB', adds: 'Lyric themes.', color: '#9C93AD' }, origin: { name: 'Artist origin', adds: 'Where your artists are from.', color: '#9C93AD' },
-  spotify: { name: 'Spotify', adds: 'Live plays every 20 minutes (also from the tray), liked songs and playlists, real track lengths and release dates.', color: C.moss },
+  spotify: { name: 'Spotify', adds: 'Live plays every 20 minutes (also from the tray), liked songs and playlists, real track lengths and release dates, and “add to queue” from any track row.', color: C.moss },
   lastfm: { name: 'Last.fm', adds: 'Genre and mood tags per artist, and the similar-artist graph that will power recommendations.', color: C.coral },
   musicbrainz: { name: 'MusicBrainz', adds: 'Canonical artist identities so renamed artists merge, plus folksonomy tags. No account needed.', color: C.amber },
   statsfm: { name: 'stats.fm', adds: 'Plays Spotify never recorded from other devices you pointed at stats.fm.', color: C.violet },
@@ -117,9 +117,17 @@ function SpotifyBody({ row, busy, run }: { row: Row; busy: string | null; run: R
           {busy === 'spotify' ? 'Waiting for your browser…' : 'Connect Spotify'}
         </button>
       )}
+      {connected && row.extra.canQueue === false && (
+        <div className="rounded-xl border border-amber/50 bg-amber/5 p-3 text-xs">
+          <p className="text-cream">One-time reconnect needed for “add to queue”.</p>
+          <p className="mt-1 text-dust">This version can drop any track onto your Spotify queue, which needs a permission (playback control) your existing connection was granted before it existed. Spotify fixes permissions at consent time, so connect once more — your record, tokens and playlists are untouched.</p>
+          <button disabled={!!busy} onClick={() => run('spotify', () => invoke<string>('spotify_connect'), (r) => `Reconnected as ${String(r)}. Queue buttons are live.`)} className="mt-2 rounded-full bg-amber px-3 py-1.5 text-xs font-medium text-ink disabled:opacity-40">{busy === 'spotify' ? 'Waiting for your browser…' : 'Reconnect Spotify'}</button>
+        </div>
+      )}
       {connected && (
         <div className="num text-xs text-dust">
           <p>{fmtInt(Number(row.extra.likedSongs ?? 0))} liked songs · {fmtInt(Number(row.extra.enrichedTracks ?? 0))} of {fmtInt(Number(row.extra.totalTracks ?? 0))} tracks enriched{row.extra.paused ? <span className="text-amber"> · quota reached, enrichment resumes at midnight</span> : ''}</p>
+          <p className="mt-1">{fmtInt(Number(row.extra.callsLastHour ?? 0))} Spotify calls in the last hour · enrichment capped at {fmtInt(Number(row.extra.enrichPerHour ?? 100))}/h (<Link to="/settings" className="underline hover:text-cream">change</Link>){row.extra.canQueue ? ' · queue enabled' : ''}</p>
           <button disabled={!!busy} onClick={() => run('spotify', () => invoke('spotify_disconnect'), () => 'Spotify disconnected.')} className="mt-2 text-dust hover:text-cream">Disconnect</button>
         </div>
       )}

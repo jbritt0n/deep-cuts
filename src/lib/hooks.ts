@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useRef, useState, type DependencyList } from 'react';
-import { listen } from './bridge';
+import { invoke, listen } from './bridge';
 import { DEFAULT_FILTER, type ListeningFilter } from './filter';
 
 export type AsyncState<T> = { data: T | null; error: string | null; loading: boolean; reload: () => void };
@@ -44,4 +44,9 @@ export function useDebounced<T>(value: T, ms = 250): T {
   const [v, setV] = useState(value);
   useEffect(() => { const t = setTimeout(() => setV(value), ms); return () => clearTimeout(t); }, [value, ms]);
   return v;
+}
+
+/** app_meta settings as {key, value} rows; re-read on data:changed and on demand. Used by the eras tuning (Settings ↔ Insights share one source of truth). */
+export function useSettings(): AsyncState<{ key: string; value: string }[]> {
+  return useAsync(() => invoke<{ key: string; value: string }[]>('get_settings'), []);
 }
