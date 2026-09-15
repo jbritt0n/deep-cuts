@@ -25,6 +25,23 @@ export function fmtDate(ts: string, opts: Intl.DateTimeFormatOptions = { weekday
   return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).toLocaleDateString('en-US', opts);
 }
 
+/**
+ * Phase 9e: instants (activity log, last sync, imports) are stored as TIMESTAMPTZ and come out of DuckDB as UTC
+ * text; show them in the record's time zone (Settings → Record), not UTC. Plays use local wall-clock TIMESTAMPs
+ * already, so they don't go through this.
+ */
+let appTimezone: string | undefined;
+export const setAppTimezone = (tz: string | null | undefined) => { appTimezone = tz || undefined; };
+export function fmtStamp(ts: string | null | undefined, opts: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) {
+  if (!ts) return '';
+  let iso = String(ts).trim().replace(' ', 'T');
+  if (!/[zZ]$|[+-]\d{2}(:?\d{2})?$/.test(iso)) iso += 'Z';           // no offset → it was UTC
+  else if (/[+-]\d{2}$/.test(iso)) iso += ':00';                       // '+00' → '+00:00'
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return String(ts).slice(0, 16);
+  try { return d.toLocaleString('en-US', { ...opts, timeZone: appTimezone }); } catch { return d.toLocaleString('en-US', opts); }
+}
+
 export const hourLabel = (h: number) => (h === 0 ? '12 AM' : h === 12 ? '12 PM' : h < 12 ? `${h} AM` : `${h - 12} PM`);
 
 /** §6.2 shapes v2. */

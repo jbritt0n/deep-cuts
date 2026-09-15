@@ -34,7 +34,7 @@ jobs:
       - name: Query smoke tests against the demo record
         run: |
           python3 scripts/seed_dev_db.py
-          DEEPCUTS_TZ=America/Detroit node dev-server.mjs & sleep 6
+          OLLAMA_MOCK=1 DEEPCUTS_TZ=America/Detroit node dev-server.mjs & sleep 6
           npx tsx scripts/smoke-queries.ts
           npx tsx scripts/smoke-insights.ts
           npx tsx scripts/smoke-recs.ts
@@ -43,6 +43,7 @@ jobs:
           npx tsx scripts/smoke-crate.ts
           npx tsx scripts/smoke-metrics.ts
           npx tsx scripts/smoke-awards.ts
+          OLLAMA_MOCK=1 npx tsx scripts/smoke-ask.ts
 
   build:
     needs: test

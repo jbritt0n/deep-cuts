@@ -1,8 +1,13 @@
 /**
- * Browser dev harness: serves the same commands the Tauri core exposes, over
- * HTTP, against a DuckDB file. Lets you iterate on the UI with `npm run
- * dev:browser` and no Rust toolchain. Read-only except import/rebuild.
- *   DEEPCUTS_DB=path/to/deep-cuts.duckdb node dev-server.mjs
+ * Browser harness AND headless server: serves the same commands the Tauri core exposes, over HTTP,
+ * against a DuckDB file. Two jobs:
+ *   1. `npm run dev:browser` — iterate on the UI with no Rust toolchain (vite on :1420 talks to :4747).
+ *   2. Phase 9e — the always-on Docker deployment: with DEEPCUTS_STATIC pointing at a `vite build`
+ *      output it also serves the app itself, so http://host:4747/ is Deep Cuts in a browser.
+ * Read-only except import / rebuild / settings / feedback. Connectors (Spotify polling, Last.fm…) live in the
+ * Rust core only — the container is the analyst over a record the desktop app collects (docs/DOCKER.md).
+ *   DEEPCUTS_DB=…/deep-cuts.duckdb  DEEPCUTS_STATIC=dist  HOST=0.0.0.0  PORT=4747  OLLAMA_URL=http://host:11434  node dev-server.mjs
+ *   DEEPCUTS_READONLY=1 opens the file read-only (safe while the desktop app has it open) and refuses writes politely.
  */
 import http from 'node:http';
 import fs from 'node:fs';
@@ -16,10 +21,11 @@ const rd = (n) => fs.readFileSync(path.join(sqlDir, n), 'utf8');
 const dbPath = process.env.DEEPCUTS_DB ?? path.join(here, 'dev-data', 'deep-cuts.duckdb');
 fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 
-const inst = await DuckDBInstance.create(dbPath);
+const READONLY = !!process.env.DEEPCUTS_READONLY;
+const inst = await DuckDBInstance.create(dbPath, READONLY ? { access_mode: 'READ_ONLY' } : undefined);
 const con = await inst.connect();
 await con.run("SET TimeZone='UTC'");
-await con.run(rd('schema.sql'));
+if (!READONLY) await con.run(rd('schema.sql'));
 const events = [];
 const emit = (name, payload) => events.push({ name, payload });
 
@@ -88,6 +94,12 @@ async function stage(file) {
   return { name: path.basename(file), rowsTotal: +p.rows_total, rowsAudio: +p.rows_audio, rowsSkipped: +p.rows_skipped, rowsDuplicateInFile: +p.rows_duplicate_in_file, rowsAlreadyImported: +p.rows_already_imported, firstTs: p.first_ts, lastTs: p.last_ts };
 }
 
+async function ollamaUrl() {
+  if (process.env.OLLAMA_URL) return process.env.OLLAMA_URL.replace(/\/$/, '');
+  try { const v = await scalar("SELECT value FROM app_meta WHERE key = 'ollama_url'"); if (v) return String(v).replace(/\/$/, ''); } catch { /* fresh db */ }
+  return 'http://127.0.0.1:11434';
+}
+
 const commands = {
   async get_status() {
     const n = +(await scalar('SELECT COUNT(*) FROM plays_resolved'));
@@ -143,6 +155,33 @@ const commands = {
   async rec_feedback({ subjectType, subjectKey, engine, verdict }) { await con.run(`INSERT INTO recommendation_feedback (subject_type, subject_key, engine, verdict) VALUES ('${subjectType}', '${String(subjectKey).replace(/'/g, "''")}', '${engine}', '${verdict}')`); return null; },
   async create_playlist() { throw new Error('Creating playlists needs the desktop app connected to Spotify.'); },
   async add_to_radar() { throw new Error('Radar needs the desktop app connected to Spotify.'); },
+  // Phase 9e: Ollama proxy (browser harness + Docker). OLLAMA_URL env wins; else app_meta ollama_url; else localhost.
+  async llm_status() {
+    if (process.env.OLLAMA_MOCK) return { reachable: true, url: 'mock://ollama', models: ['mock-model'], error: null };
+    const url = await ollamaUrl();
+    try { const r = await fetch(`${url}/api/tags`, { signal: AbortSignal.timeout(4000) }); if (!r.ok) throw new Error(`HTTP ${r.status}`); const v = await r.json(); return { reachable: true, url, models: (v.models ?? []).map((m) => m.name), error: null }; }
+    catch (e) { return { reachable: false, url, models: [], error: String(e.message ?? e) }; }
+  },
+  async llm_chat({ model, messages, jsonMode, temperature }) {
+    // OLLAMA_MOCK=1: a canned "model" for the smoke tests and screenshots — writes one fixed query, narrates one sentence.
+    if (process.env.OLLAMA_MOCK) {
+      const last = messages[messages.length - 1]?.content ?? '';
+      if (jsonMode) return JSON.stringify(/fix it/i.test(last) ? { sql: 'SELECT artist_name, COUNT(*) AS plays FROM plays_resolved WHERE attended GROUP BY 1 ORDER BY 2 DESC LIMIT 5', explanation: 'repaired', answerable: true } : /lyrics/i.test(last) ? { sql: 'SELECT track_id, track_name, artist_name, COUNT(*) AS plays FROM plays_resolved WHERE attended GROUP BY 1, 2, 3 ORDER BY 4 DESC LIMIT 8', explanation: 'top tracks', answerable: true } : /weather|rain/i.test(last) ? { answerable: false, why_not: 'Weather is not in the record.' } : { sql: 'SELECT artist_name, COUNT(*) AS plays, ROUND(SUM(ms_played)/3600000.0, 1) AS hours FROM plays_resolved WHERE attended GROUP BY 1 ORDER BY 2 DESC LIMIT 5', explanation: 'top artists by plays', answerable: true });
+      return `(mock narration for ${model}) The rows say what they say: five names, a few thousand plays between them, and one of them well ahead of the rest.`;
+    }
+    const url = await ollamaUrl();
+    const body = { model, messages, stream: false, options: { temperature: temperature ?? 0.2, num_ctx: 8192 } }; if (jsonMode) body.format = 'json';
+    const r = await fetch(`${url}/api/chat`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(240000) });
+    const text = await r.text(); if (!r.ok) throw new Error(`Ollama ${r.status}: ${text.slice(0, 300)}`);
+    return JSON.parse(text).message?.content ?? '';
+  },
+  async set_artist_scene({ artistId, scene }) {
+    const q = (v) => (v == null ? 'NULL' : `'${String(v).replace(/'/g, "''")}'`);
+    await con.run(`INSERT INTO scene_overrides (artist_id, scene) VALUES (${q(artistId)}, ${q(scene)}) ON CONFLICT (artist_id) DO UPDATE SET scene = excluded.scene, decided_at = now()`);
+    await con.run(`DELETE FROM artist_scene WHERE artist_id = ${q(artistId)}`);
+    if (scene) await con.run(`INSERT INTO artist_scene VALUES (${q(artistId)}, ${q(scene)}, 9.0)`);
+    return null;
+  },
   async queue_track({ trackId }) { return { status: String(trackId).startsWith('local:') ? 'unqueueable' : 'not_connected', message: 'Queueing needs the desktop app connected to Spotify.' }; },
   async save_text_file({ path: p, contents }) { fs.writeFileSync(p, contents); return null; },
   async import_blend({ path: input, label }) { const files = locate(input); if (!files.length) throw new Error('No history files found'); await con.run(`DELETE FROM blend_plays WHERE label = '${String(label).replace(/'/g, "''")}'`); let n = 0; for (const f of files) { await con.run(rd('import_stage.sql').replace('?1', `'${f.replace(/'/g, "''")}'`)); const before = +(await scalar('SELECT COUNT(*) FROM blend_plays')); await con.run(rd('import_blend.sql').replace('?1', `'${String(label).replace(/'/g, "''")}'`)); n += +(await scalar('SELECT COUNT(*) FROM blend_plays')) - before; } emit('data:changed', { reason: 'blend' }); return n; },
@@ -162,6 +201,20 @@ const commands = {
   async statsfm_connect() { throw new Error('Connectors need the desktop app.'); }, async statsfm_disconnect() { return null; }, async musicbrainz_connect() { throw new Error('Connectors need the desktop app.'); }, async musicbrainz_disconnect() { return null; },
 };
 
+const STATIC = process.env.DEEPCUTS_STATIC ? path.resolve(process.env.DEEPCUTS_STATIC) : (fs.existsSync(path.join(here, 'dist', 'index.html')) && process.env.DEEPCUTS_SERVE_DIST ? path.join(here, 'dist') : null);
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2', '.woff': 'font/woff', '.json': 'application/json', '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json' };
+const WRITE_CMDS = new Set(['set_setting', 'set_timezone', 'rebuild', 'rec_feedback', 'set_artist_scene', 'set_session_attention', 'merge_artists', 'import_files', 'start_import', 'set_tz_override', 'delete_tz_override']);
+function serveStatic(url, res) {
+  if (!STATIC) return false;
+  let rel = decodeURIComponent(url.pathname); if (rel === '/' || rel === '') rel = '/index.html';
+  let file = path.join(STATIC, rel);
+  if (!file.startsWith(STATIC)) return false;
+  if (!fs.existsSync(file) || fs.statSync(file).isDirectory()) { if (path.extname(rel)) return false; file = path.join(STATIC, 'index.html'); }
+  res.setHeader('content-type', MIME[path.extname(file)] ?? 'application/octet-stream');
+  if (rel.startsWith('/assets/')) res.setHeader('cache-control', 'public, max-age=31536000, immutable');
+  fs.createReadStream(file).pipe(res); return true;
+}
+const PORT = Number(process.env.PORT ?? 4747), HOST = process.env.HOST ?? '127.0.0.1';
 http.createServer(async (req, res) => {
   res.setHeader('access-control-allow-origin', '*');
   res.setHeader('access-control-allow-headers', 'content-type');
@@ -173,11 +226,14 @@ http.createServer(async (req, res) => {
     for (const e of mine) events.splice(events.indexOf(e), 1);
     res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify(mine.map((e) => e.payload)));
   }
-  const cmd = url.pathname.slice(1);
+  if (url.pathname === '/_health') { res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify({ ok: true, db: dbPath, readonly: READONLY, static: !!STATIC })); }
+  const cmd = url.pathname.replace(/^\/api\//, '/').slice(1);
+  if (req.method === 'GET' && !commands[cmd] && serveStatic(url, res)) return;
   let body = ''; for await (const c of req) body += c;
   try {
     if (!commands[cmd]) throw new Error(`unknown command ${cmd}`);
+    if (READONLY && WRITE_CMDS.has(cmd)) throw new Error('This server is read-only — make the change in the desktop app.');
     const out = await commands[cmd](body ? JSON.parse(body) : {});
     res.setHeader('content-type', 'application/json'); res.end(JSON.stringify(out ?? null, (_, v) => (typeof v === 'bigint' ? Number(v) : v)));
   } catch (e) { res.statusCode = 400; res.end(String(e.message ?? e)); }
-}).listen(4747, () => console.log(`Deep Cuts dev server on :4747 — db ${dbPath} — zone ${zone}`));
+}).listen(PORT, HOST, () => console.log(`Deep Cuts server on http://${HOST}:${PORT} — db ${dbPath}${READONLY ? ' (read-only)' : ''} — zone ${zone}${STATIC ? ` — serving ${STATIC}` : ''}`));

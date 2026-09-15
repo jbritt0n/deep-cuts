@@ -25,7 +25,7 @@ export type CrateRecord = {
   albumId: string; album: string; artistId: string | null; artist: string; imageUrl: string | null;
   plays: number; hours: number; days: number; firstPlayed: string; lastPlayed: string; daysSilent: number;
   tracksPlayed: number; totalTracks: number | null; topTrackId: string | null; topTrack: string | null;
-  obscurity: number | null; listeners: number | null; section: string | null;
+  obscurity: number | null; listeners: number | null; section: string | null; filedByYou: boolean; topTags: string[];
   wear: number; abandoned: boolean; rediscover: boolean; kept: boolean;
 };
 export type CrateSection = { section: string; records: number; hours: number };
@@ -52,12 +52,13 @@ const BASE = () => `
              arg_max(p.track_id, CASE WHEN p.track_id LIKE 'local:%' THEN 0 ELSE 1 END * 1000000 + p.ms_played) AS top_track_id
       FROM plays_resolved p WHERE p.album_id IS NOT NULL ${playsWhere('p')} GROUP BY 1),
     tt AS (SELECT track_id, arg_max(track_name, ms_played) AS name FROM plays_resolved WHERE track_id IS NOT NULL GROUP BY 1),
-    sc AS (SELECT artist_id, arg_max(scene, weight) AS scene FROM artist_scene GROUP BY 1),
+    sc AS (SELECT artist_id, arg_max(scene, weight) AS scene, MAX(weight) >= 9 AS filed_by_you FROM artist_scene GROUP BY 1),
+    tg AS (SELECT artist_id, list(tag ORDER BY weight DESC)[1:4] AS tags FROM artist_tags WHERE weight >= 0.2 GROUP BY 1),
     r AS (
-      SELECT p.*, al.image_url, al.total_tracks, o.obscurity, o.listeners, sc.scene AS section, tt.name AS top_track,
+      SELECT p.*, al.image_url, al.total_tracks, o.obscurity, o.listeners, sc.scene AS section, sc.filed_by_you, tg.tags AS top_tags, tt.name AS top_track,
              CAST(CAST($1 AS DATE) - CAST(p.last_at AS DATE) AS INTEGER) AS days_silent
       FROM p LEFT JOIN albums al ON al.album_id = p.album_id LEFT JOIN artist_obscurity o ON o.artist_id = p.artist_id
-             LEFT JOIN sc ON sc.artist_id = p.artist_id LEFT JOIN tt ON tt.track_id = p.top_track_id),
+             LEFT JOIN sc ON sc.artist_id = p.artist_id LEFT JOIN tg ON tg.artist_id = p.artist_id LEFT JOIN tt ON tt.track_id = p.top_track_id),
     fb AS (SELECT subject_key AS album_id, arg_max(verdict, decided_at) AS verdict, MAX(decided_at) AS at FROM recommendation_feedback WHERE engine = 'crate' AND subject_type = 'album' GROUP BY 1),
     flags AS (
       SELECT r.*, (plays <= 2 AND days <= 2 AND days_silent >= 60) AS abandoned, (plays >= 15 AND days_silent >= 365) AS rediscover,
@@ -73,13 +74,13 @@ export async function crateRecords({ shelf = 'all', section = null, sort = 'sect
   if (section) { params.push(section); sec = `AND section = $${params.length}`; }
   const rows = await query(`${BASE()}
     SELECT album_id, album, artist_id, artist, image_url, plays, ROUND(hours, 2) AS hours, days, CAST(first_at AS VARCHAR) AS first_at, CAST(last_at AS VARCHAR) AS last_at, days_silent,
-           tracks_played, total_tracks, top_track_id, top_track, obscurity, listeners, section, wear, abandoned, rediscover, kept
+           tracks_played, total_tracks, top_track_id, top_track, obscurity, listeners, section, filed_by_you, top_tags, wear, abandoned, rediscover, kept
     FROM flags WHERE NOT skipped AND ${SHELF_WHERE[shelf]} ${sec} ORDER BY kept DESC, ${SORTS[sort]} LIMIT ${Math.max(1, Math.round(limit))}`, params);
   return rows.map((r) => ({
     albumId: String(r.album_id), album: String(r.album), artistId: str(r.artist_id), artist: String(r.artist ?? ''), imageUrl: str(r.image_url),
     plays: num(r.plays), hours: num(r.hours), days: num(r.days), firstPlayed: String(r.first_at), lastPlayed: String(r.last_at), daysSilent: num(r.days_silent),
     tracksPlayed: num(r.tracks_played), totalTracks: r.total_tracks == null ? null : num(r.total_tracks), topTrackId: str(r.top_track_id), topTrack: str(r.top_track),
-    obscurity: r.obscurity == null ? null : num(r.obscurity), listeners: r.listeners == null ? null : num(r.listeners), section: str(r.section),
+    obscurity: r.obscurity == null ? null : num(r.obscurity), listeners: r.listeners == null ? null : num(r.listeners), section: str(r.section), filedByYou: Boolean(r.filed_by_you), topTags: Array.isArray(r.top_tags) ? (r.top_tags as unknown[]).map(String) : [],
     wear: num(r.wear), abandoned: Boolean(r.abandoned), rediscover: Boolean(r.rediscover), kept: Boolean(r.kept),
   }));
 }
@@ -146,3 +147,8 @@ export async function related(albumId: string, artistId: string | null): Promise
     dormant: all.filter((a) => a.known && a.lastPlayed && today - Date.parse(a.lastPlayed.slice(0, 10) + 'T00:00:00') >= 365 * 86400e3).slice(0, 6),
   };
 }
+
+/** Every scene family the tag map knows (mirror of `_scene_map` in compute_insights.sql), for the "file under…" picker. */
+export const SCENES = ['afro', 'turkish', 'japanese', 'post-punk', 'dream', 'psych', 'hip-hop', 'jazz', 'funk-soul', 'electronic', 'indie', 'folk', 'metal', 'caribbean', 'latin', 'classical', 'punk', 'classic-rock'];
+/** Obscurity tiers, shared by the cover stamp and the record card. */
+export const obscurityTier = (o: number) => (o >= 0.45 ? 'ultra rare' : o >= 0.3 ? 'rare' : o >= 0.18 ? 'cult' : o >= 0.1 ? 'known' : 'everyone knows');

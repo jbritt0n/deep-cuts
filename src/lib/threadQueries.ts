@@ -26,8 +26,16 @@ export type GenreThread = {
   tag: string; start: string; end: string; endExclusive: string; weeks: number; hours: number; peakShare: number; meanShare: number;
   topArtists: { artistId: string; artist: string; hours: number }[]; inProgress: boolean; series: ThreadWeek[];
 };
-export type ThreadParams = { minWeeks: number; shareFloor: number; tagFloor: number; maxThreads: number };
-export const THREAD_DEFAULTS: ThreadParams = { minWeeks: 3, shareFloor: 0.08, tagFloor: 0.2, maxThreads: 12 };
+export type ThreadParams = { minWeeks: number; shareFloor: number; tagFloor: number; maxThreads: number; maxCoverage: number; decades: boolean };
+export const THREAD_DEFAULTS: ThreadParams = { minWeeks: 3, shareFloor: 0.08, tagFloor: 0.2, maxThreads: 12, maxCoverage: 0.2, decades: true };
+
+/**
+ * Phase 9e (owner: "rock could mean many things"): tags too broad to be a thread. Two filters, both applied:
+ *   1. this list — umbrella genres, meta-tags and Last.fm noise words;
+ *   2. coverage — any tag carried by more than `maxCoverage` (20 %) of YOUR tagged artists is, for you, generic,
+ *      whatever it is. On a library that is 60 % indie rock, 'indie rock' says nothing; 'slowcore' does.
+ */
+export const GENERIC_TAGS = new Set(['rock', 'pop', 'indie', 'alternative', 'alternative rock', 'indie rock', 'indie pop', 'electronic', 'electronica', 'experimental', 'seen live', 'favorites', 'favourites', 'favorite', 'awesome', 'love', 'beautiful', 'chill', 'chillout', 'male vocalists', 'female vocalists', 'female vocalist', 'male vocalist', 'singer-songwriter', 'american', 'british', 'usa', 'uk', 'english', 'canadian', 'australian', 'german', 'french', '00s', '90s', '80s', '70s', '60s', '10s', '2000s', '2010s', '2020s', 'under 2000 listeners', 'all', 'music', 'good', 'cool', 'fun', 'classic', 'soundtrack', 'instrumental', 'live', 'cover', 'covers', 'remix', 'compilation', 'various artists', 'oldies', 'new', 'old']);
 /** Defaults with the owner's tag floor applied (Settings → Tuning). */
 const threadDefaults = (): ThreadParams => ({ ...THREAD_DEFAULTS, tagFloor: numSetting('tag_floor') });
 
@@ -49,20 +57,50 @@ export function findRuns(weeks: ThreadWeek[], floor: number, minWeeks: number): 
 
 type ShareRow = { tag: string; week: string; hours: number; share: number };
 
-/** Per-tag, per-week share of listening carried by artists holding the tag (weight ≥ tagFloor). Weeks under `weekFloorH` hours are dropped so a stray play can't be a 100 % week. */
-export async function tagWeekShares(tagFloor = THREAD_DEFAULTS.tagFloor, weekFloorH = 0.5): Promise<ShareRow[]> {
+/**
+ * Per-tag, per-week share of listening carried by artists holding the tag (weight ≥ tagFloor). Weeks under
+ * `weekFloorH` hours are dropped so a stray play can't be a 100 % week. Generic tags (see GENERIC_TAGS) and tags
+ * covering more than `maxCoverage` of your tagged artists are excluded, so threads stay niche.
+ */
+export async function tagWeekShares(tagFloor = THREAD_DEFAULTS.tagFloor, weekFloorH = 0.5, maxCoverage = THREAD_DEFAULTS.maxCoverage): Promise<ShareRow[]> {
+  const generic = [...GENERIC_TAGS].map((t) => `'${t.replace(/'/g, "''")}'`).join(', ');
   return (await query(`
     WITH w AS (SELECT DATE_TRUNC('week', played_at)::DATE AS wk, artist_id, SUM(ms_played)/3600000.0 AS h
                FROM plays_resolved WHERE artist_id IS NOT NULL ${playsWhere()} GROUP BY 1, 2),
     tot AS (SELECT wk, SUM(h) AS th FROM w GROUP BY 1 HAVING SUM(h) >= ${Number(weekFloorH)}),
-    tags AS (SELECT artist_id, tag FROM artist_tags WHERE weight >= ${Number(tagFloor)} GROUP BY 1, 2),
+    tagged AS (SELECT COUNT(DISTINCT artist_id) AS n FROM artist_tags WHERE weight >= ${Number(tagFloor)}),
+    cov AS (SELECT tag, COUNT(DISTINCT artist_id) * 1.0 / (SELECT n FROM tagged) AS coverage FROM artist_tags WHERE weight >= ${Number(tagFloor)} GROUP BY 1),
+    tags AS (SELECT t.artist_id, t.tag FROM artist_tags t JOIN cov USING (tag)
+             WHERE t.weight >= ${Number(tagFloor)} AND lower(t.tag) NOT IN (${generic}) AND cov.coverage <= ${Number(maxCoverage)} GROUP BY 1, 2),
     tw AS (SELECT t.tag, w.wk, SUM(w.h) AS h FROM w JOIN tags t USING (artist_id) GROUP BY 1, 2)
     SELECT tw.tag, CAST(tw.wk AS VARCHAR) AS wk, ROUND(tw.h, 2) AS h, tw.h / tot.th AS share
     FROM tw JOIN tot USING (wk) ORDER BY tw.tag, tw.wk`)).map((r) => ({ tag: String(r.tag), week: String(r.wk).slice(0, 10), hours: num(r.h), share: num(r.share) }));
 }
 
+/**
+ * Phase 9e: decades as a second kind of thread — the share of each week's listening from tracks RELEASED in a decade
+ * (Spotify enrichment's release_date). Tagged '1970s' etc. so they display like genre threads; the current decade is
+ * skipped because most listening is recent and it would always be a thread.
+ */
+export async function decadeWeekShares(weekFloorH = 0.5): Promise<ShareRow[]> {
+  return (await query(`
+    WITH w AS (SELECT DATE_TRUNC('week', p.played_at)::DATE AS wk, (EXTRACT(year FROM t.release_date)::INT / 10) * 10 AS decade, SUM(p.ms_played)/3600000.0 AS h
+               FROM plays_resolved p JOIN tracks t USING (track_id) WHERE t.release_date IS NOT NULL ${playsWhere('p')} GROUP BY 1, 2),
+    tot AS (SELECT DATE_TRUNC('week', played_at)::DATE AS wk, SUM(ms_played)/3600000.0 AS th FROM plays_resolved WHERE 1=1 ${playsWhere()} GROUP BY 1 HAVING SUM(ms_played)/3600000.0 >= ${Number(weekFloorH)})
+    SELECT CAST(w.decade AS VARCHAR) || 's' AS tag, CAST(w.wk AS VARCHAR) AS wk, ROUND(w.h, 2) AS h, w.h / tot.th AS share
+    FROM w JOIN tot USING (wk) WHERE w.decade < (EXTRACT(year FROM CAST($1 AS DATE))::INT / 10) * 10 ORDER BY 1, 2`, [localToday()])).map((r) => ({ tag: String(r.tag), week: String(r.wk).slice(0, 10), hours: num(r.h), share: num(r.share) }));
+}
+
 /** Top artists carrying `tag` inside a span — the names on a thread's card. */
 async function threadArtists(tag: string, from: string, toExclusive: string, tagFloor: number, n = 3) {
+  if (/^\d{4}s$/.test(tag)) {
+    const d = Number(tag.slice(0, 4));
+    return (await query(`
+      SELECT p.artist_id, arg_max(p.artist_name, p.ms_played) AS name, ROUND(SUM(p.ms_played)/3600000.0, 1) AS h
+      FROM plays_resolved p JOIN tracks t USING (track_id)
+      WHERE EXTRACT(year FROM t.release_date) >= $1 AND EXTRACT(year FROM t.release_date) < $1 + 10 AND p.played_at >= CAST($2 AS DATE) AND p.played_at < CAST($3 AS DATE) ${playsWhere('p')}
+      GROUP BY 1 ORDER BY h DESC LIMIT ${n}`, [d, from, toExclusive])).map((r) => ({ artistId: String(r.artist_id), artist: String(r.name), hours: num(r.h) }));
+  }
   return (await query(`
     SELECT p.artist_id, arg_max(p.artist_name, p.ms_played) AS name, ROUND(SUM(p.ms_played)/3600000.0, 1) AS h
     FROM plays_resolved p JOIN (SELECT artist_id FROM artist_tags WHERE tag = $1 AND weight >= ${Number(tagFloor)} GROUP BY 1) t USING (artist_id)
@@ -76,7 +114,7 @@ async function threadArtists(tag: string, from: string, toExclusive: string, tag
  */
 export async function genreThreads(params?: Partial<ThreadParams>): Promise<GenreThread[]> {
   const p = { ...threadDefaults(), ...(params ?? {}) };
-  const rows = await tagWeekShares(p.tagFloor);
+  const rows = [...await tagWeekShares(p.tagFloor, 0.5, p.maxCoverage), ...(p.decades ? await decadeWeekShares() : [])];
   const byTag = new Map<string, ThreadWeek[]>();
   for (const r of rows) { const arr = byTag.get(r.tag) ?? []; arr.push({ week: r.week, hours: r.hours, share: r.share }); byTag.set(r.tag, arr); }
   const thisWeek = isoMonday(localToday());
@@ -97,6 +135,15 @@ export async function genreThreads(params?: Partial<ThreadParams>): Promise<Genr
 
 /** Tracks inside a thread span by artists carrying the tag — the "export thread as playlist" hook. */
 export async function threadTracks(tag: string, from: string, toExclusive: string, n = 30, tagFloor = THREAD_DEFAULTS.tagFloor) {
+  if (/^\d{4}s$/.test(tag)) {
+    const d = Number(tag.slice(0, 4));
+    return (await query(`
+      SELECT p.track_id AS "trackId", p.track_name AS track, p.artist_id AS "artistId", p.artist_name AS artist, COUNT(*) AS plays,
+             ROUND(SUM(p.ms_played)/3600000.0, 1) AS hours, AVG(CASE WHEN p.was_skipped THEN 1.0 ELSE 0 END) AS "skipRate"
+      FROM plays_resolved p JOIN tracks t USING (track_id)
+      WHERE EXTRACT(year FROM t.release_date) >= $1 AND EXTRACT(year FROM t.release_date) < $1 + 10 AND p.track_id IS NOT NULL AND p.played_at >= CAST($2 AS DATE) AND p.played_at < CAST($3 AS DATE) ${playsWhere('p')}
+      GROUP BY 1, 2, 3, 4 ORDER BY SUM(p.ms_played) DESC LIMIT ${n}`, [d, from, toExclusive])).map((r) => ({ trackId: String(r.trackId), track: String(r.track), artistId: str(r.artistId), artist: String(r.artist ?? ''), plays: num(r.plays), hours: num(r.hours), skipRate: num(r.skipRate) }));
+  }
   return (await query(`
     SELECT p.track_id AS "trackId", p.track_name AS track, p.artist_id AS "artistId", p.artist_name AS artist, COUNT(*) AS plays,
            ROUND(SUM(p.ms_played)/3600000.0, 1) AS hours, AVG(CASE WHEN p.was_skipped THEN 1.0 ELSE 0 END) AS "skipRate"

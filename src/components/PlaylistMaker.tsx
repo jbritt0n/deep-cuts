@@ -51,7 +51,7 @@ function PlaylistDialog({ draft, onClose }: { draft: Draft; onClose: () => void 
   const dq = useDebounced(q, 200);
   const [found, setFound] = useState<TrackRow[]>([]);
   const [busy, setBusy] = useState(false);
-  const [result, setResult] = useState<{ url: string; added: number } | null>(null);
+  const [result, setResult] = useState<{ url: string; added: number; on_spotify?: number | null; duplicates_dropped?: number } | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [lastRemoved, setLastRemoved] = useState<TrackRow | null>(null);
 
@@ -126,7 +126,7 @@ function PlaylistDialog({ draft, onClose }: { draft: Draft; onClose: () => void 
             {!result && <button disabled={busy || !tracks.length || !name.trim()} onClick={create} className="rounded-full bg-amber px-5 py-2 text-sm font-medium text-ink disabled:opacity-40">{busy ? 'Creating…' : `Create on Spotify · ${tracks.length}`}</button>}
           </div>
           {err && <p className="w-full text-xs text-coral">{err}{!inTauri ? ' (needs the desktop app connected to Spotify)' : ''}</p>}
-          {result && <p className="w-full text-sm text-moss">Created with {result.added} tracks. <a href={result.url} target="_blank" rel="noreferrer" className="underline">Open in Spotify</a></p>}
+          {result && <p className="w-full text-sm text-moss">Created with {result.added} tracks{result.on_spotify != null && result.on_spotify < result.added ? <span className="text-amber"> — Spotify shows {result.on_spotify}; it dropped ids it no longer serves (see Activity)</span> : null}{result.duplicates_dropped ? ` · ${result.duplicates_dropped} duplicate${result.duplicates_dropped === 1 ? "" : "s"} removed` : ""}. <a href={result.url} target="_blank" rel="noreferrer" className="underline">Open in Spotify</a></p>}
         </div>
       </div>
     </div>

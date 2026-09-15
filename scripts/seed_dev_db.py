@@ -32,6 +32,13 @@ for a, n in POP.items():
     con.execute("INSERT INTO artist_popularity (artist_id, listeners, playcount) VALUES (?, ?, ?) ON CONFLICT DO NOTHING", [f'name:{a}', n, n * 40])
     con.execute("INSERT INTO artist_popularity_history (artist_id, listeners, playcount) VALUES (?, ?, ?)", [f'name:{a}', n, n * 40])
 for f in ('compute_sessions.sql', 'compute_milestones.sql', 'compute_insights.sql'): con.execute(rd(f))  # tags must exist before sessions so chaos can score
+# Phase 9e dev stand-ins: lyric keywords for the most-played tracks (invented — no real lyrics involved), so the cloud renders.
+WORDS = ['night', 'river', 'gold', 'shadow', 'summer', 'home', 'fire', 'window', 'heart', 'city', 'rain', 'stranger', 'light', 'road', 'ocean', 'ghost', 'silver', 'dance', 'morning', 'fever', 'garden', 'mirror', 'letter', 'train', 'smoke', 'wire', 'winter', 'radio', 'blue', 'velvet']
+THEMES = ['night', 'rain', 'cities', 'colours', 'love', 'leaving', 'weather', 'home']
+top = con.execute("SELECT track_id FROM plays_resolved WHERE track_id IS NOT NULL GROUP BY 1 ORDER BY COUNT(*) DESC LIMIT 120").fetchall()
+for i, (tid,) in enumerate(top):
+    kws = [WORDS[(i * 7 + k * 3) % len(WORDS)] for k in range(6)]; ths = [THEMES[(i + k) % len(THEMES)] for k in range(2)]
+    con.execute("INSERT INTO track_lyric_features (track_id, source, found, word_count, keywords, themes, colours, lang) VALUES (?, 'dev', TRUE, 200, ?, ?, [], 'en') ON CONFLICT DO NOTHING", [tid, kws, ths])
 # Phase 9d dev stand-ins: catalogue sizes (≈3× the songs heard) and a few feature credits, so Dig Deeper / Superlatives render.
 con.execute("UPDATE artists SET catalogue_tracks = 3 * (SELECT COUNT(DISTINCT track_id) FROM plays_resolved p WHERE p.artist_id = artists.artist_id), catalogue_fetched_at = now()")
 feat = con.execute("SELECT t.track_id, t.artist_id, a.name FROM tracks t JOIN artists a USING (artist_id) WHERE t.track_id NOT LIKE 'local:%' ORDER BY t.track_id LIMIT 6").fetchall()

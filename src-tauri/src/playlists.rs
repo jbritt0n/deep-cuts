@@ -20,7 +20,7 @@ pub struct NewPlaylist {
 }
 
 #[derive(Debug, Clone, Serialize)]
-pub struct CreatedPlaylist { pub spotify_playlist_id: String, pub url: String, pub added: usize, pub skipped_local: usize }
+pub struct CreatedPlaylist { pub spotify_playlist_id: String, pub url: String, pub added: usize, pub skipped_local: usize, pub on_spotify: Option<i64>, pub duplicates_dropped: usize }
 
 pub fn create(client: &SpotifyClient, db: &Db, p: &NewPlaylist) -> Result<CreatedPlaylist> {
     let ids: Vec<&String> = p.track_ids.iter().filter(|t| !t.starts_with("local:")).collect();
@@ -30,18 +30,28 @@ pub fn create(client: &SpotifyClient, db: &Db, p: &NewPlaylist) -> Result<Create
     let created = client.post(db, &ep::create_playlist(), body).map_err(|e| anyhow!("{e}"))?;
     let pid = created[f::ID].as_str().ok_or_else(|| anyhow!("Spotify didn't return a playlist id"))?.to_string();
     let url = created["external_urls"]["spotify"].as_str().unwrap_or("").to_string();
+    // Phase 9e (owner report: "playlists only partially added"): dedupe ids first — Spotify silently drops repeats
+    // within one request — pause between 100-URI chunks so a burst can't trip a 429 mid-list, and verify the count
+    // Spotify reports afterwards so a short playlist is visible in the result and the Activity log, not a mystery.
+    let mut seen = std::collections::HashSet::new();
+    let unique: Vec<&String> = ids.iter().copied().filter(|id| seen.insert(id.as_str())).collect();
+    let duplicates_dropped = ids.len() - unique.len();
     let mut added = 0;
-    for chunk in ids.chunks(100) {
+    for (ci, chunk) in unique.chunks(100).enumerate() {
+        if ci > 0 { std::thread::sleep(std::time::Duration::from_millis(400)); }
         let uris: Vec<String> = chunk.iter().map(|id| format!("spotify:track:{id}")).collect();
-        client.post(db, &ep::playlist_items(&pid, 100, 0).split('?').next().unwrap().to_string(), json!({ "uris": uris })).map_err(|e| anyhow!("{e}"))?;
+        let items_url = ep::playlist_items(&pid, 100, 0).split('?').next().unwrap().to_string();
+        client.post(db, &items_url, json!({ "uris": uris })).map_err(|e| anyhow!("adding tracks {}–{} failed after {added} added: {e}", ci * 100 + 1, ci * 100 + chunk.len()))?;
         added += chunk.len();
     }
+    let on_spotify = client.get(db, &ep::playlist(&pid), true).ok().and_then(|v| v["tracks"]["total"].as_i64().or(v["items"]["total"].as_i64()));
+    if let Some(total) = on_spotify { if (total as usize) < added { db.log_activity("playlist", "warn", &format!("Spotify reports {total} tracks on “{}” but {added} were sent", p.name), Some("Spotify may have rejected ids it no longer serves (relinked or removed tracks).")); } }
     db.exec(
         "INSERT INTO created_playlists (spotify_playlist_id, name, kind, theme_text, track_ids, is_public) VALUES (?, ?, ?, ?, CAST(? AS JSON), ?)",
         &[json!(pid), json!(p.name), json!(p.kind), json!(p.source_note), json!(serde_json::to_string(&p.track_ids)?), json!(p.public)],
     )?;
     db.log_activity("playlist", "info", &format!("Created playlist “{}” ({added} tracks, {})", p.name, if p.public { "public" } else { "private" }), Some(&url));
-    Ok(CreatedPlaylist { spotify_playlist_id: pid, url, added, skipped_local })
+    Ok(CreatedPlaylist { spotify_playlist_id: pid, url, added, skipped_local, on_spotify, duplicates_dropped })
 }
 
 /// DIS-02: add to the Deep Cuts Radar playlist (created when absent, private).

@@ -34,6 +34,9 @@ INSERT INTO artist_scene
 SELECT o.artist_id, CASE o.country WHEN 'TR' THEN 'turkish' WHEN 'JP' THEN 'japanese' WHEN 'NG' THEN 'afro' WHEN 'GH' THEN 'afro' WHEN 'ET' THEN 'afro' WHEN 'ML' THEN 'afro' WHEN 'ZM' THEN 'afro' WHEN 'SN' THEN 'afro' WHEN 'BR' THEN 'latin' WHEN 'JM' THEN 'caribbean' END, 0.5
 FROM artist_origin o WHERE o.country IN ('TR','JP','NG','GH','ET','ML','ZM','SN','BR','JM')
   AND NOT EXISTS (SELECT 1 FROM artist_scene s WHERE s.artist_id = o.artist_id);
+-- Phase 9e: the owner's filing decisions win
+DELETE FROM artist_scene WHERE artist_id IN (SELECT artist_id FROM scene_overrides);
+INSERT INTO artist_scene SELECT artist_id, scene, 9.0 FROM scene_overrides WHERE scene IS NOT NULL;
 
 -- ---- INS-02 obsessions (artist, last 26 weeks) --------------------------------
 INSERT INTO insights (kind, period_start, period_end, subject_type, subject_id, payload, score)

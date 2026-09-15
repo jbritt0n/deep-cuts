@@ -1,0 +1,18 @@
+# docker compose -f docker/docker-compose.yml up -d --build
+# Then open http://<host>:4747. See docs/DOCKER.md.
+services:
+  deep-cuts:
+    build: { context: .., dockerfile: docker/Dockerfile }
+    container_name: deep-cuts
+    ports: ["4747:4747"]
+    volumes:
+      # The record. Point this at a COPY of the desktop app's data folder (or a synced folder), not the live file —
+      # DuckDB allows one writer at a time. Or set DEEPCUTS_READONLY=1 to open the live file read-only.
+      - ${DEEPCUTS_DATA:-./data}:/data
+    environment:
+      DEEPCUTS_TZ: ${DEEPCUTS_TZ:-America/Detroit}
+      # DEEPCUTS_READONLY: "1"
+      # Ollama on the Docker host (Linux needs the extra_hosts line below; Docker Desktop resolves host.docker.internal natively)
+      OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+    extra_hosts: ["host.docker.internal:host-gateway"]
+    restart: unless-stopped

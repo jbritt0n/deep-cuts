@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAsync, useFilter } from '@/lib/hooks';
-import { albumTracks, crateRecords, crateSections, crateSummary, related, type CrateRecord, type CrateSort, type Shelf } from '@/lib/crateQueries';
+import { SCENES, albumTracks, crateRecords, crateSections, crateSummary, obscurityTier, related, type CrateRecord, type CrateSort, type Shelf } from '@/lib/crateQueries';
 import { invoke } from '@/lib/bridge';
 import { QueueButton, useQueue } from '@/components/QueueButton';
 import { albumHref, artistHref, fmtDate, fmtHours, fmtInt, trackHref } from '@/lib/format';
@@ -79,14 +79,20 @@ export function CratePage() {
       <p className="mb-5 text-sm text-dust">{SHELVES.find((s) => s.id === shelf)?.blurb}</p>
 
       {sections.data && sections.data.length > 0 && (
-        <div className="mb-6 flex items-center gap-1.5 overflow-x-auto pb-1" aria-label="Sections" role="tablist">
-          <button onClick={() => { setSection(null); setI(0); }} className={`shrink-0 rounded-md border-b-2 px-2 py-1 text-xs ${section === null && !currentSection ? 'border-amber text-cream' : 'border-line text-dust hover:text-cream'}`}>all</button>
-          {sections.data.map((s) => { const active = section === s.section || (section === null && currentSection === s.section); return (
-            <button key={s.section} role="tab" aria-selected={active} onClick={() => { if (section === null && hasDividers) jumpTo(s.section); else setSection(s.section === 'unsorted' ? null : s.section); }} onDoubleClick={() => setSection(s.section === 'unsorted' ? null : s.section)}
-              title={`${s.records} records · ${fmtHours(s.hours)} — click to jump, double-click to filter to this section only`}
-              className={`shrink-0 rounded-md border-b-2 px-2 py-1 text-xs capitalize transition-colors ${active ? 'border-amber text-cream' : 'border-line text-dust hover:text-cream'}`}>{sectionLabel(s.section)} <span className="num text-dust/70">{s.records}</span></button>
-          ); })}
-          {section && <button onClick={() => setSection(null)} className="shrink-0 px-2 py-1 text-xs text-amber hover:text-cream">× show every section</button>}
+        <div className="mb-6" aria-label="Sections">
+          <div className="flex flex-wrap items-center gap-1.5" role="tablist">
+            <button onClick={() => { setSection(null); setI(0); }} className={`rounded-md border-b-2 px-2 py-1 text-xs ${section === null && !currentSection ? 'border-amber text-cream' : 'border-line text-dust hover:text-cream'}`}>all</button>
+            {sections.data.map((s) => { const active = section === s.section || (section === null && currentSection === s.section); return (
+              <span key={s.section} className={`flex items-stretch rounded-md border-b-2 text-xs capitalize transition-colors ${active ? 'border-amber' : 'border-line'}`}>
+                <button role="tab" aria-selected={active} onClick={() => { if (section === null && hasDividers) jumpTo(s.section); else { setSection(s.section === 'unsorted' ? null : s.section); } }}
+                  title={section === null && hasDividers ? `Jump to the ${sectionLabel(s.section)} divider` : `Show only ${sectionLabel(s.section)}`}
+                  className={`px-2 py-1 ${active ? 'text-cream' : 'text-dust hover:text-cream'}`}>{sectionLabel(s.section)} <span className="num text-dust/70">{s.records}</span></button>
+                {section === null && hasDividers && s.section !== 'unsorted' && <button onClick={() => setSection(s.section)} title={`Only ${sectionLabel(s.section)}`} aria-label={`Filter to ${sectionLabel(s.section)}`} className="border-l border-line/60 px-1.5 text-dust/60 hover:text-amber">⊙</button>}
+              </span>
+            ); })}
+            {section && <button onClick={() => setSection(null)} className="px-2 py-1 text-xs text-amber hover:text-cream">× show every section</button>}
+          </div>
+          <p className="mt-1.5 text-[11px] text-dust/70">Sections come from each artist's Last.fm / MusicBrainz tags mapped onto {SCENES.length} scene families — the same map Scenes uses. Click a name to jump to its divider, ⊙ to show only that section; misfiled records can be re-filed from the record card.</p>
         </div>
       )}
       {deckHint && <p className="mb-3 text-xs text-moss">{deckHint}</p>}
@@ -212,13 +218,13 @@ function RecordNotes({ r, onSkip, onKeep }: { r: CrateRecord; onSkip: () => void
   const queueable = (tracks.data ?? []).filter((t) => !t.trackId.startsWith('local:'));
   return (
     <Card>
-      <p className="truncate text-xs text-dust">{r.section ? <span className="capitalize">{sectionLabel(r.section)} · </span> : null}first pulled {fmtDate(r.firstPlayed, { month: 'short', year: 'numeric' })} · last {fmtDate(r.lastPlayed, { month: 'short', day: 'numeric', year: 'numeric' })}{r.kept ? <span className="text-moss"> · kept up front</span> : ''}</p>
+      <p className="truncate text-xs text-dust"><Filing r={r} />first pulled {fmtDate(r.firstPlayed, { month: 'short', year: 'numeric' })} · last {fmtDate(r.lastPlayed, { month: 'short', day: 'numeric', year: 'numeric' })}{r.kept ? <span className="text-moss"> · kept up front</span> : ''}</p>
       <h2 className="mt-1 break-words font-display text-3xl leading-tight"><Link to={albumHref(r.albumId)} className="hover:text-amber">{r.album}</Link></h2>
       <p className="mt-1 truncate text-lg text-dust">{r.artistId ? <Link to={artistHref(r.artistId)} className="hover:text-amber">{r.artist}</Link> : r.artist}</p>
       <ul className="num mt-4 grid gap-3 text-sm sm:grid-cols-3">
         <li className="min-w-0"><span className="block font-display text-2xl">{fmtInt(r.plays)}</span><span className="text-xs text-dust">plays over {r.days} day{r.days === 1 ? '' : 's'} · {fmtHours(r.hours)}</span></li>
         <li className="min-w-0"><span className="block font-display text-2xl">{r.tracksPlayed}{r.totalTracks ? <span className="text-base text-dust"> / {r.totalTracks}</span> : ''}</span><span className="text-xs text-dust">{coverage == null ? 'tracks played' : coverage >= 0.95 ? 'played front to back' : coverage >= 0.5 ? 'most of it played' : 'barely opened'}</span></li>
-        <li className="min-w-0"><span className="block font-display text-2xl">{r.obscurity == null ? '—' : `${Math.round(r.obscurity * 100)}`}</span><span className="text-xs text-dust">{r.obscurity == null ? 'obscurity unknown yet' : `obscurity · ${compact(r.listeners ?? 0)} Last.fm listeners`}</span></li>
+        <li className="min-w-0"><span className="block font-display text-2xl">{r.obscurity == null ? '—' : <>{Math.round(r.obscurity * 100)} <span className={`text-base ${r.obscurity >= 0.3 ? 'text-amber' : 'text-dust'}`}>{obscurityTier(r.obscurity)}</span></>}</span><span className="text-xs text-dust">{r.obscurity == null ? 'obscurity unknown yet' : `obscurity · ${compact(r.listeners ?? 0)} Last.fm listeners`}</span></li>
       </ul>
       {(r.abandoned || r.rediscover) && <p className="mt-4 rounded-xl border border-line bg-ink/40 p-3 text-sm text-dust">{r.abandoned ? <>You pulled this once{r.plays > 1 ? ' or twice' : ''} and never came back — <span className="text-cream">{r.daysSilent} days</span> on the shelf. Worth a second spin?</> : <>You played this hard — {fmtInt(r.plays)} times — then left it for <span className="text-cream">{Math.round(r.daysSilent / 30)} months</span>. A rediscovery candidate.</>}</p>}
 
@@ -247,6 +253,27 @@ function RecordNotes({ r, onSkip, onKeep }: { r: CrateRecord; onSkip: () => void
 
       <Related albumId={r.albumId} artist={r.artist} data={rel.data} />
     </Card>
+  );
+}
+
+/** Which section this record is filed under, why, and a way to re-file the artist (writes scene_overrides; Scenes and the Crate both follow). */
+function Filing({ r }: { r: CrateRecord }) {
+  const [open, setOpen] = useState(false);
+  const [cur, setCur] = useState<string | null>(r.section);
+  const [saved, setSaved] = useState(false);
+  const file = async (scene: string | null) => { if (!r.artistId) return; setCur(scene); setOpen(false); await invoke('set_artist_scene', { artistId: r.artistId, scene }).catch(() => {}); setSaved(true); };
+  return (
+    <span className="mr-1 inline-flex items-center gap-1">
+      <button onClick={() => setOpen(!open)} className="capitalize hover:text-cream" title={r.topTags.length ? `Filed from tags: ${r.topTags.join(', ')}${r.filedByYou ? ' — overridden by you' : ''}. Click to re-file.` : 'No tags yet — click to file it yourself.'}>{cur ? sectionLabel(cur) : 'unsorted'}{r.filedByYou || saved ? ' ✎' : ''}</button>
+      <span>·</span>
+      {open && (
+        <span className="absolute z-20 mt-6 max-w-sm rounded-xl border border-line bg-surface p-3 text-xs shadow-glow">
+          <p className="mb-2 normal-case text-dust">{r.topTags.length ? <>Tags for {r.artist}: {r.topTags.join(', ')}. </> : null}File {r.artist} under:</p>
+          <span className="flex flex-wrap gap-1">{SCENES.map((sc) => <button key={sc} onClick={() => file(sc)} className={`rounded-full border px-2 py-0.5 capitalize ${cur === sc ? 'border-amber text-cream' : 'border-line text-dust hover:text-cream'}`}>{sectionLabel(sc)}</button>)}<button onClick={() => file(null)} className="rounded-full border border-line px-2 py-0.5 text-dust hover:text-coral">unsorted</button></span>
+          <p className="mt-2 normal-case text-dust/70">Takes effect on the next flip through and everywhere Scenes are used. Reloads of the crate reflect it immediately.</p>
+        </span>
+      )}
+    </span>
   );
 }
 

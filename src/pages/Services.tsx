@@ -2,7 +2,7 @@ import { C } from '@/lib/theme';
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { invoke, listen } from '@/lib/bridge';
-import { fmtInt } from '@/lib/format';
+import { fmtStamp, fmtInt } from '@/lib/format';
 import { Card, ErrorBox, Loading, Sleeve } from '@/components/Card';
 
 type Row = { service: string; status: string; account: string | null; lastSyncAt: string | null; lastError: string | null; playsAdded: number; extra: Record<string, unknown> };
@@ -81,7 +81,7 @@ function ServiceCard({ row, busy, onSync, children }: { row: Row; busy: string |
       <p className="text-sm">{m.adds}</p>
       <div className="mt-3 space-y-3">{children}</div>
       <div className="num mt-4 flex flex-wrap items-center gap-3 text-xs text-dust">
-        {row.lastSyncAt && <span>last sync {row.lastSyncAt.slice(0, 16)}</span>}
+        {row.lastSyncAt && <span>last sync {fmtStamp(row.lastSyncAt)}</span>}
         {row.playsAdded > 0 && <span>+{fmtInt(row.playsAdded)} plays from this source</span>}
         {row.status === 'connected' && onSync && <button disabled={!!busy} onClick={onSync} className="ml-auto rounded-full border border-line px-3 py-1 text-dust hover:text-cream disabled:opacity-40">{busy === row.service ? 'Syncing…' : 'Sync now'}</button>}
       </div>

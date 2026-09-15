@@ -59,7 +59,7 @@ export function ErasPage() {
                   ))}
                 </ol>
                 <div>
-                  <p className="mb-2 text-xs text-dust">Genre threads — a tag holding 8%+ of a week's listening for 3+ weeks running. Independent of the eras, so they overlap freely.</p>
+                  <p className="mb-2 text-xs text-dust">Threads — a niche tag (or a decade of release) holding 8%+ of a week's listening for 3+ weeks running. Umbrella tags like rock, indie or electronic are excluded, as is any tag on more than a fifth of your artists. Independent of the eras, so they overlap freely.</p>
                   {threads.error ? <ErrorBox message={threads.error} /> : !threads.data ? <Muted>Looking for threads…</Muted> : threads.data.length === 0 ? <Muted>No thread long enough yet. Threads need tags — connect Last.fm or MusicBrainz — and a genre that held on for a few weeks.</Muted> : (
                     <ul className="space-y-3">
                       {threads.data.map((t) => (

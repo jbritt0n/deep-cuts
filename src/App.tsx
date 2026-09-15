@@ -6,6 +6,7 @@ import { loadFilter, saveFilter, setActiveFilter, type ListeningFilter } from '.
 import { getYears } from './lib/queries';
 import { applyTheme, loadThemeId } from './lib/theme';
 import { loadSettings } from './lib/settings';
+import { setAppTimezone } from './lib/format';
 import type { AppStatus } from './lib/types';
 import { Shell } from './components/Shell';
 import { Onboarding } from './pages/Onboarding';
@@ -21,6 +22,7 @@ import { ErasPage } from './pages/Eras';
 import { InsightsPage } from './pages/Insights';
 import { ActivityPage } from './pages/Activity';
 import { SkipHallPage } from './pages/SkipHall';
+import { AskPage } from './pages/Ask';
 import { ReviewPage } from './pages/Review';
 import { DiscoveryPage } from './pages/Discovery';
 import { AchievementsPage } from './pages/Achievements';
@@ -46,7 +48,7 @@ export function App() {
   const [err, setErr] = useState<string | null>(null);
 
   const refresh = () => {
-    Promise.all([invoke<AppStatus>('get_status'), loadSettings()]).then(([s]) => { setStatus(s); setErr(null); }).catch((e) => setErr(String(e)));
+    Promise.all([invoke<AppStatus>('get_status'), loadSettings()]).then(([s]) => { setAppTimezone(s.timezone); setStatus(s); setErr(null); }).catch((e) => setErr(String(e)));
     getYears().then(setYears).catch(() => {});
   };
   useEffect(() => {
@@ -79,7 +81,8 @@ export function App() {
           <Route path="/welcome" element={<Onboarding status={status} onDone={refresh} />} />
           <Route element={<Shell status={status} />}>
             <Route path="/" element={status.hasData || status.demo ? <Dashboard status={status} /> : <Navigate to="/welcome" replace />} />
-            <Route path="/explore" element={<Explore />} />
+            <Route path="/explore" element={<AskPage />} />
+            <Route path="/explore/lists" element={<Explore />} />
             <Route path="/artist/:id" element={<ArtistPage />} />
             <Route path="/track/:id" element={<TrackPage />} />
             <Route path="/album/:id" element={<AlbumPage />} />

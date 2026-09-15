@@ -616,3 +616,11 @@ CREATE TABLE IF NOT EXISTS track_credits (
     fetched_at    TIMESTAMPTZ DEFAULT now(),
     PRIMARY KEY (track_id, credit_order)
 );
+
+-- Phase 9e — the owner's own filing decisions for The Crate / Scenes: which scene family an artist belongs to.
+-- Applied at the end of compute_insights.sql (overrides win over tag-derived scenes) and immediately by set_artist_scene.
+CREATE TABLE IF NOT EXISTS scene_overrides (
+    artist_id  VARCHAR PRIMARY KEY,
+    scene      VARCHAR,           -- NULL = "unsorted", explicitly
+    decided_at TIMESTAMPTZ DEFAULT now()
+);

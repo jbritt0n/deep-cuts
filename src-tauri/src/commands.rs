@@ -169,7 +169,9 @@ pub fn set_setting(state: State<'_, AppState>, key: String, value: String) -> Cm
         "short_play_seconds", "shape_loop_repeat", "shape_discovery_novelty", "shape_restless_skip", "shape_wander_entropy",
         "feedback_memory_days", "forgotten_days", "tag_floor", "lyrics_batch", "playlist_default_public", "mixtape_last_mix",
         // Phase 9c: The Crate — per-album skip (90 days) / keep decisions are recommendation_feedback rows; this is the crate's own toggle store
-        "crate_show_related"];
+        "crate_show_related",
+        // Phase 9e: local LLM
+        "ollama_url", "ollama_model"];
     if !ALLOWED.contains(&key.as_str()) {
         return Err(format!("Unknown setting: {key}"));
     }
@@ -456,6 +458,30 @@ pub fn rec_feedback(state: State<'_, AppState>, subject_type: String, subject_ke
 pub async fn create_playlist(state: State<'_, AppState>, playlist: crate::playlists::NewPlaylist) -> CmdResult<crate::playlists::CreatedPlaylist> {
     let real = state.real.clone(); let client = state.spotify_ref();
     tauri::async_runtime::spawn_blocking(move || crate::playlists::create(&client, &real, &playlist)).await.map_err(err)?.map_err(err)
+}
+
+/// Phase 9e: is Ollama reachable, and which models does it have?
+#[tauri::command]
+pub async fn llm_status(state: State<'_, AppState>) -> CmdResult<crate::llm::LlmStatus> {
+    let real = state.real.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::llm::status(&real)).await.map_err(err)
+}
+
+/// Phase 9e: one chat completion against the local model. The frontend owns the prompts; SQL the model writes goes back through `query`.
+#[tauri::command]
+pub async fn llm_chat(state: State<'_, AppState>, model: String, messages: Vec<crate::llm::ChatMsg>, json_mode: Option<bool>, temperature: Option<f32>) -> CmdResult<String> {
+    let real = state.real.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::llm::chat(&real, &model, &messages, json_mode.unwrap_or(false), temperature.unwrap_or(0.2))).await.map_err(err)?.map_err(err)
+}
+
+/// Phase 9e: file an artist under a scene family for The Crate / Scenes (NULL = unsorted). Applied now and kept across rebuilds via scene_overrides.
+#[tauri::command]
+pub fn set_artist_scene(state: State<'_, AppState>, artist_id: String, scene: Option<String>) -> CmdResult<()> {
+    let db = &state.real;
+    db.exec("INSERT INTO scene_overrides (artist_id, scene, decided_at) VALUES (?, ?, now()) ON CONFLICT (artist_id) DO UPDATE SET scene = excluded.scene, decided_at = now()", &[json!(artist_id), json!(scene)]).map_err(err)?;
+    db.exec("DELETE FROM artist_scene WHERE artist_id = ?", &[json!(artist_id)]).map_err(err)?;
+    if let Some(sc) = scene { db.exec("INSERT INTO artist_scene VALUES (?, ?, 9.0)", &[json!(artist_id), json!(sc)]).map_err(err)?; }
+    Ok(())
 }
 
 /// Phase 9b: drop one track on the end of the active Spotify queue. Returns an outcome, not an error, so the UI can branch (no device / needs reconnect).

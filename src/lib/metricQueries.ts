@@ -111,3 +111,28 @@ export async function explicitShare(): Promise<ExplicitYear[]> {
     SELECT EXTRACT(year FROM p.played_at)::INT AS y, AVG(CASE WHEN t.explicit THEN 1.0 ELSE 0 END) AS share, COUNT(*) AS known
     FROM plays_resolved p JOIN tracks t USING (track_id) WHERE t.explicit IS NOT NULL ${PW('p')} GROUP BY 1 HAVING COUNT(*) >= 50 ORDER BY 1`)).map((r) => ({ year: num(r.y), share: num(r.share), known: num(r.known) }));
 }
+
+/**
+ * Phase 9e — lyric keyword cloud. `track_lyric_features.keywords` (derived from LRCLIB; the lyrics themselves are
+ * never stored) weighted by your plays of each track under the lens. `kind` picks keywords or the theme dictionary.
+ */
+export type CloudRow = { text: string; weight: number; tracks: number };
+export async function lyricCloud(kind: 'keywords' | 'themes' = 'keywords', year: number | null = null, limit = 90): Promise<{ words: CloudRow[]; coveredTracks: number; totalTracks: number }> {
+  const col = kind === 'themes' ? 'themes' : 'keywords';
+  const yr = year ? `AND EXTRACT(year FROM p.played_at) = ${Math.round(year)}` : '';
+  const words = (await query(`
+    WITH pl AS (SELECT track_id, COUNT(*) AS c FROM plays_resolved p WHERE track_id IS NOT NULL ${yr} ${PW('p')} GROUP BY 1),
+    kw AS (SELECT unnest(f.${col}) AS word, pl.c, f.track_id FROM track_lyric_features f JOIN pl USING (track_id) WHERE f.found)
+    SELECT word, SUM(c) AS w, COUNT(DISTINCT track_id) AS t FROM kw WHERE length(word) >= 3 GROUP BY 1 ORDER BY w DESC LIMIT ${limit}`)).map((r) => ({ text: String(r.word), weight: num(r.w), tracks: num(r.t) }));
+  const [c] = await query(`SELECT COUNT(DISTINCT p.track_id) AS total, COUNT(DISTINCT p.track_id) FILTER (WHERE f.found) AS covered FROM plays_resolved p LEFT JOIN track_lyric_features f USING (track_id) WHERE p.track_id IS NOT NULL ${yr} ${PW('p')}`);
+  return { words, coveredTracks: num(c?.covered), totalTracks: num(c?.total) };
+}
+export async function lyricTracksFor(word: string, kind: 'keywords' | 'themes' = 'keywords', n = 25) {
+  const col = kind === 'themes' ? 'themes' : 'keywords';
+  return (await query(`
+    SELECT p.track_id AS "trackId", arg_max(p.track_name, p.ms_played) AS track, arg_max(p.artist_id, p.ms_played) AS "artistId", arg_max(p.artist_name, p.ms_played) AS artist, COUNT(*) AS plays,
+           ROUND(SUM(p.ms_played)/3600000.0, 1) AS hours, AVG(CASE WHEN p.was_skipped THEN 1.0 ELSE 0 END) AS "skipRate"
+    FROM plays_resolved p JOIN track_lyric_features f USING (track_id) WHERE list_contains(f.${col}, $1) ${PW('p')} GROUP BY 1 ORDER BY plays DESC LIMIT ${n}`, [word])).map((r) => ({
+    trackId: String(r.trackId), track: String(r.track), artistId: str(r.artistId), artist: String(r.artist ?? ''), plays: num(r.plays), hours: num(r.hours), skipRate: num(r.skipRate),
+  }));
+}

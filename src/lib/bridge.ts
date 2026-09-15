@@ -3,6 +3,8 @@
  * `listen`; in `vite --mode browser` it talks to dev-server.mjs so the UI can
  * be iterated in a normal browser against a DuckDB file.
  */
+/** Browser mode talks to dev-server.mjs. Same origin when that server also serves the app (Docker); the dev harness on :1420 talks to :4747. */
+const API_BASE: string = typeof location !== 'undefined' && location.protocol.startsWith('http') && location.port !== '1420' ? location.origin : 'http://localhost:4747';
 import { invoke as tauriInvoke } from '@tauri-apps/api/core';
 import { listen as tauriListen, type UnlistenFn } from '@tauri-apps/api/event';
 
@@ -10,7 +12,7 @@ export const inTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in
 
 export async function invoke<T>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
   if (inTauri) return tauriInvoke<T>(cmd, args);
-  const res = await fetch(`http://localhost:4747/${cmd}`, {
+  const res = await fetch(`${API_BASE}/${cmd}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(args),
@@ -26,7 +28,7 @@ export async function listen<T>(event: string, handler: (payload: T) => void): P
   const tick = async () => {
     while (!stopped) {
       try {
-        const r = await fetch(`http://localhost:4747/_events?name=${encodeURIComponent(event)}`);
+        const r = await fetch(`${API_BASE}/_events?name=${encodeURIComponent(event)}`);
         const items = (await r.json()) as T[];
         items.forEach(handler);
       } catch { /* server down */ }

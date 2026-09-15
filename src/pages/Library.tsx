@@ -5,7 +5,7 @@ import { playlistHealth, playlistRevisit, playlistTotals, playlistTracks, type P
 import { earworms, followedPlaylists, madeByDeepCuts } from '@/lib/phase7Queries';
 import { useAsync, useFilter } from '@/lib/hooks';
 import { QueueButton } from '@/components/QueueButton';
-import { albumHref, artistHref, fmtDate, fmtHours, fmtInt, fmtPct, trackHref } from '@/lib/format';
+import { fmtStamp, albumHref, artistHref, fmtDate, fmtHours, fmtInt, fmtPct, trackHref } from '@/lib/format';
 import { Card, ErrorBox, Loading, Sleeve } from '@/components/Card';
 import { invoke } from '@/lib/bridge';
 import { MakePlaylistButton } from '@/components/PlaylistMaker';
@@ -200,7 +200,7 @@ function SyncNudge({ what }: { what: string }) {
       <p className="text-sm text-dust">They arrive with a Spotify sync. Run one now (also pulls liked songs and recent plays):</p>
       <button disabled={busy} onClick={async () => { setBusy(true); setMsg(null); try { setMsg(await invoke<string>('sync_now', { service: 'spotify' })); } catch (e) { setMsg(String(e)); } finally { setBusy(false); } }} className="mt-3 rounded-full bg-amber px-4 py-2 text-sm font-medium text-ink disabled:opacity-40">{busy ? 'Syncing…' : 'Sync Spotify now'}</button>
       {msg && <p className="mt-2 text-xs text-dust">{msg}</p>}
-      {lastErr && <p className="mt-3 text-xs text-coral">Last sync error ({lastErr.at.slice(0, 16)}): {lastErr.message}{lastErr.detail ? ` — ${lastErr.detail.slice(0, 300)}` : ''}</p>}
+      {lastErr && <p className="mt-3 text-xs text-coral">Last sync error ({fmtStamp(lastErr.at)}): {lastErr.message}{lastErr.detail ? ` — ${lastErr.detail.slice(0, 300)}` : ''}</p>}
     </Card>
   );
 }

@@ -13,8 +13,7 @@ mod secrets;
 mod spotify;
 mod tray;
 
-#[cfg(feature = "llm")]
-mod llm; // Phase 4 seam — provider abstraction lands here (spec §9.1). Not built now.
+mod llm; // Phase 9e — Ollama provider (spec §9.1)
 
 use db::Db;
 use std::sync::atomic::AtomicBool;
@@ -162,6 +161,9 @@ pub fn run() {
             commands::create_playlist,
             commands::add_to_radar,
             commands::queue_track,
+            commands::set_artist_scene,
+            commands::llm_status,
+            commands::llm_chat,
             commands::save_text_file,
             commands::import_blend,
             commands::clear_blend,

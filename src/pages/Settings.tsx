@@ -5,6 +5,8 @@ import { useAsync, useDebounced, useFilter, useSettings } from '@/lib/hooks';
 import { ERA_BOUNDS, ERA_KEYS, ERA_PRESETS, eraParamsFromSettings, matchingPreset, sanitizeEraParams, type EraParams } from '@/lib/eraParams';
 import { TUNING, loadSettings, type Tunable } from '@/lib/settings';
 import { eraDiagnostic, eras } from '@/lib/insightQueries';
+import { storage, fmtBytes } from '@/lib/storageQueries';
+import { fmtStamp } from '@/lib/format';
 import { THEMES } from '@/lib/theme';
 import { fmtInt } from '@/lib/format';
 import { Card, ErrorBox, Sleeve } from '@/components/Card';
@@ -74,7 +76,7 @@ export function SettingsPage({ status, onChanged }: { status: AppStatus; onChang
 
       {tab === 'record' && (
         <div className="grid gap-6 md:grid-cols-2">
-          <Card title="Listening history" subtitle={last ? `Last import ${last.at?.slice(0, 10)} · +${fmtInt(Number(last.inserted))} plays. Only new plays are ever added.` : 'Add a Spotify export; only new plays are added.'}>
+          <Card title="Listening history" subtitle={last ? `Last import ${fmtStamp(last.at, { month: 'short', day: 'numeric', year: 'numeric' })} · +${fmtInt(Number(last.inserted))} plays. Only new plays are ever added.` : 'Add a Spotify export; only new plays are added.'}>
             <Importer compact onDone={onChanged} />
             {imports.data && imports.data.length > 1 && <p className="mt-3 text-xs text-dust">{imports.data.length} imports so far — the full list is on <Link to="/activity" className="underline hover:text-cream">Activity</Link>.</p>}
           </Card>
@@ -87,6 +89,7 @@ export function SettingsPage({ status, onChanged }: { status: AppStatus; onChang
             <p className="mt-2 text-xs text-dust">Detected from this machine. Plays made abroad use travel ranges below.</p>
           </Card>
           <Travel busy={busy} run={run} zones={zones} home={status.timezone} />
+          <StorageCard />
           <Card title="Data" subtitle="Everything lives in one DuckDB file. Raw plays are never modified.">
             <ul className="num space-y-1 text-xs text-dust">
               <li>{status.dbPath}</li>
@@ -124,6 +127,7 @@ export function SettingsPage({ status, onChanged }: { status: AppStatus; onChang
             <button disabled={!!busy || !lyrics} onClick={() => run('lyricsnow', () => invoke<string>('lyrics_enrich_now').then((m) => setMsg(m)), 'Done.')} className="mt-3 rounded-full border border-line px-4 py-2 text-sm text-dust hover:text-cream disabled:opacity-40">Fetch a batch now</button>
           </Card>
           <TuningGroup group="connectors" title="Batch sizes" subtitle="Speed against politeness for the background connectors." busy={busy} run={run} />
+          <OllamaCard busy={busy} run={run} />
           <Card title="Services" subtitle="Keys, connections and sync live on their own page."><Link to="/services" className="text-sm text-amber hover:underline">Open Services →</Link></Card>
         </div>
       )}
@@ -375,6 +379,42 @@ function EnrichmentQuota({ busy, run }: { busy: string | null; run: (l: string, 
         <button disabled={!!busy || val === stored} onClick={() => run('enrich', async () => { await invoke('set_setting', { key: 'enrich_per_hour', value: String(val) }); settings.reload(); }, `Enrichment capped at ${val} calls an hour.`)} className="rounded-full bg-amber px-4 py-2 text-sm font-medium text-ink disabled:opacity-40">Apply</button>
       </div>
       <p className="mt-3 text-xs text-dust">100 is the safe default: enough to work through a library over a few weeks while leaving room for the 20-minute poll every day. Raise it if enrichment is the only thing you're waiting on; lower it if the Activity log shows quota pauses.</p>
+    </Card>
+  );
+}
+
+/** Phase 9e: what the record costs on disk. File size is exact; per-group bytes are estimated from row × column counts. */
+function StorageCard() {
+  const st = useAsync(storage, []);
+  const [open, setOpen] = useState(false);
+  if (st.error) return <Card title="Stored data"><ErrorBox message={st.error} /></Card>;
+  if (!st.data) return <Card title="Stored data"><p className="text-sm text-dust">Measuring…</p></Card>;
+  const d = st.data; const max = Math.max(...d.groups.map((g) => g.bytes), 1);
+  return (
+    <Card title="Stored data" subtitle={`${fmtBytes(d.fileBytes)} on disk${d.walBytes > 0 ? ` (+ ${fmtBytes(d.walBytes)} pending writes)` : ''} · ${fmtInt(d.imported.events)} raw plays kept forever, ${fmtInt(d.imported.plays)} resolved. Per-group sizes are estimates.`}>
+      <ul className="space-y-2 text-sm">
+        {d.groups.map((g) => <li key={g.group}><div className="flex items-baseline justify-between"><span>{g.group}</span><span className="num text-xs text-dust">~{fmtBytes(g.bytes)} · {fmtInt(g.rows)} rows</span></div><div className="mt-1 h-1.5 overflow-hidden rounded-full bg-raised"><div className="h-full rounded-full bg-amber/70" style={{ width: `${(g.bytes / max) * 100}%` }} /></div></li>)}
+      </ul>
+      <p className="num mt-3 text-xs text-dust">Sources: {d.imported.sources.map((s) => `${s.source} ${fmtInt(s.n)}`).join(' · ')}</p>
+      <button onClick={() => setOpen(!open)} className="mt-2 text-xs text-dust hover:text-cream">{open ? '▾' : '▸'} every table</button>
+      {open && <table className="num mt-2 w-full text-left text-xs"><tbody>{d.tables.filter((t) => t.rows > 0).map((t) => <tr key={t.table} className="border-t border-line/60"><td className="py-1 font-sans">{t.table}</td><td className="py-1 text-right text-dust">{fmtInt(t.rows)}</td><td className="py-1 text-right text-dust">~{fmtBytes(t.estBytes)}</td></tr>)}</tbody></table>}
+      <p className="mt-3 text-[11px] text-dust/70">Everything except the raw plays and your own decisions can be rebuilt; connector caches refill on their own. A Parquet export of the raw plays is typically a tenth of the database size.</p>
+    </Card>
+  );
+}
+
+/** Phase 9e: where the local model lives. Default is Ollama's own port on this machine; a Docker deployment points it at the host. */
+function OllamaCard({ busy, run }: { busy: string | null; run: (l: string, fn: () => Promise<unknown>, ok: string) => Promise<void> }) {
+  const settings = useSettings();
+  const stored = settings.data?.find((r) => r.key === 'ollama_url')?.value ?? '';
+  const [v, setV] = useState<string | null>(null);
+  const val = v ?? stored;
+  const st = useAsync(() => invoke<{ reachable: boolean; url: string; models: string[]; error: string | null }>('llm_status'), [stored]);
+  return (
+    <Card title="Local model (Ollama)" subtitle="Ask the archive talks to Ollama over HTTP. Nothing leaves this machine unless you point this at another one.">
+      <div className="flex items-center gap-2"><input value={val} onChange={(e) => setV(e.target.value)} placeholder="http://127.0.0.1:11434" className="num flex-1 rounded-lg border border-line bg-ink px-3 py-2 text-sm" aria-label="Ollama URL" /><button disabled={!!busy || val === stored} onClick={() => run('ollama', async () => { await invoke('set_setting', { key: 'ollama_url', value: val.trim() }); settings.reload(); }, 'Ollama URL saved.')} className="rounded-full bg-amber px-4 py-2 text-sm font-medium text-ink disabled:opacity-40">Save</button></div>
+      <p className={`mt-2 text-xs ${st.data?.reachable ? 'text-moss' : 'text-dust'}`}>{!st.data ? 'checking…' : st.data.reachable ? `Reachable · ${st.data.models.length} model${st.data.models.length === 1 ? '' : 's'}: ${st.data.models.join(', ') || 'none pulled yet'}` : `Not reachable at ${st.data.url}${st.data.error ? ` — ${st.data.error.slice(0, 100)}` : ''}`}</p>
+      <p className="mt-2 text-[11px] text-dust/70">In Docker, set <span className="num">OLLAMA_URL=http://host.docker.internal:11434</span> (or the host's LAN address) — the container proxies to it.</p>
     </Card>
   );
 }

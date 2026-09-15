@@ -35,9 +35,17 @@ export function QueueProvider({ children }: { children: ReactNode }) {
   const queueMany = async (trackIds: string[], label: string): Promise<Outcome> => {
     const ids = trackIds.filter((t) => t && !t.startsWith('local:'));
     if (!ids.length) { const o: Outcome = { status: 'unqueueable', message: 'None of these tracks has a Spotify id.' }; show(o); return o; }
-    let n = 0;
-    for (const id of ids) { const o = await one(id); if (o.status !== 'queued') { if (o.status === 'needs_reauth' || o.status === 'not_connected') load(); show(n ? { ...o, message: `Queued ${n} of ${ids.length} from ${label}, then: ${o.message}` } : o); return o; } n++; }
-    const o: Outcome = { status: 'queued', message: `Queued ${label} — ${n} track${n === 1 ? '' : 's'}.` }; show(o); return o;
+    // Phase 9e (owner report: albums only partially queued): pace the calls so a burst can't hit Spotify's per-second
+    // limit, keep going past a one-off failure, and stop only for the problems that would hit every remaining track.
+    let n = 0; const failed: string[] = [];
+    for (const [k, id] of ids.entries()) {
+      if (k > 0) await new Promise((r) => window.setTimeout(r, 250));
+      const o = await one(id);
+      if (o.status === 'queued') { n++; continue; }
+      if (o.status === 'no_device' || o.status === 'needs_reauth' || o.status === 'not_connected' || o.status === 'quota') { if (o.status !== 'no_device') load(); show(n ? { ...o, message: `Queued ${n} of ${ids.length} from ${label}, then: ${o.message}` } : o); return o; }
+      failed.push(id);
+    }
+    const o: Outcome = { status: failed.length && !n ? 'error' : 'queued', message: failed.length ? `Queued ${n} of ${ids.length} from ${label}; ${failed.length} refused by Spotify.` : `Queued ${label} — ${n} track${n === 1 ? '' : 's'}.` }; show(o); return o;
   };
   return (
     <QueueContext.Provider value={{ ...state, queue, queueMany }}>

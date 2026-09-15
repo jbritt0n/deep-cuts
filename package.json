@@ -11,7 +11,9 @@
     "dev:browser": "concurrently \"node dev-server.mjs\" \"vite --mode browser\"",
     "check:sql": "python3 scripts/validate_sql.py",
     "test": "vitest run",
-    "test:fixtures": "python3 scripts/test_sql_fixtures.py"
+    "test:fixtures": "python3 scripts/test_sql_fixtures.py",
+    "build:browser": "vite build --mode browser",
+    "serve": "DEEPCUTS_STATIC=dist HOST=0.0.0.0 node dev-server.mjs"
   },
   "dependencies": {
     "@fontsource/fraunces": "^5.1.0",
