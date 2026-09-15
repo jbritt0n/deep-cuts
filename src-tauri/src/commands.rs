@@ -478,9 +478,9 @@ pub async fn llm_chat(state: State<'_, AppState>, model: String, messages: Vec<c
 #[tauri::command]
 pub fn set_artist_scene(state: State<'_, AppState>, artist_id: String, scene: Option<String>) -> CmdResult<()> {
     let db = &state.real;
-    db.exec("INSERT INTO scene_overrides (artist_id, scene, decided_at) VALUES (?, ?, now()) ON CONFLICT (artist_id) DO UPDATE SET scene = excluded.scene, decided_at = now()", &[json!(artist_id), json!(scene)]).map_err(err)?;
-    db.exec("DELETE FROM artist_scene WHERE artist_id = ?", &[json!(artist_id)]).map_err(err)?;
-    if let Some(sc) = scene { db.exec("INSERT INTO artist_scene VALUES (?, ?, 9.0)", &[json!(artist_id), json!(sc)]).map_err(err)?; }
+    db.exec("INSERT INTO scene_overrides (artist_id, scene, decided_at) VALUES (?, ?, now()) ON CONFLICT (artist_id) DO UPDATE SET scene = excluded.scene, decided_at = now()", &[serde_json::json!(artist_id), serde_json::json!(scene)]).map_err(err)?;
+    db.exec("DELETE FROM artist_scene WHERE artist_id = ?", &[serde_json::json!(artist_id)]).map_err(err)?;
+    if let Some(sc) = scene { db.exec("INSERT INTO artist_scene VALUES (?, ?, 9.0)", &[serde_json::json!(artist_id), serde_json::json!(sc)]).map_err(err)?; }
     Ok(())
 }
 

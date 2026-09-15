@@ -8,6 +8,15 @@
 - `playlists.rs` — `create()` dedupes ids, sleeps 400 ms between chunks, verifies via `ep::playlist(&pid)` (`fields=tracks.total,items.total`) and logs a `warn` when Spotify reports fewer tracks than were sent; `CreatedPlaylist` gained `on_spotify: Option<i64>`, `duplicates_dropped`. `endpoints.rs` — `playlist(id)`.
 - `sql/schema.sql` — `scene_overrides`. `sql/compute_insights.sql` — overrides applied after the tag- and origin-derived scenes.
 
+## 1a. First compile (Sep 15) — fixed
+The owner's CI build surfaced two errors, both fixed in this package: `set_artist_scene` used `json!` without the
+import (`commands.rs` refers to `serde_json::json!` everywhere; now it does here too), and `add_to_radar`'s second
+`CreatedPlaylist` constructor in `playlists.rs` lacked the two fields added in 9e (`on_spotify: None`,
+`duplicates_dropped: 0`). Name-resolution errors stop the compiler before type-checking, so a second round of
+errors is possible; the rest of the 9b–9e Rust was re-read against the actual signatures in `db.rs`, `client.rs`,
+`lastfm.rs` and `lib.rs` (`Row = Map<String, Json>`, `err<E: Display>`, `Tokens.scope: String`, `call(db, key,
+method, params)`) and matches.
+
 ## 2. Verify on the owner's machine
 1. Ollama: `ollama serve` running, a model pulled. Ask the Archive header goes green and lists models. Ask "What did I listen to most on Sunday mornings last year?" — expect ~5–20 s on a 7–8B model, a table, and prose. Open ▸ SQL and sanity-check the query the model wrote. If it repeatedly fails on the same construct, add a hint line to `SCHEMA_DOC` in `src/lib/ask.ts` — that's the whole "prompt engineering" surface.
 2. Playlist: make a 100+ track playlist. The result line should say "Created with N tracks" and, if Spotify shows fewer, why. Activity gets a `warn` with the counts.

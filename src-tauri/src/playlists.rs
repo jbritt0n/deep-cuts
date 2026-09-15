@@ -74,7 +74,7 @@ pub fn add_to_radar(client: &SpotifyClient, db: &Db, track_ids: &[String]) -> Re
     let uris: Vec<String> = ids.iter().map(|id| format!("spotify:track:{id}")).collect();
     let base = ep::playlist_items(&pid, 100, 0);
     client.post(db, base.split('?').next().unwrap(), json!({ "uris": uris })).map_err(|e| anyhow!("{e}"))?;
-    Ok(CreatedPlaylist { spotify_playlist_id: pid.clone(), url: format!("https://open.spotify.com/playlist/{pid}"), added: ids.len(), skipped_local: track_ids.len() - ids.len() })
+    Ok(CreatedPlaylist { spotify_playlist_id: pid.clone(), url: format!("https://open.spotify.com/playlist/{pid}"), added: ids.len(), skipped_local: track_ids.len() - ids.len(), on_spotify: None, duplicates_dropped: 0 })
 }
 
 /// Search Spotify for an artist's top track ids so a recommendation can be added to Radar (API-06: search limit ≤ 10).
