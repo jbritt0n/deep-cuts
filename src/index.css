@@ -18,6 +18,10 @@
   color-scheme: dark;
 }
 html, body, #root { height: 100%; }
+/* Phase 9h: exactly one scroller (the shell's <main>). `clip` rather than `hidden` so programmatic scrolls
+   (scrollIntoView, focus) can't shift the page body either — that was the "top cut off, can't scroll back" bug. */
+html, body { overflow: clip; overscroll-behavior: none; }
+#root { overflow: clip; }
 body { @apply bg-ink font-body text-cream antialiased; font-weight: 300; }
 ::selection { background: color-mix(in srgb, var(--c-amber) 35%, transparent); }
 * { scrollbar-width: thin; scrollbar-color: var(--c-line) transparent; }

@@ -145,10 +145,12 @@ impl Db {
         if head != "SELECT" && head != "WITH" && head != "DESCRIBE" && head != "SHOW" {
             return Err(anyhow!("only SELECT / WITH queries are allowed"));
         }
-        let upper = trimmed.to_ascii_uppercase();
-        for bad in ["INSERT ", "UPDATE ", "DELETE ", "DROP ", "ALTER ", "CREATE ", "ATTACH ", "COPY ", "EXPORT ", "IMPORT ", "PRAGMA ", "INSTALL ", "LOAD ", "CALL "] {
-            if upper.contains(bad) {
-                return Err(anyhow!("statement contains a disallowed keyword: {}", bad.trim()));
+        // Phase 9h: whole-word match outside string literals and quoted identifiers. The 9g substring check
+        // rejected any query naming the column `payload` ("PAYLOAD " contains "LOAD "), which broke
+        // Insights → How predictable are you?
+        for word in sql_words(trimmed) {
+            if matches!(word.as_str(), "INSERT" | "UPDATE" | "DELETE" | "DROP" | "ALTER" | "CREATE" | "ATTACH" | "DETACH" | "COPY" | "EXPORT" | "IMPORT" | "PRAGMA" | "INSTALL" | "LOAD" | "CALL" | "SET" | "CHECKPOINT" | "VACUUM") {
+                return Err(anyhow!("statement contains a disallowed keyword: {word}"));
             }
         }
         Ok(())
@@ -271,5 +273,51 @@ pub fn value_to_json(v: Value) -> Json {
         Value::Union(inner) => value_to_json(*inner),
         // `Value` is #[non_exhaustive]; render anything new as its debug form rather than failing.
         other => json!(format!("{other:?}")),
+    }
+}
+
+
+/// Upper-cased bare words of a SQL string, skipping '…' literals, "…" identifiers and -- / /* */ comments.
+/// Words are runs of [A-Za-z0-9_], so `payload`, `loaded_at` or `settings` never read as LOAD / SET.
+fn sql_words(sql: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let b: Vec<char> = sql.chars().collect();
+    let mut i = 0;
+    let flush = |cur: &mut String, out: &mut Vec<String>| { if !cur.is_empty() { out.push(cur.to_ascii_uppercase()); cur.clear(); } };
+    while i < b.len() {
+        let c = b[i];
+        if c == '\'' || c == '"' {
+            flush(&mut cur, &mut out);
+            let q = c; i += 1;
+            while i < b.len() { if b[i] == q { if i + 1 < b.len() && b[i + 1] == q { i += 2; continue; } break; } i += 1; }
+        } else if c == '-' && i + 1 < b.len() && b[i + 1] == '-' {
+            flush(&mut cur, &mut out);
+            while i < b.len() && b[i] != '\n' { i += 1; }
+        } else if c == '/' && i + 1 < b.len() && b[i + 1] == '*' {
+            flush(&mut cur, &mut out);
+            i += 2; while i + 1 < b.len() && !(b[i] == '*' && b[i + 1] == '/') { i += 1; } i += 1;
+        } else if c.is_ascii_alphanumeric() || c == '_' {
+            cur.push(c);
+        } else {
+            flush(&mut cur, &mut out);
+        }
+        i += 1;
+    }
+    flush(&mut cur, &mut out);
+    out
+}
+
+#[cfg(test)]
+mod guard_tests {
+    use super::Db;
+    #[test] fn payload_column_is_allowed() { assert!(Db::assert_read_only("SELECT CAST(forecast_date AS VARCHAR) AS d, payload FROM forecast_log").is_ok()); }
+    #[test] fn loaded_and_settings_are_allowed() { assert!(Db::assert_read_only("SELECT loaded_at, settings_json FROM t").is_ok()); }
+    #[test] fn literal_keyword_is_allowed() { assert!(Db::assert_read_only("SELECT * FROM t WHERE note = 'drop table load'").is_ok()); }
+    #[test] fn real_keywords_are_refused() {
+        assert!(Db::assert_read_only("WITH x AS (SELECT 1) INSERT INTO t SELECT * FROM x").is_err());
+        assert!(Db::assert_read_only("SELECT 1; DROP TABLE t").is_err());
+        assert!(Db::assert_read_only("SELECT * FROM read_csv('x') -- harmless\n").is_ok());
+        assert!(Db::assert_read_only("LOAD httpfs").is_err());
     }
 }

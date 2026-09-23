@@ -114,3 +114,10 @@ Three errors, all fixed: `Mb::get` visibility; `urlencoding::encode(&format!(..)
 - **FreqBlog before Setlist.fm** (owner's 9b choice). Only bpm / key / energy / loudness are charted; perceptual fields are stored but labelled coarse, per the service's own caveat. Monthly hard stop at 900 of 1,000.
 - **Scene threads are exempt from the coverage ceiling.** A family covering half your artists is what an era is made of; the ceiling exists to keep *tag* threads niche.
 - **Tuning knobs are numeric only**, so the scene-thread switch is a 0/1 slider rather than a checkbox — one control type in `TuningGroup` keeps Settings honest about what a value does.
+
+## Phase 9h (Sep 23, 2026) — decisions
+- **Nav groups**: Understand (analysis of your own listening), Stories (narratives you read or share), Act (things that change what you hear), App (plumbing, collapsed by default). The four daily destinations stay pinned. A group holding the current page can't collapse — hiding where you are is disorienting.
+- **Display size is one root font size**, not per-page tweaks, because Tailwind is rem-based; charts drawn in pixels read `useViewport()`. Auto uses the tighter of width and height so a short, wide window still gets compact.
+- **Forecast blends habit and trend 50/50** and verifies itself by replay (no look-ahead: each day only sees earlier data). The baseline is deliberately strong — "your ten biggest artists" — so a lift over it means the weekday/recency signal is real.
+- **Abroad uses where you were, not artist origin.** conn_country only exists in the extended export; polled plays fall back to travel time zones. Home is detected (most plays) but overridable, for people who moved.
+- **Per-language IDF**: comparing a Turkish word against English songs is meaningless; each language is its own corpus, and the cloud separates English from the rest.

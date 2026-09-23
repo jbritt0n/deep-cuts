@@ -1,7 +1,7 @@
 # Deep Cuts v3 — Project Summary & Roadmap
-**Handoff document — September 22, 2026 (current through Phase 9g)**
+**Handoff document — September 22, 2026 (current through Phase 9h)**
 
-> For what to build next, read **`docs/HANDOFF-PHASE-9G.md`** — it is the working handoff. This file is the durable project summary.
+> For what to build next, read **`docs/HANDOFF-PHASE-9H.md`** — it is the working handoff. This file is the durable project summary.
 
 This file is written for whoever picks up this project next (human or AI agent). It summarizes what exists, how it's built, what's been tested, what's broken, and what's planned. Read this before touching code.
 
@@ -94,6 +94,16 @@ SQL/TS verified (tsc, 29 vitest, 14 fixtures, 9 smoke scripts incl. the Ask pipe
 - **Docker** (`docker/`, `docs/DOCKER.md`): `dev-server.mjs` grew into the headless server — serves `dist/`, `HOST`/`PORT`, `/_health`, `DEEPCUTS_READONLY` (opens the file read-only and refuses writes politely), `OLLAMA_URL` proxy. The container is the *analyst*; the desktop app stays the *collector* (connectors, tokens, the single DuckDB writer). `bridge.ts` uses same-origin when the UI is served by that server.
 - **9d feedback:** Settings → Record → **Stored data** (exact file size, estimated bytes per group, rows per table, sources). Crate sections: wrapped strip (no scrollbar), one-click jump vs ⊙ filter, highlight follows the front card, an explanation of how sections are derived, and **re-filing** an artist from the record card (`scene_overrides`, honoured by `compute_insights.sql`, applied immediately by `set_artist_scene`). Obscurity **tier word** beside the number. **Playlists**: ids deduped, 400 ms between 100-URI chunks, and the count Spotify reports is verified and shown when short; **queueMany** paces 250 ms and continues past one-off refusals. **Threads** exclude umbrella/meta tags and any tag on > 20 % of your artists, and gain **decade threads** from `tracks.release_date`. All background timestamps render in the record's zone (`fmtStamp`). **Lyric keyword cloud** on Insights (own SVG spiral layout; click a word → tracks → playlist).
 
+### Phase 9h — owner feedback on 9g: navigation, one scroller, display size, search, Moods & Forecast, listening abroad
+Verified: tsc, 33 vitest (display), 22 fixtures (per-language IDF), 12 smoke scripts (`smoke-9h.ts`), `vite build`, and a Python port of the new Rust SQL guard against its unit-test cases plus every app query. **Rust uncompiled**: `db.rs` guard + `#[cfg(test)] guard_tests`, `lastfm.rs` 30-day refresh, `set_setting` +`home_country`.
+- **Nav** (`Shell.tsx`): `PINNED` + `NAV_GROUPS` (Understand, Stories, Act, App), collapsible, persisted in localStorage `deepcuts.nav`, auto-open on the current page. Not for me → Settings tab (`SkipHallPage embedded`); `/notforme` and `/forecast` redirect. Settings tabs follow `?tab=`.
+- **One scroller**: `html, body, #root { overflow: clip }`, shell grid `grid-rows-[minmax(0,1fr)]`, `main` scrolls and resets to top on route change. Root cause: the grid row sized to content so body and main both scrolled; `scrollIntoView` could shift the hidden body.
+- **Display size** (`display.ts`): Auto/Compact/Cozy/Comfortable/Large via root font size; `autoPx(w, h)` = min of width and height rules; `useViewport()` for EraChart; `max-h-[NNNpx]` lists capped at vh; Library playlist panes bounded.
+- **Search**: header → `/explore/lists?q=`; `ExploreSearch` reused atop Ask the archive.
+- **Bugs**: guard matched `LOAD ` inside `payload ` → word tokenizer skipping literals/comments; Rising & fading empty because popularity refreshed every 90 days → 30, plus `listenerLandscape()` interim view; lyric IDF per language (`track_lyric_keywords.lang`) + `lyricLanguages()` chips.
+- **Moods & Forecast** (`MoodsForecast.tsx`; `dayForecast`, `weekOutlook`, `fronts`, `backtest` in `forecastQueries.ts`): weekday habit (26 weeks) blended 50/50 with the last 14 days; hourly radar, day-parts, likely artists/tracks (station playlist), 7-day outlook with recent-volume trend, warm/cold fronts (28 d vs prior 84 d), backtest hit@10 vs "your top 10" baseline on the last 28 days; stations keep FM frequencies.
+- **Listening abroad** (`abroadSummary`, Atlas): play country = conn_country, else a single-country travel zone; trips = same-country day runs with gaps ≤ 3 days and ≥ 30 min; souvenir = trip plays² / all-time plays × 1.5 for local artists; local-artist share vs home; scene lift abroad; *where you listened* map mode; `home_country` override.
+
 ### Phase 9g — roadmap: Atlas, Forecast, FreqBlog audio features, scene threads, tuning knobs
 SQL/TS verified (tsc, 29 vitest, 21 fixtures incl. three new, 11 smoke scripts incl. `smoke-9g.ts`, `vite build --mode browser`). **Rust uncompiled** — `docs/HANDOFF-PHASE-9G.md` §1.
 - **Atlas** (`/atlas`, `originQueries.ts`, `src/assets/world-110m.json`): world map of artist origins shaded by hours (Natural Earth 110m via world-atlas → Natural Earth I projection → alpha-2-keyed path strings, 175 countries, 123 KB, baked offline — no runtime map library); hover card, click → artist list, table twin, "how the map widened" by year.
@@ -131,7 +141,7 @@ SQL/TS verified (tsc, 29 vitest, 18 fixtures incl. four new, 10 smoke scripts in
 
 ## 3. What's next
 
-**Read `docs/HANDOFF-PHASE-9G.md`** first, then `docs/HANDOFF-PHASE-9F.md`, `docs/HANDOFF-PHASE-9E.md`, `docs/HANDOFF-PHASE-9D.md`, then `docs/HANDOFF-PHASE-9C.md` for what 9b/9c shipped, what must be compiled first, and what remains. `docs/HANDOFF-PHASE-9B.md` still carries the un-started 9b menu items (audio-features connector, dynamic playlists, world map, weekly review + Liner Notes redesign, remaining owner items) and the longer menu after that. Nothing is duplicated here so the two files can't drift.
+**Read `docs/HANDOFF-PHASE-9H.md`** first, then `docs/HANDOFF-PHASE-9G.md`, `docs/HANDOFF-PHASE-9F.md`, `docs/HANDOFF-PHASE-9E.md`, `docs/HANDOFF-PHASE-9D.md`, then `docs/HANDOFF-PHASE-9C.md` for what 9b/9c shipped, what must be compiled first, and what remains. `docs/HANDOFF-PHASE-9B.md` still carries the un-started 9b menu items (audio-features connector, dynamic playlists, world map, weekly review + Liner Notes redesign, remaining owner items) and the longer menu after that. Nothing is duplicated here so the two files can't drift.
 
 ---
 

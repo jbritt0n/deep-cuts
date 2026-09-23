@@ -46,7 +46,7 @@ export function SceneEditor() {
       <div className="grid gap-6 lg:grid-cols-[1.2fr_1fr]">
         <div className="min-w-0">
           <div className="mb-2 flex items-baseline justify-between"><p className="text-xs text-dust">Families — click one to see and edit its tags</p><label className="flex items-center gap-1 text-[11px] text-dust"><input type="checkbox" checked={showHidden} onChange={(e) => setShowHidden(e.target.checked)} /> show hidden</label></div>
-          <ul className="max-h-[420px] space-y-1 overflow-y-auto pr-1 text-sm">
+          <ul className="max-h-[min(420px,55vh)] space-y-1 overflow-y-auto pr-1 text-sm">
             {visible.map((f) => (
               <li key={f.scene} className={`flex items-center gap-2 rounded-lg border px-2 py-1 ${picked === f.scene ? 'border-amber bg-ink/40' : 'border-line/60'} ${f.hidden ? 'opacity-50' : ''}`}>
                 <button onClick={() => setPicked(picked === f.scene ? null : f.scene)} className="min-w-0 flex-1 truncate text-left hover:text-amber" title={f.blurb ?? f.scene}>
@@ -71,7 +71,7 @@ export function SceneEditor() {
         <div className="min-w-0">
           <p className="mb-2 text-xs text-dust">Unfiled tags your artists carry — biggest first. Pick a family to file one.</p>
           {queue.error ? <ErrorBox message={queue.error} /> : !queue.data ? <p className="text-xs text-dust">Looking…</p> : queue.data.length === 0 ? <p className="text-xs text-dust">Every tag with weight is filed. New ones appear as Last.fm / MusicBrainz tags arrive.</p> : (
-            <ul className="max-h-[420px] space-y-1 overflow-y-auto pr-1 text-sm">
+            <ul className="max-h-[min(420px,55vh)] space-y-1 overflow-y-auto pr-1 text-sm">
               {queue.data.map((t) => (
                 <li key={t.tag} className="flex items-center gap-2 rounded-lg border border-line/60 px-2 py-1">
                   <span className="min-w-0 flex-1 truncate">{t.tag}</span>

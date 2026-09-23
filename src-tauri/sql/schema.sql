@@ -879,14 +879,18 @@ CREATE TABLE IF NOT EXISTS track_lyric_terms (
     PRIMARY KEY (track_id, term)
 );
 
--- TF-IDF keywords: tf × ln(N / df), top 15 per track. N = songs with lyrics found; df = songs containing the term.
+-- TF-IDF keywords: tf × ln(N / df), top 15 per track.
+-- Phase 9h: N and df are counted *within each song's language*. Across the whole corpus a Turkish or Russian word
+-- is rare simply because few songs are in that language, so it out-scored every English word (owner: "the largest
+-- words are foreign"). Per-language IDF compares a word only with songs it could have appeared in.
 CREATE OR REPLACE VIEW track_lyric_keywords AS
-WITH n AS (SELECT COUNT(*) AS n FROM track_lyric_features WHERE found AND COALESCE(features_rev, 1) >= 2),
-     df AS (SELECT term, COUNT(*) AS df FROM track_lyric_terms GROUP BY 1),
-     scored AS (SELECT t.track_id, t.term, t.tf, d.df, t.tf * LN(GREATEST((SELECT n FROM n), 2) * 1.0 / d.df) AS score
-                FROM track_lyric_terms t JOIN df d USING (term)
-                WHERE d.df < GREATEST((SELECT n FROM n), 2) * 0.35)     -- a word in over a third of your songs is not distinctive of any of them
-SELECT track_id, term, tf, df, score, ROW_NUMBER() OVER (PARTITION BY track_id ORDER BY score DESC, tf DESC, term) AS rank
+WITH f AS (SELECT track_id, COALESCE(NULLIF(lang, ''), 'und') AS lang FROM track_lyric_features WHERE found AND COALESCE(features_rev, 1) >= 2),
+     n AS (SELECT lang, COUNT(*) AS n FROM f GROUP BY 1),
+     df AS (SELECT f.lang, t.term, COUNT(*) AS df FROM track_lyric_terms t JOIN f USING (track_id) GROUP BY 1, 2),
+     scored AS (SELECT t.track_id, f.lang, t.term, t.tf, d.df, t.tf * LN(GREATEST(n.n, 2) * 1.0 / d.df) AS score
+                FROM track_lyric_terms t JOIN f USING (track_id) JOIN df d ON d.lang = f.lang AND d.term = t.term JOIN n ON n.lang = f.lang
+                WHERE d.df < GREATEST(n.n, 2) * 0.35)     -- a word in over a third of that language's songs is not distinctive of any of them
+SELECT track_id, lang, term, tf, df, score, ROW_NUMBER() OVER (PARTITION BY track_id ORDER BY score DESC, tf DESC, term) AS rank
 FROM scored
 QUALIFY rank <= 15;
 

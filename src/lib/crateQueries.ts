@@ -219,3 +219,26 @@ export async function popularityMovers(limit = 8): Promise<{ rising: Mover[]; fa
   const [m] = await query(`SELECT COUNT(DISTINCT artist_id) AS n, CAST(MIN(snapshot_at) AS VARCHAR) AS since FROM artist_popularity_history`);
   return { rising: all.filter((a) => a.change > 0).sort((a, b) => b.change - a.change).slice(0, limit), fading: all.filter((a) => a.change < 0).sort((a, b) => a.change - b.change).slice(0, limit), tracked: num(m?.n), since: str(m?.since)?.slice(0, 10) ?? null };
 }
+
+// ------------------------------------------------------------------ Phase 9h: while the snapshots accumulate
+export type ListenerTier = { tier: string; lo: number; hi: number | null; artists: number; hours: number; share: number };
+export type SmallRoom = { artistId: string; artist: string; listeners: number; hours: number; plays: number };
+/**
+ * What current listener counts already say, before any artist has two snapshots: how your hours split across
+ * audience sizes, and the artists you love most that the fewest other people know ("small rooms").
+ * `firstComparison` is when the 30-day refresh gives the earliest-tracked artists their second snapshot.
+ */
+export async function listenerLandscape(): Promise<{ tiers: ListenerTier[]; smallRooms: SmallRoom[]; bigRooms: SmallRoom[]; covered: number; firstComparison: string | null }> {
+  const TIERS: [string, number, number | null][] = [['under 10k', 0, 1e4], ['10k–100k', 1e4, 1e5], ['100k–1M', 1e5, 1e6], ['1M–5M', 1e6, 5e6], ['over 5M', 5e6, null]];
+  const rows = await query(`
+    WITH me AS (SELECT artist_id, arg_max(artist_name, ms_played) AS artist, SUM(ms_played)/3600000.0 AS h, COUNT(*) AS c FROM plays_resolved p WHERE artist_id IS NOT NULL ${playsWhere('p')} GROUP BY 1)
+    SELECT me.artist_id, me.artist, me.h, me.c, ap.listeners FROM me JOIN artist_popularity ap USING (artist_id) WHERE ap.listeners IS NOT NULL`);
+  const all = rows.map((r) => ({ artistId: String(r.artist_id), artist: String(r.artist), hours: num(r.h), plays: num(r.c), listeners: num(r.listeners) }));
+  const total = all.reduce((a, r) => a + r.hours, 0) || 1;
+  const tiers = TIERS.map(([tier, lo, hi]) => { const inT = all.filter((r) => r.listeners >= lo && (hi == null || r.listeners < hi)); const hours = inT.reduce((a, r) => a + r.hours, 0); return { tier, lo, hi, artists: inT.length, hours, share: hours / total }; });
+  const loved = all.filter((r) => r.plays >= 10);
+  const smallRooms = [...loved].sort((a, b) => a.listeners - b.listeners || b.hours - a.hours).slice(0, 8);
+  const bigRooms = [...loved].sort((a, b) => b.listeners - a.listeners).slice(0, 5);
+  const [f] = await query(`SELECT CAST(CAST(MIN(snapshot_at) AS DATE) + INTERVAL 30 DAY AS DATE) AS d, COUNT(*) FILTER (WHERE n >= 2) AS two FROM (SELECT artist_id, MIN(snapshot_at) AS snapshot_at, COUNT(*) AS n FROM artist_popularity_history GROUP BY 1)`);
+  return { tiers, smallRooms, bigRooms, covered: all.length, firstComparison: f?.d ? String(f.d).slice(0, 10) : null };
+}

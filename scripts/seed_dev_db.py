@@ -18,12 +18,21 @@ con.executemany("INSERT INTO tz_offsets VALUES (?,?,?)", rows)
 con.execute("INSERT INTO app_meta (key,value) VALUES ('timezone',?) ON CONFLICT (key) DO UPDATE SET value=excluded.value", [ZONE])
 con.execute(rd('demo_seed.sql'))
 # Phase 9f dev stand-ins for the Daily Dig: a record loved and dropped (rediscover) and two pulled once and left (abandoned).
-def dev_play(days_ago, track, artist, album, ms=210000):
-    payload = json.dumps({"spotify_track_uri": f"spotify:track:dev_{abs(hash(track)) % 10**8}", "spotify_track_id": f"dev_{abs(hash(track)) % 10**8}", "track_name": track, "artist_name": artist, "album_name": album, "ms_played": ms, "platform": "linux", "end_reason": "trackdone", "start_reason": "clickrow", "shuffle": False, "source": "extended_export"})
+def dev_play(days_ago, track, artist, album, ms=210000, country='US'):
+    payload = json.dumps({"country": country, "spotify_track_uri": f"spotify:track:dev_{abs(hash(track)) % 10**8}", "spotify_track_id": f"dev_{abs(hash(track)) % 10**8}", "track_name": track, "artist_name": artist, "album_name": album, "ms_played": ms, "platform": "linux", "end_reason": "trackdone", "start_reason": "clickrow", "shuffle": False, "source": "extended_export"})
     con.execute("INSERT INTO events (event_type, occurred_at, payload, source_file) VALUES ('play', now() - INTERVAL (?) DAY - INTERVAL (?) MINUTE, CAST(? AS JSON), 'dev-seed')", [days_ago, abs(hash(track)) % 600, payload])
 for i in range(24): dev_play(520 + (i % 6), f"Rediscover cut {i % 8 + 1}", "The Rediscover Band", "Loved And Left")
 for i in range(2): dev_play(260, f"One listen {i + 1}", "Pulled Once", "Left On The Shelf")
 dev_play(180, "Only track", "Solo Pull", "Never Returned")
+# Phase 9h dev stand-ins: home plays are US; an Italy trip (Raffaella Carrà) and two Turkey trips (Duman, Barış Manço)
+con.execute("UPDATE events SET payload = json_merge_patch(payload, '{\"country\": \"US\"}') WHERE json_extract_string(payload, '$.country') IS NULL")
+for i in range(40): dev_play(1100 - (i % 9), ["Tanti auguri", "A far l'amore comincia tu", "Rumore", "Pedro"][i % 4], "Raffaella Carrà", "Raffica di Raffaella", country='IT')
+for i in range(12): dev_play(1100 - (i % 9), "Tatsuro cut", "Tatsuro Yamashita", "For You", country='IT')
+for trip in (760, 400):
+    for i in range(55): dev_play(trip - (i % 12), ["Bu akşam", "Senden daha güzel", "Istanbul", "Her şeyi yak"][i % 4], "Duman", "Belki Alışman Lazım", country='TR')
+    for i in range(20): dev_play(trip - (i % 12), ["Gülpembe", "Dönence"][i % 2], "Barış Manço", "Sarı Çizmeli Mehmet Ağa", country='TR')
+    for i in range(15): dev_play(trip - (i % 12), "Mitski cut", "Mitski", "Be the Cowboy", country='TR')
+for _i in range(3): dev_play(30, "Duman at home", "Duman", "Belki Alışman Lazım")
 con.execute(rd('entity_resolution.sql'))
 # Phase 9b dev-only enrichment stand-ins, so genre threads and The Crate have data before any connector runs.
 # Tags follow the scene vocabulary in scene_tag_map (schema.sql); listener counts are invented but shaped like Last.fm's.
@@ -59,6 +68,7 @@ con.execute("DELETE FROM artist_tags WHERE artist_id = 'name:arooj aftab'")
 ORIGIN = {'floating points': ('GB', 'United Kingdom', 'Manchester'), 'little simz': ('GB', 'United Kingdom', 'London'), 'mitski': ('US', 'United States', 'New York'), 'khruangbin': ('US', 'United States', 'Houston'), 'king gizzard & the lizard wizard': ('AU', 'Australia', 'Melbourne'),
           'tatsuro yamashita': ('JP', 'Japan', 'Tokyo'), 'arooj aftab': ('PK', 'Pakistan', 'Lahore'), 'yaeji': ('KR', 'South Korea', 'Seoul'), 'hania rani': ('PL', 'Poland', 'Gdańsk'), 'sault': ('GB', 'United Kingdom', 'London'), 'altın gün': ('NL', 'Netherlands', 'Amsterdam'),
           'radiohead': ('GB', 'United Kingdom', 'Oxford'), 'beach house': ('US', 'United States', 'Baltimore'), 'nils frahm': ('DE', 'Germany', 'Berlin'), 'men i trust': ('CA', 'Canada', 'Montréal')}
+ORIGIN.update({'raffaella carrà': ('IT', 'Italy', 'Bologna'), 'duman': ('TR', 'Türkiye', 'Istanbul'), 'barış manço': ('TR', 'Türkiye', 'Istanbul')})
 for a, (cc, name, city) in ORIGIN.items(): con.execute("INSERT INTO artist_origin (artist_id, country, country_name, city, source) VALUES (?, ?, ?, ?, 'dev') ON CONFLICT DO NOTHING", [f'name:{a}', cc, name, city])
 for a, n in POP.items():
     for d, f in ((60, 0.82), (30, 0.93)):

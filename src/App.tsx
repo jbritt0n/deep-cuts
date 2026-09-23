@@ -22,12 +22,11 @@ import { ErasPage } from './pages/Eras';
 import { AtlasPage } from './pages/Atlas';
 import { InsightsPage } from './pages/Insights';
 import { ActivityPage } from './pages/Activity';
-import { SkipHallPage } from './pages/SkipHall';
 import { AskPage } from './pages/Ask';
 import { ReviewPage } from './pages/Review';
 import { DiscoveryPage } from './pages/Discovery';
 import { AchievementsPage } from './pages/Achievements';
-import { MoodsPage } from './pages/Moods';
+import { MoodsForecastPage } from './pages/MoodsForecast';
 import { DriftPage } from './pages/Drift';
 import { ComparePage } from './pages/Compare';
 import { LibraryPage } from './pages/Library';
@@ -93,11 +92,12 @@ export function App() {
             <Route path="/atlas" element={<AtlasPage />} />
             <Route path="/insights" element={<InsightsPage />} />
             <Route path="/activity" element={<ActivityPage />} />
-            <Route path="/notforme" element={<SkipHallPage />} />
+            <Route path="/notforme" element={<Navigate to="/settings?tab=notforme" replace />} />
+            <Route path="/forecast" element={<Navigate to="/moods#forecast" replace />} />
             <Route path="/notes" element={<NotesPage />} />
             <Route path="/discover" element={<DiscoveryPage />} />
             <Route path="/achievements" element={<AchievementsPage />} />
-            <Route path="/moods" element={<MoodsPage />} />
+            <Route path="/moods" element={<MoodsForecastPage />} />
             <Route path="/drift" element={<DriftPage />} />
             <Route path="/compare" element={<ComparePage />} />
             <Route path="/library" element={<LibraryPage />} />

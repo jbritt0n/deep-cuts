@@ -4,7 +4,8 @@ import { Card, ErrorBox } from '@/components/Card';
 import { CoverTile } from '@/components/Collage';
 import { useQueue } from '@/components/QueueButton';
 import { invoke } from '@/lib/bridge';
-import { albumTracks, dailyDig, obscurityTier, popularityMovers, popularityTrajectory } from '@/lib/crateQueries';
+import { albumTracks, dailyDig, listenerLandscape, obscurityTier, popularityMovers, popularityTrajectory } from '@/lib/crateQueries';
+import { fmtHours, fmtPct } from '@/lib/format';
 import { albumHref, artistHref, fmtInt } from '@/lib/format';
 import { useAsync, useFilter } from '@/lib/hooks';
 
@@ -80,7 +81,7 @@ export function MoversCard() {
   if (m.error) return <Card title="Rising and fading"><ErrorBox message={m.error} /></Card>;
   if (!m.data) return <Card title="Rising and fading"><p className="text-sm text-dust">Reading listener snapshots…</p></Card>;
   const d = m.data;
-  if (!d.rising.length && !d.fading.length) return <Card title="Rising and fading" subtitle={`Last.fm listener counts are snapshotted on every enrichment pass (${fmtInt(d.tracked)} artists tracked${d.since ? ` since ${d.since}` : ''}). Movements show once an artist has two snapshots more than a week apart.`}><span /></Card>;
+  if (!d.rising.length && !d.fading.length) return <Landscape tracked={d.tracked} since={d.since} />;
   const Row = ({ a }: { a: (typeof d.rising)[number] }) => (
     <li className="flex items-baseline gap-2 text-sm">
       <Link to={artistHref(a.artistId)} className="min-w-0 flex-1 truncate hover:text-amber">{a.artist}</Link>
@@ -94,6 +95,31 @@ export function MoversCard() {
         <div><p className="mb-1 text-xs text-dust">Blowing up</p><ul className="space-y-1">{d.rising.map((a) => <Row key={a.artistId} a={a} />)}{!d.rising.length && <li className="text-xs text-dust">Nobody yet.</li>}</ul></div>
         <div><p className="mb-1 text-xs text-dust">Fading</p><ul className="space-y-1">{d.fading.map((a) => <Row key={a.artistId} a={a} />)}{!d.fading.length && <li className="text-xs text-dust">Nobody yet.</li>}</ul></div>
       </div>
+    </Card>
+  );
+}
+
+/** Phase 9h — Rising and fading before any artist has two snapshots: what today's counts already say. */
+function Landscape({ tracked, since }: { tracked: number; since: string | null }) {
+  const { filter } = useFilter();
+  const l = useAsync(listenerLandscape, [filter]);
+  const fmtL = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n));
+  const due = l.data?.firstComparison ?? null;
+  const when = due && due > new Date().toISOString().slice(0, 10) ? new Date(due + 'T12:00:00').toLocaleDateString(undefined, { month: 'long', day: 'numeric' }) : due ? 'with the next Last.fm refresh' : null;
+  return (
+    <Card title="Rising and fading" subtitle={`${fmtInt(tracked)} artists tracked${since ? ` since ${since}` : ''}. Each artist's Last.fm listener count is re-read every 30 days; the first rises and falls appear${when ? (when.startsWith('with') ? ` ${when}` : ` around ${when}`) : ' after the first refresh'}. Until then, where your listening sits:`}>
+      {l.error ? <ErrorBox message={l.error} /> : !l.data ? <p className="text-sm text-dust">Reading listener counts…</p> : (
+        <div className="grid gap-5 sm:grid-cols-2">
+          <div>
+            <p className="mb-1 text-xs text-dust">Your hours by audience size</p>
+            <ul className="space-y-1.5 text-sm">{l.data.tiers.map((t) => <li key={t.tier} className="flex items-center gap-2"><span className="w-20 shrink-0 text-xs">{t.tier}</span><div className="h-1.5 flex-1 overflow-hidden rounded-full bg-raised"><div className="h-full rounded-full bg-amber/80" style={{ width: `${Math.round(t.share * 100)}%` }} /></div><span className="num w-24 shrink-0 text-right text-[11px] text-dust">{fmtPct(t.share)} · {t.artists}</span></li>)}</ul>
+          </div>
+          <div>
+            <p className="mb-1 text-xs text-dust">Small rooms — artists you play most that the fewest people know</p>
+            <ul className="space-y-1 text-sm">{l.data.smallRooms.map((a) => <li key={a.artistId} className="flex items-baseline gap-2"><Link to={artistHref(a.artistId)} className="min-w-0 flex-1 truncate hover:text-amber">{a.artist}</Link><span className="num shrink-0 text-[11px] text-dust">{fmtL(a.listeners)} · {fmtHours(a.hours)}</span></li>)}{!l.data.smallRooms.length && <li className="text-xs text-dust">No listener counts yet — connect Last.fm.</li>}</ul>
+          </div>
+        </div>
+      )}
     </Card>
   );
 }

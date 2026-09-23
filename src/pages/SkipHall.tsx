@@ -8,7 +8,7 @@ import { Card, ErrorBox, Loading, Sleeve } from '@/components/Card';
 import { QueueButton } from '@/components/QueueButton';
 
 /** Phase 9d — Not for me: the songs you keep skipping. Two verdicts per row, both stored as recommendation feedback under engine 'skip_hall'. */
-export function SkipHallPage() {
+export function SkipHallPage({ embedded = false }: { embedded?: boolean } = {}) {
   const { filter } = useFilter();
   const [tick, setTick] = useState(0);
   const d = useAsync(() => skipHall(), [filter, tick]);
@@ -20,7 +20,8 @@ export function SkipHallPage() {
   };
   return (
     <div className="mx-auto max-w-5xl">
-      <Sleeve kicker="Not for me" title="The Skip Hall of Fame" meta="Songs that keep showing up and keep getting skipped: seen 8+ times, skipped 85 % or more. Skip-spree sessions (10+ skips) are left out — those say something about the sitting, not the song." />
+      {!embedded && <Sleeve kicker="Not for me" title="The Skip Hall of Fame" meta="Songs that keep showing up and keep getting skipped: seen 8+ times, skipped 85 % or more. Skip-spree sessions (10+ skips) are left out — those say something about the sitting, not the song." />}
+      {embedded && <p className="mb-4 max-w-3xl text-sm text-dust">Songs that keep being put in front of you and keep getting skipped. The bar for entry — exposures and skip rate — is in <a href="#/settings?tab=tuning" className="underline hover:text-cream">Tuning</a>; skip-spree sessions are left out because they say something about the sitting, not the song.</p>}
       {msg && <div className="mb-4 rounded-xl border border-moss/40 bg-moss/5 px-4 py-3 text-sm text-moss">{msg}</div>}
       {d.error ? <ErrorBox message={d.error} /> : !d.data ? <Loading /> : (
         <>

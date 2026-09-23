@@ -1,3 +1,4 @@
+import { clamp, useViewport } from '@/lib/display';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { C } from '@/lib/theme';
 import type { Era, EraWeek } from '@/lib/insightQueries';
@@ -22,6 +23,7 @@ const THREAD_COLORS = ['#7FC8A9', '#8A6FB0', '#E4655F', '#6F8FB0', '#F2C27B', '#
 const hash = (s: string) => { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h; };
 
 export function EraChart({ weeks, eras, threads, view, onView, onPick }: { weeks: EraWeek[]; eras: Era[]; threads: GenreThread[]; view: EraView; onView: (v: EraView) => void; onPick?: (s: { kind: 'era' | 'thread'; key: string }) => void }) {
+  const vp = useViewport();
   const [hover, setHover] = useState<string | null>(null);
   const model = useMemo(() => build(weeks, eras, threads), [weeks, eras, threads]);
   if (!model) return <p className="text-sm text-dust">Nothing to chart yet.</p>;
@@ -40,7 +42,7 @@ export function EraChart({ weeks, eras, threads, view, onView, onPick }: { weeks
   );
 
   if (view === 'areas') {
-    const h = 340, top = 34, base = h - 30;
+    const h = Math.round(clamp(200, vp.h * 0.34, 340)), top = 30, base = h - 28;   // Phase 9h: fits a 768-px screen with the page header
     const y = (v: number) => base - (v / maxH) * (base - top);
     const area = (s: Span) => {
       if (!s.series.length) return '';
@@ -88,7 +90,7 @@ export function EraChart({ weeks, eras, threads, view, onView, onPick }: { weeks
 
   // lanes
   const laneKeys = ['__eras', ...uniq(threadSpans.map((s) => s.label))];
-  const laneH = 30, top = 6, h = top + laneKeys.length * laneH + 26;
+  const laneH = Math.round(clamp(20, vp.h / 30, 30)), top = 6, h = top + laneKeys.length * laneH + 26;
   const laneY = (k: string) => top + laneKeys.indexOf(k) * laneH;
   return (
     <div>

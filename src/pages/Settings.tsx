@@ -17,23 +17,30 @@ import { search } from '@/lib/queries';
 import type { ArtistRow } from '@/lib/types';
 import { sessionOverrides, travel } from '@/lib/phase7Queries';
 import { integrity, overrunPlays, shortTrackOutliers, stuckRepeatSessions } from '@/lib/hygieneQueries';
-import { Link } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { SkipHallPage } from '@/pages/SkipHall';
+import { DENSITIES, loadDensity, rootPx, saveDensity, type Density } from '@/lib/display';
 import { fmtDate, fmtPct, trackHref } from '@/lib/format';
 
 type ImportRun = { import_id: string; at: string; files: number; inserted: number; duplicate: number; skipped: number };
 
-type Tab = 'look' | 'record' | 'tuning' | 'connectors' | 'hygiene';
+type Tab = 'look' | 'record' | 'tuning' | 'connectors' | 'hygiene' | 'notforme';
 const TABS: { id: Tab; label: string; blurb: string }[] = [
   { id: 'look', label: 'Appearance', blurb: 'Skins.' },
   { id: 'record', label: 'Record', blurb: 'Your history, time zones, data.' },
   { id: 'tuning', label: 'Tuning', blurb: 'Eras, scenes, sessions and discovery thresholds.' },
   { id: 'connectors', label: 'Connectors', blurb: 'Budgets and batch sizes for the background jobs.' },
   { id: 'hygiene', label: 'Hygiene', blurb: 'Outliers, corrected sessions, merged artists.' },
+  { id: 'notforme', label: 'Not for me', blurb: 'Songs you keep being shown and keep skipping (moved here from the sidebar in 9h).' },
 ];
 
 export function SettingsPage({ status, onChanged }: { status: AppStatus; onChanged: () => void }) {
   const { theme, setTheme } = useFilter();
-  const [tab, setTab] = useState<Tab>(() => (new URLSearchParams(window.location.hash.split('?')[1] ?? '').get('tab') as Tab) || 'look');
+  // Phase 9h: the tab follows the URL (so /settings?tab=notforme works while Settings is already open) and writes it back
+  const loc = useLocation(); const nav = useNavigate();
+  const urlTab = (new URLSearchParams(loc.search).get('tab') as Tab) || 'look';
+  const tab: Tab = TABS.some((t) => t.id === urlTab) ? urlTab : 'look';
+  const setTab = (t: Tab) => nav({ pathname: '/settings', search: `?tab=${t}` }, { replace: true });
   const [busy, setBusy] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -61,6 +68,7 @@ export function SettingsPage({ status, onChanged }: { status: AppStatus; onChang
       {msg && <div className="mb-4 rounded-xl border border-moss/40 bg-moss/5 px-4 py-3 text-sm text-moss">{msg}</div>}
       {err && <div className="mb-4"><ErrorBox message={err} /></div>}
 
+      {tab === 'look' && <DisplaySize />}
       {tab === 'look' && (
         <Card title="Skin" subtitle="Colour scheme for the whole app, charts included. Saved on this machine.">
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
@@ -138,6 +146,7 @@ export function SettingsPage({ status, onChanged }: { status: AppStatus; onChang
         </div>
       )}
 
+      {tab === 'notforme' && <SkipHallPage embedded />}
       {tab === 'hygiene' && (
         <div className="space-y-6">
           <ReviewOutliers busy={busy} run={run} />
@@ -439,5 +448,24 @@ function LyricsV2({ enabled, busy, run }: { enabled: boolean; busy: string | nul
       </label>
       <p>The text is shown to the model on this machine and discarded — only its 3–5 theme phrases and one mood line are kept. Needs a model picked in the Ollama card. Slower: a few seconds per song.</p>
     </div>
+  );
+}
+
+/** Phase 9h — Settings → Appearance → Display size. Scales the whole UI (type, spacing, cards) via the root font size. */
+function DisplaySize() {
+  const [d, setD] = useState<Density>(loadDensity);
+  const [px, setPx] = useState(rootPx());
+  const pick = (x: Density) => { saveDensity(x); setD(x); setPx(rootPx(x)); };
+  return (
+    <Card title="Display size" subtitle={`Scales text, spacing and charts together. Now ${px} px${d === 'auto' ? ` — chosen for this ${window.innerWidth}×${window.innerHeight} window` : ''}. Saved on this machine.`} className="mb-6">
+      <div className="flex flex-wrap gap-2">
+        {DENSITIES.map((x) => (
+          <button key={x.id} onClick={() => pick(x.id)} aria-pressed={d === x.id} title={x.blurb}
+            className={`rounded-xl border px-4 py-2 text-left ${d === x.id ? 'border-amber text-cream' : 'border-line text-dust hover:text-cream'}`}>
+            <span className="block text-sm">{x.label}</span><span className="block text-[11px] text-dust">{x.px ? `${x.px} px` : 'fits the window'}</span>
+          </button>
+        ))}
+      </div>
+    </Card>
   );
 }

@@ -175,7 +175,9 @@ pub fn set_setting(state: State<'_, AppState>, key: String, value: String) -> Cm
         // Phase 9f: lyrics v2 — let the local model name themes from the transient text
         "lyrics_llm_enabled",
         // Phase 9g: Settings → Tuning → threads / Not for me
-        "thread_min_weeks", "thread_share_floor", "thread_max_coverage", "thread_scenes", "skiphall_min_shown", "skiphall_min_rate"];
+        "thread_min_weeks", "thread_share_floor", "thread_max_coverage", "thread_scenes", "skiphall_min_shown", "skiphall_min_rate",
+        // Phase 9h: Atlas → Listening abroad
+        "home_country"];
     if !ALLOWED.contains(&key.as_str()) {
         return Err(format!("Unknown setting: {key}"));
     }

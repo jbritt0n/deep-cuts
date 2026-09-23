@@ -122,7 +122,7 @@ pub fn enrich_popularity(db: &Db, max_artists: usize) -> Result<usize> {
         "SELECT a.artist_id, a.name FROM artists a
          JOIN (SELECT artist_id, COUNT(*) c FROM plays_resolved GROUP BY 1) p USING (artist_id)
          LEFT JOIN artist_popularity ap USING (artist_id)
-         WHERE (ap.artist_id IS NULL OR ap.fetched_at < now() - INTERVAL 90 DAY)
+         WHERE (ap.artist_id IS NULL OR ap.fetched_at < now() - INTERVAL 30 DAY)   -- Phase 9h: was 90; the history needs a monthly snapshot for Rising & fading
            AND NOT EXISTS (SELECT 1 FROM api_calls c WHERE c.service = 'lastfm' AND c.endpoint = 'pop:' || a.artist_id AND c.called_at >= now() - INTERVAL 7 DAY)
          ORDER BY (ap.artist_id IS NULL) DESC, p.c DESC LIMIT {max_artists}"), &[])?;
     let mut n = 0;

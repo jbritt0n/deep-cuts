@@ -1,6 +1,5 @@
 import { Link } from 'react-router-dom';
 import { MoversCard } from '@/components/DailyDig';
-import { ForecastAccuracyCard } from '@/components/ForecastCard';
 import { SoundSection } from '@/components/SoundSection';
 import { C } from '@/lib/theme';
 import * as M from '@/lib/metricQueries';
@@ -90,7 +89,7 @@ export function InsightsPage() {
           {(rows) => rows.length < 2 ? <Muted>Not enough enriched tracks yet — this fills in as Spotify enrichment runs.</Muted> : <YearLines rows={rows} series={[{ key: 'e', label: 'Explicit', color: C.coral, values: rows.map((r) => r.share), format: fmtPct }]} />}
         </Section>
       </div>
-      <div className="mt-6 grid gap-6 lg:grid-cols-2"><MoversCard /><ForecastAccuracyCard /></div>
+      <div className="mt-6"><MoversCard /></div>
       <div className="mt-6"><SoundSection /></div>
       <div className="mt-6"><LyricCloudCard /></div>
       <p className="mt-8 text-xs text-dust/70">Looking for eras, obsessions, comebacks or the 3 AM canon? They live on <Link to="/eras" className="underline hover:text-cream">Eras</Link> now.</p>
@@ -118,12 +117,24 @@ function LyricCloudCard() {
   const [kind, setKind] = useState<M.LyricCloudKind>('keywords');
   const [year, setYear] = useState<number | null>(null);
   const [picked, setPicked] = useState<string | null>(null);
-  const cloud = useAsync(() => M.lyricCloud(kind, year), [filter, kind, year]);
+  const [lang, setLang] = useState('en');
+  const langs = useAsync(M.lyricLanguages, [filter]);
+  const cloud = useAsync(() => M.lyricCloud(kind, year, 90, lang), [filter, kind, year, lang]);
   const tracks = useAsync(() => (picked ? M.lyricTracksFor(picked, kind) : Promise.resolve(null)), [picked, kind, filter]);
   const years: number[] = []; for (let y = new Date().getFullYear(); y >= new Date().getFullYear() - 6; y--) years.push(y);
   return (
-    <Card title="Lyric keywords" subtitle={cloud.data ? `${kind === 'keywords' ? 'Words that are distinctive of the songs you play — scored against your whole lyric corpus, so a word in every love song is nobody\'s keyword.' : kind === 'themes' ? 'Themes scored from cue-word density; sized by plays × strength.' : kind === 'llm_themes' ? 'Themes your local model named after reading each song.' : 'One-phrase moods from your local model.'} Lyrics come from LRCLIB and are reduced on arrival — the text itself is never stored. Covers ${fmtInt(cloud.data.coveredTracks)} of ${fmtInt(cloud.data.totalTracks)} tracks${cloud.data.oldRules > 0 ? `; ${fmtInt(cloud.data.oldRules)} still carry the old rules and are being re-analysed` : ''}.` : 'Words that recur in the lyrics of what you play.'}
+    <Card title="Lyric keywords" subtitle={cloud.data ? `${kind === 'keywords' ? 'Words that are distinctive of the songs you play — scored against the other songs in the same language, so a word in every love song is nobody\'s keyword.' : kind === 'themes' ? 'Themes scored from cue-word density; sized by plays × strength.' : kind === 'llm_themes' ? 'Themes your local model named after reading each song.' : 'One-phrase moods from your local model.'} Lyrics come from LRCLIB and are reduced on arrival — the text itself is never stored. Covers ${fmtInt(cloud.data.coveredTracks)} of ${fmtInt(cloud.data.totalTracks)} tracks${cloud.data.oldRules > 0 ? `; ${fmtInt(cloud.data.oldRules)} still carry the old rules and are being re-analysed` : ''}.` : 'Words that recur in the lyrics of what you play.'}
       aside={<div className="flex flex-wrap gap-1 text-xs">{([['keywords', 'keywords'], ['themes', 'themes'], ['llm_themes', 'model themes'], ['moods', 'moods']] as [M.LyricCloudKind, string][]).map(([k, l]) => <button key={k} onClick={() => { setKind(k); setPicked(null); }} className={`rounded-full px-3 py-1 ${kind === k ? 'bg-raised text-cream' : 'border border-line text-dust hover:text-cream'}`}>{l}</button>)}<select value={year ?? ''} onChange={(e) => { setYear(e.target.value ? Number(e.target.value) : null); setPicked(null); }} className="rounded-lg border border-line bg-ink px-2 py-1" aria-label="Year"><option value="">all years</option>{years.map((y) => <option key={y} value={y}>{y}</option>)}</select></div>}>
+      {kind === 'keywords' && langs.data && langs.data.length > 1 && (
+        <div className="mb-4 flex flex-wrap items-center gap-1.5 text-xs" role="tablist" aria-label="Lyric language">
+          <span className="mr-1 text-dust">language</span>
+          {[{ lang: 'en', label: 'English' }, { lang: 'other', label: 'All other languages' }, ...langs.data.filter((l) => l.lang !== 'en' && l.lang !== 'und' && l.tracks >= 5).slice(0, 8).map((l) => ({ lang: l.lang, label: LANG_NAMES[l.lang] ?? l.lang }))].map((o) => {
+            const n = o.lang === 'en' ? langs.data!.find((l) => l.lang === 'en')?.tracks ?? 0 : o.lang === 'other' ? langs.data!.filter((l) => l.lang !== 'en').reduce((a, l) => a + l.tracks, 0) : langs.data!.find((l) => l.lang === o.lang)?.tracks ?? 0;
+            return <button key={o.lang} role="tab" aria-selected={lang === o.lang} onClick={() => { setLang(o.lang); setPicked(null); }} className={`rounded-full px-3 py-1 ${lang === o.lang ? 'bg-raised text-cream' : 'border border-line text-dust hover:text-cream'}`}>{o.label} <span className="num text-dust">{n}</span></button>;
+          })}
+          <span className="ml-2 text-[11px] text-dust/70">each language is scored against its own songs</span>
+        </div>
+      )}
       {cloud.error ? <ErrorBox message={cloud.error} /> : !cloud.data ? <Loading label="Gathering words…" /> : cloud.data.words.length === 0 ? <p className="text-sm text-dust">{kind === 'llm_themes' || kind === 'moods' ? 'Nothing from the local model yet — turn on “Let the local model name themes” in Settings → Connectors → Lyric themes (needs Ollama).' : cloud.data.oldRules > 0 ? 'Your lyric features are being re-analysed under the new rules a batch at a time — this fills in as it goes (Settings → Connectors → Fetch a batch now).' : 'No lyric features yet. Turn on lyric themes in Settings → Connectors and give LRCLIB a little while.'}</p> : (
         <div className="grid gap-6 lg:grid-cols-[1.4fr_1fr]">
           <WordCloud words={cloud.data.words.map((w) => ({ text: w.text, weight: w.weight, note: `${w.tracks} track${w.tracks === 1 ? '' : 's'} · weight ${fmtInt(w.weight)}` }))} onPick={(w) => setPicked(w.text)} picked={picked} />
@@ -140,3 +151,5 @@ function LyricCloudCard() {
     </Card>
   );
 }
+
+const LANG_NAMES: Record<string, string> = { en: 'English', es: 'Spanish', pt: 'Portuguese', fr: 'French', de: 'German', it: 'Italian', tr: 'Turkish', ja: 'Japanese', ko: 'Korean', ru: 'Russian', ar: 'Arabic', und: 'Undetected' };

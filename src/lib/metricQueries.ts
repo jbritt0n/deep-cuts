@@ -124,10 +124,11 @@ export type LyricCloudKind = 'keywords' | 'themes' | 'llm_themes' | 'moods';
  * `llm_themes` / `moods` are what the local model named, when that option is on. Rows still on the 9e rules
  * (features_rev 1) are excluded from keywords so the cloud never mixes the two vocabularies.
  */
-export async function lyricCloud(kind: LyricCloudKind = 'keywords', year: number | null = null, limit = 90): Promise<{ words: CloudRow[]; coveredTracks: number; totalTracks: number; oldRules: number }> {
+/** Phase 9h: `lang` = 'en' | 'other' | an ISO code ('tr'); applies to keywords (themes are English-only already). */
+export async function lyricCloud(kind: LyricCloudKind = 'keywords', year: number | null = null, limit = 90, lang: string = 'en'): Promise<{ words: CloudRow[]; coveredTracks: number; totalTracks: number; oldRules: number }> {
   const yr = year ? `AND EXTRACT(year FROM p.played_at) = ${Math.round(year)}` : '';
   const src = kind === 'keywords'
-    ? `SELECT k.track_id, k.term AS word, k.score AS s FROM track_lyric_keywords k WHERE k.rank <= 8`
+    ? `SELECT k.track_id, k.term AS word, k.score AS s FROM track_lyric_keywords k WHERE k.rank <= 8 AND ${lang === 'en' ? "k.lang = 'en'" : lang === 'other' ? "k.lang <> 'en'" : `k.lang = '${lang.replace(/[^a-z]/g, '')}'`}`
     : kind === 'themes'
     ? `SELECT f.track_id, j.key AS word, CAST(j.value AS DOUBLE) AS s FROM track_lyric_features f, json_each(COALESCE(f.theme_scores, '{}'::JSON)) j WHERE f.found AND f.theme_scores IS NOT NULL`
     : kind === 'llm_themes'
@@ -151,4 +152,12 @@ export async function lyricTracksFor(word: string, kind: LyricCloudKind = 'keywo
     FROM plays_resolved p JOIN track_lyric_features f USING (track_id) WHERE ${cond} ${PW('p')} GROUP BY 1 ORDER BY plays DESC LIMIT ${n}`, [word])).map((r) => ({
     trackId: String(r.trackId), track: String(r.track), artistId: str(r.artistId), artist: String(r.artist ?? ''), plays: num(r.plays), hours: num(r.hours), skipRate: num(r.skipRate),
   }));
+}
+
+/** Phase 9h: how many analysed songs per language, for the keyword cloud's language chips. */
+export async function lyricLanguages(): Promise<{ lang: string; tracks: number; plays: number }[]> {
+  return (await query(`
+    WITH pl AS (SELECT track_id, COUNT(*) AS c FROM plays_resolved p WHERE track_id IS NOT NULL ${PW('p')} GROUP BY 1)
+    SELECT COALESCE(NULLIF(f.lang, ''), 'und') AS lang, COUNT(*) AS t, SUM(pl.c) AS c FROM track_lyric_features f JOIN pl USING (track_id)
+    WHERE f.found AND COALESCE(f.features_rev, 1) >= 2 GROUP BY 1 ORDER BY c DESC`)).map((r) => ({ lang: String(r.lang), tracks: num(r.t), plays: num(r.c) }));
 }

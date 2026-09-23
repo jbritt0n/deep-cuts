@@ -35,6 +35,7 @@ track_lyric_terms: track_id, term, tf (content-word counts). track_lyric_keyword
 artist_popularity_history: artist_id, listeners, snapshot_at (Last.fm listener snapshots over time).
 artist_origin: artist_id, country (ISO-2), country_name, city — where the artist is from (MusicBrainz).
 track_features: track_id, bpm, key_name ('F# minor'), mode (1 major / 0 minor), camelot, energy (0-1), loudness_db, danceability, acousticness, found. Audio features from FreqBlog; only rows with found = TRUE have numbers.
+plays_resolved.country: ISO-2 country the play was streamed from (Spotify conn_country), NULL for polled plays; app_meta key 'home_country' overrides the detected home.
 forecast_log: forecast_date, weekday, payload JSON — the app's own daily listening forecast (scene probabilities), for scoring.
 playlists also has: owner_id ('spotify' = Spotify-made), sync_error (LIKE 'unreadable:%' means its tracks cannot be read), items_synced_at.
 artist_obscurity (view): artist_id, listeners (Last.fm), obscurity (0 mainstream → 1 unknown).

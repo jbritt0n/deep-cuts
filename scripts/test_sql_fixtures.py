@@ -260,6 +260,27 @@ def test_track_features_and_origin_tables_exist():
     assert con.execute("SELECT found FROM track_features").fetchone()[0] is True
     assert con.execute("SELECT status FROM connector_state WHERE service = 'freqblog'").fetchone()[0] == 'disconnected'
 
+# ---------------------------------------------------------------- Phase 9h
+def test_lyric_keywords_idf_is_per_language():
+    # Four English songs share 'river'; one Turkish song has 'gece'. Under a whole-corpus IDF 'gece' (df 1 of 5) would
+    # out-score everything; per-language, the lone Turkish song is its own corpus and English words compete only with English.
+    con = fresh()
+    en = {'e1': {'river': 2, 'highway': 3}, 'e2': {'river': 2, 'winter': 3}, 'e3': {'ashes': 3, 'river': 1}, 'e4': {'harbor': 3, 'ember': 1}, 'e5': {'garden': 2, 'ember': 1}, 'e6': {'violet': 2, 'ember': 1}}
+    for tid, terms in en.items():
+        con.execute("INSERT INTO track_lyric_features (track_id, source, found, features_rev, lang) VALUES (?, 'lrclib', TRUE, 2, 'en')", [tid])
+        for term, tf in terms.items(): con.execute("INSERT INTO track_lyric_terms VALUES (?, ?, ?)", [tid, term, tf])
+    for tid, terms in {'t1': {'gece': 5, 'yol': 2}, 't2': {'deniz': 4, 'yol': 1}, 't3': {'kalp': 3, 'rüzgar': 2}}.items():
+        con.execute("INSERT INTO track_lyric_features (track_id, source, found, features_rev, lang) VALUES (?, 'lrclib', TRUE, 2, 'tr')", [tid])
+        for term, tf in terms.items(): con.execute("INSERT INTO track_lyric_terms VALUES (?, ?, ?)", [tid, term, tf])
+    langs = dict(con.execute("SELECT term, lang FROM track_lyric_keywords GROUP BY 1, 2").fetchall())
+    assert langs.get('gece') == 'tr' and langs.get('highway') == 'en', langs
+    # 'river' is in 3 of 6 English songs (50 %) → above the per-language ceiling → nobody's keyword
+    assert 'river' not in langs, langs
+    # the Turkish score uses N = 3 Turkish songs, not 9 — so gece's score is 5·ln(3/1), not 5·ln(9/1)
+    import math
+    sc = con.execute("SELECT score FROM track_lyric_keywords WHERE term = 'gece'").fetchone()[0]
+    assert abs(sc - 5 * math.log(3)) < 1e-9, sc
+
 if __name__ == '__main__':
     tests = [v for k, v in globals().items() if k.startswith('test_')]
     fails = 0

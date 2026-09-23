@@ -110,7 +110,7 @@ function Playlists() {
           </ul>
         </Card>
       )}
-      <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_1.4fr]">
+      <div className="mt-6 grid items-start gap-6 lg:grid-cols-[1fr_1.4fr]">
         <Card title="Your playlists" subtitle="Plays counted only after a song was added. Completion = songs you've heard since adding them."
           aside={<span className="num text-xs text-dust">{health.data.length}</span>}>
           <div className="mb-3 flex flex-wrap items-center gap-2 text-xs">
@@ -118,14 +118,15 @@ function Playlists() {
             <select value={sort} onChange={(e) => setSort(e.target.value as PlaylistSort)} className="rounded-full border border-line bg-transparent px-3 py-1 text-dust hover:text-cream">{SORTS.map(([k, l]) => <option key={k} value={k}>{l}</option>)}</select>
             <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Find a playlist" className="ml-auto rounded-full border border-line bg-transparent px-3 py-1 text-dust placeholder:text-dust/60 focus:text-cream" />
           </div>
-          <ul className="divide-y divide-line/60 text-sm">
+          {/* Phase 9h: both panes bounded to the window so the list and the open playlist sit side by side on a 768-px screen */}
+          <ul className="-mr-2 max-h-[max(16rem,calc(100vh-19rem))] divide-y divide-line/60 overflow-y-auto pr-2 text-sm">
             {health.data.map((p) => (
               <li key={p.playlistId}>
                 <button onClick={() => { setOpen(p.playlistId); setKindFilter('all'); }} className={`w-full py-2 text-left hover:text-amber ${open === p.playlistId ? 'text-amber' : ''}`}>
                   <span className="flex items-baseline justify-between gap-3"><span className="truncate">{p.name}{!p.ownerIsMe && <span className="ml-2 text-xs text-dust">followed</span>}{p.partial && <span className="ml-2 text-[10px] text-amber" title={`${p.synced} of ${p.trackCount} tracks synced`}>partial</span>}{p.unreadable && <span className="ml-2 text-[10px] text-dust" title={p.syncError ?? ''}>unreadable</span>}</span><span className="num shrink-0 text-xs text-dust">{fmtInt(p.playsWithin)} plays · {fmtHours(p.hoursWithin)}</span></span>
                   <span className="mt-1 flex items-center gap-2">
                     <span className="h-1 flex-1 overflow-hidden rounded-full bg-raised"><span className="block h-full rounded-full bg-moss/70" style={{ width: `${p.completion * 100}%` }} /></span>
-                    <span className="num w-44 shrink-0 text-right text-[11px] text-dust">{p.heard}/{p.synced} heard{p.gems ? <span className="text-amber"> · {p.gems} gems</span> : ''}{p.deadWeight ? <span className="text-coral"> · {p.deadWeight} dead</span> : ''}{p.daysSinceTouched != null && p.daysSinceTouched >= 90 ? ` · ${Math.round(p.daysSinceTouched / 30)} mo quiet` : ''}</span>
+                    <span className="num max-w-[55%] shrink-0 truncate text-right text-[11px] text-dust">{p.heard}/{p.synced} heard{p.gems ? <span className="text-amber"> · {p.gems} gems</span> : ''}{p.deadWeight ? <span className="text-coral"> · {p.deadWeight} dead</span> : ''}{p.daysSinceTouched != null && p.daysSinceTouched >= 90 ? ` · ${Math.round(p.daysSinceTouched / 30)} mo quiet` : ''}</span>
                   </span>
                 </button>
               </li>
@@ -140,7 +141,7 @@ function Playlists() {
               <div className="mb-3 flex flex-wrap gap-2 text-xs">
                 {([['all', 'All', tracks.data.length], ['gem', 'Gems', cur?.gems ?? 0], ['dead', 'Dead weight', cur?.deadWeight ?? 0], ['unheard', 'Unheard', cur?.unheard ?? 0], ['core', 'Core', tracks.data.filter((t) => t.kind === 'core').length]] as const).map(([k, l, n]) => <button key={k} onClick={() => setKindFilter(k)} className={`rounded-full px-3 py-1 ${kindFilter === k ? 'bg-raised text-cream' : 'border border-line text-dust hover:text-cream'}`}>{l} · {n}</button>)}
               </div>
-              <ol className="divide-y divide-line/60 text-sm">
+              <ol className="-mr-2 max-h-[max(14rem,calc(100vh-23rem))] divide-y divide-line/60 overflow-y-auto pr-2 text-sm">
                 {shownTracks.map((t) => <li key={`${t.trackId}-${t.position}`} className="flex items-center gap-3 py-2"><span className="num w-6 text-xs text-dust">{t.position + 1}</span><div className="min-w-0 flex-1"><Link to={trackHref(t.trackId)} className="block truncate hover:text-amber">{t.track} {badge(t.kind)}</Link><p className="truncate text-xs text-dust">{t.artist}</p></div><span className="num shrink-0 text-right text-xs text-dust">{t.playsIn} in · {t.playsAll} total<br /><span className={t.skipIn >= 0.5 ? 'text-coral' : ''}>{fmtPct(t.skipIn)} skips</span></span><QueueButton trackId={t.trackId} /></li>)}
               </ol>
             </div>

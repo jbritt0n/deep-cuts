@@ -7,6 +7,7 @@ import { fmtInt } from '@/lib/format';
 import { Card, Sleeve } from '@/components/Card';
 import { MakePlaylistButton } from '@/components/PlaylistMaker';
 import { QueueButton } from '@/components/QueueButton';
+import { ExploreSearch } from '@/pages/Explore';
 
 /**
  * Phase 9e — Ask the Archive. A conversation with your own record, answered by a local model (Ollama) that writes
@@ -43,9 +44,15 @@ export function AskPage() {
           {status?.reachable && status.models.length === 0 && <span className="text-dust">Ollama is up but has no models — run <span className="num text-cream">ollama pull llama3.1</span> (or any model) and it will appear here.</span>}
           {status && !status.reachable && <span className="text-dust">Start it with <span className="num text-cream">ollama serve</span>, or set the URL in <Link to="/settings?tab=connectors" className="underline hover:text-cream">Settings → Connectors</Link>.{status.error ? ` (${status.error.slice(0, 120)})` : ''}</span>}
           <button onClick={refresh} className="text-dust hover:text-cream">recheck</button>
-          <Link to="/explore/lists" className="ml-auto text-dust hover:text-cream">the old Explore lists →</Link>
         </div>
       </Sleeve>
+
+      {/* Phase 9h: the Explore search at the top — works with or without a local model */}
+      <section className="mb-8" aria-label="Search your record">
+        <div className="mb-2 flex items-baseline justify-between"><h2 className="font-display text-2xl">Search</h2><Link to="/explore/lists" className="text-xs text-dust hover:text-cream">full-page search →</Link></div>
+        <ExploreSearch big={false} autoFocus={!!status && !status.reachable} />
+      </section>
+      <h2 className="mb-3 font-display text-2xl">Ask {status && !status.reachable && <span className="align-middle text-xs font-sans text-dust">— needs a local model (Ollama)</span>}</h2>
 
       {turns.length === 0 && !busy && (
         <Card title="Things to try" subtitle="Questions the record can answer. Follow-ups work — ask, then say “and in 2024?”.">

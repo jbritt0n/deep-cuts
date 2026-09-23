@@ -17,7 +17,7 @@ export function ForecastCard() {
   const top = d.scenes.slice(0, 5);
   const slot = [...d.slots].sort((a, b) => b.p - a.p)[0];
   return (
-    <Card title="Today's forecast" subtitle={`Built from your last ${d.sameDays} ${d.weekdayName}s (${d.activeDays} with listening). A spread, not a guess at one song.`} aside={<Link to="/insights#forecast" className="text-xs text-dust hover:text-amber">how accurate?</Link>}>
+    <Card title="Today's forecast" subtitle={`Built from your last ${d.sameDays} ${d.weekdayName}s (${d.activeDays} with listening). A spread, not a guess at one song.`} aside={<Link to="/moods#forecast" className="text-xs text-dust hover:text-amber">full forecast →</Link>}>
       {d.thin ? <p className="text-sm text-dust">Too few {d.weekdayName}s with listening in the window to say much — {d.activeDays} of {d.sameDays}. The forecast firms up as the record grows.</p> : (
         <div className="grid gap-4 sm:grid-cols-[1fr_1fr]">
           <div>
