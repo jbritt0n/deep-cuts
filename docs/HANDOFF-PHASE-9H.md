@@ -15,6 +15,18 @@
 | Forecast page, weather/radio themed, merged with Moods | — | **Moods & Forecast**: broadcast, hourly radar, likely artists/songs + station playlist, 7-day outlook, fronts, 28-day backtest, logged accuracy, the ten stations (FM frequencies) |
 | Atlas: what I play abroad | — | **Listening abroad**: trips, souvenir song, local-artist share vs home, scenes that travel, "where you listened" map mode, home override |
 
+## 0.1 Hotfix 9h.1 (Sep 23) — Linux MX would not start
+Owner's terminal: `Failed to setup app: … opening /home/jon/.local/share/deep-cuts/demo.duckdb`. The real record opened
+and migrated fine; `Connection::open` refused the **demo** file (most likely a stale `.wal` from the earlier killed run —
+DuckDB's own reason was swallowed because the setup error printed only the outermost context).
+- `lib.rs::open_databases`: an unreadable demo record is moved aside (`demo.duckdb.broken-<stamp>`, `.wal` too) and
+  recreated from `demo_seed.sql`. The real record is **never** moved or recreated automatically.
+- Setup errors print the full chain (`{e:#}`) plus the data-folder path.
+- `init_logging()`: logs go to the terminal **and** `<data dir>/logs/deep-cuts.log` (previous run → `deep-cuts.1.log`);
+  a panic hook routes panics through the log. The logs folder existed since Phase 1 but was never written.
+Still open from the diagnosis: the first launch after a pipeline bump rebuilds the record *before* the window appears —
+move that to a background task with a "Rebuilding…" screen next phase.
+
 ## 1. Rust (uncompiled)
 - `db.rs`: `assert_read_only` now uses `sql_words()`; list gained DETACH, SET, CHECKPOINT, VACUUM. `#[cfg(test)] mod guard_tests` — run `cargo test guard`. A Python port passed the same cases and found no app query that trips the list.
 - `connectors/lastfm.rs`: popularity refresh 90 → 30 days.
