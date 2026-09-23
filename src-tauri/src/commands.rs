@@ -171,7 +171,11 @@ pub fn set_setting(state: State<'_, AppState>, key: String, value: String) -> Cm
         // Phase 9c: The Crate — per-album skip (90 days) / keep decisions are recommendation_feedback rows; this is the crate's own toggle store
         "crate_show_related",
         // Phase 9e: local LLM
-        "ollama_url", "ollama_model"];
+        "ollama_url", "ollama_model",
+        // Phase 9f: lyrics v2 — let the local model name themes from the transient text
+        "lyrics_llm_enabled",
+        // Phase 9g: Settings → Tuning → threads / Not for me
+        "thread_min_weeks", "thread_share_floor", "thread_max_coverage", "thread_scenes", "skiphall_min_shown", "skiphall_min_rate"];
     if !ALLOWED.contains(&key.as_str()) {
         return Err(format!("Unknown setting: {key}"));
     }
@@ -247,6 +251,38 @@ pub async fn export_events(state: State<'_, AppState>) -> CmdResult<String> {
     .map_err(err)
 }
 
+/// Phase 9f — Move to another computer. Writes deep-cuts-move-<stamp>.zip into `dest_dir` (Parquet per table +
+/// manifest; connector secrets only when a passphrase is given, encrypted with it).
+#[tauri::command]
+pub async fn export_move_bundle(state: State<'_, AppState>, dest_dir: Option<String>, passphrase: Option<String>) -> CmdResult<String> {
+    let real = state.real.clone(); let paths = state.paths.clone();
+    let version = env!("CARGO_PKG_VERSION").to_string();
+    let dest = dest_dir.filter(|d| !d.trim().is_empty()).map(PathBuf::from).unwrap_or_else(|| paths.backups_dir.clone());
+    tauri::async_runtime::spawn_blocking(move || crate::migrate::export_bundle(&real, &paths, &dest, passphrase.as_deref(), &version, crate::PIPELINE_REV).map(|p| p.to_string_lossy().to_string()))
+        .await.map_err(err)?.map_err(err)
+}
+
+#[tauri::command]
+pub fn inspect_move_bundle(path: String) -> CmdResult<crate::migrate::Manifest> {
+    crate::migrate::inspect_bundle(&PathBuf::from(path)).map_err(err)
+}
+
+/// Replaces this record with the bundle's, rebuilds every derived table, restores secrets when the passphrase opens them.
+#[tauri::command]
+pub async fn restore_move_bundle(state: State<'_, AppState>, app: AppHandle, path: String, passphrase: Option<String>) -> CmdResult<crate::migrate::RestoreReport> {
+    if state.importing.swap(true, Ordering::SeqCst) { return Err("An import is already running".into()); }
+    let real = state.real.clone(); let paths = state.paths.clone();
+    let version = env!("CARGO_PKG_VERSION").to_string() + "+" + crate::PIPELINE_REV;
+    let out = tauri::async_runtime::spawn_blocking(move || crate::migrate::restore_bundle(&real, &paths, &PathBuf::from(path), passphrase.as_deref(), &version)).await;
+    state.importing.store(false, Ordering::SeqCst);
+    let report = out.map_err(err)?.map_err(err)?;
+    if let Ok(mut g) = state.zone.lock() { *g = report.manifest.zone.clone(); }
+    // fresh Spotify client so restored tokens are picked up
+    if report.secrets_restored > 0 { if let Ok(c) = crate::spotify::client::SpotifyClient::new() { state.spotify.replace(c); } }
+    events::emit(&app, events::DATA_CHANGED, serde_json::json!({ "reason": "restore" }));
+    Ok(report)
+}
+
 fn uuid_v4() -> String {
     // Small dependency-free v4: random bytes from the OS via getrandom-less approach.
     let mut bytes = [0u8; 16];
@@ -312,6 +348,7 @@ pub fn get_connectors(state: State<'_, AppState>) -> CmdResult<Vec<ConnectorRow>
                 "canQueue": state.spotify_ref().has_scope(crate::spotify::endpoints::SCOPE_QUEUE),
                 "callsLastHour": state.spotify_ref().calls_last_hour(&state.real), "enrichPerHour": crate::spotify::endpoints::budget::enrich_per_hour(&state.real),
                 "enrichedTracks": enriched.first().and_then(|x| x.get("e")).and_then(|v| v.as_i64()).unwrap_or(0), "totalTracks": enriched.first().and_then(|x| x.get("n")).and_then(|v| v.as_i64()).unwrap_or(0), "likedSongs": liked }),
+            "freqblog" => serde_json::json!({ "featuredTracks": state.real.scalar_i64("SELECT COUNT(*) FROM track_features WHERE found").unwrap_or(0), "missedTracks": state.real.scalar_i64("SELECT COUNT(*) FROM track_features WHERE NOT found").unwrap_or(0), "playedTracks": state.real.scalar_i64("SELECT COUNT(DISTINCT track_id) FROM plays_resolved WHERE attended AND track_id IS NOT NULL").unwrap_or(0), "requestsThisMonth": crate::connectors::freqblog::used_this_month(&state.real), "monthlyCap": crate::connectors::freqblog::MONTHLY_CAP }),
             "lastfm" => serde_json::json!({ "taggedArtists": tag_of("lastfm"), "popularityArtists": state.real.scalar_i64("SELECT COUNT(*) FROM artist_popularity").unwrap_or(0) }),
             "musicbrainz" => serde_json::json!({ "taggedArtists": tag_of("musicbrainz"), "resolvedArtists": mbids, "catalogueArtists": state.real.scalar_i64("SELECT COUNT(*) FROM artists WHERE catalogue_tracks IS NOT NULL").unwrap_or(0), "creditedTracks": state.real.scalar_i64("SELECT COUNT(DISTINCT track_id) FROM track_credits").unwrap_or(0) }),
             "lastfm_wild" => {
@@ -380,13 +417,15 @@ pub async fn sync_now(state: State<'_, AppState>, app: AppHandle, service: Strin
                 let added = sync::poll_recent(&client, &real)?;
                 let liked = sync::sync_liked(&client, &real)?;
                 let (me, _) = sync::whoami(&client, &real)?;
-                let pls = sync::sync_playlists(&client, &real, &me)?;
+                // Phase 9f: a playlist failure must not cost the enrichment step (or the message); it is logged and reported.
+                let pls = match sync::sync_playlists_detailed(&client, &real, &me) { Ok((seen, items)) => format!("{seen} playlists ({items} refreshed)"), Err(e) => { real.log_activity("sync", "warn", &format!("Playlist sync: {e}"), None); format!("playlists failed: {e}") } };
                 let enriched = sync::enrich_batch(&client, &real)?;
-                format!("Spotify: +{added} plays, {liked} liked songs, {pls} playlists, {enriched} tracks enriched")
+                format!("Spotify: +{added} plays, {liked} liked songs, {pls}, {enriched} tracks enriched")
             }
             "lastfm" => { let t = lastfm::enrich_tags(&real, 60)?; let s = lastfm::enrich_similar(&real, 15)?; let l = lastfm::enrich_popularity(&real, 30)?; format!("Last.fm: tagged {t} artists, {s} similar-artist seeds, listener counts for {l}") }
             "musicbrainz" => { let n = musicbrainz::resolve_batch(&real, 40)?; let r = musicbrainz::enrich_relations(&real, 15)?; let c = musicbrainz::enrich_catalogue(&real, 15)?; let k = musicbrainz::enrich_credits(&real, 20)?; format!("MusicBrainz: resolved {n} artists, relationships for {r}, catalogue sizes for {c}, credits for {k} tracks") }
             "statsfm" => { let n = crate::connectors::statsfm::import(&real, 10)?; format!("stats.fm: +{n} plays") }
+            "freqblog" => { let n = crate::connectors::freqblog::enrich(&real, 50)?; format!("FreqBlog: audio features for {n} tracks ({} requests used this month)", crate::connectors::freqblog::used_this_month(&real)) }
             "listenbrainz" => { let n = crate::connectors::listenbrainz::enrich_similar(&real, 20)?; format!("ListenBrainz: similar artists for {n} seeds") }
             "lastfm_wild" => { let n = crate::connectors::lastfm_wild::import(&real, 10)?; format!("Heard in the Wild: +{n} captures") }
             other => anyhow::bail!("{other} isn't connectable yet"),
@@ -424,6 +463,15 @@ pub async fn statsfm_connect(state: State<'_, AppState>, api_key: String) -> Cmd
 }
 #[tauri::command]
 pub fn statsfm_disconnect(state: State<'_, AppState>) -> CmdResult<()> { crate::connectors::statsfm::disconnect(&state.real).map_err(err) }
+
+/// Phase 9g — FreqBlog audio features.
+#[tauri::command]
+pub async fn freqblog_connect(state: State<'_, AppState>, api_key: String) -> CmdResult<String> {
+    let real = state.real.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::connectors::freqblog::connect(&real, api_key.trim())).await.map_err(err)?.map_err(err)
+}
+#[tauri::command]
+pub fn freqblog_disconnect(state: State<'_, AppState>) -> CmdResult<()> { crate::connectors::freqblog::disconnect(&state.real).map_err(err) }
 
 /// Phase 8 — Heard in the Wild: reuse the Last.fm key; `username` may be blank (= Last.fm connector's user); `since` = YYYY-MM-DD or blank (= now).
 #[tauri::command]
@@ -482,6 +530,86 @@ pub fn set_artist_scene(state: State<'_, AppState>, artist_id: String, scene: Op
     db.exec("DELETE FROM artist_scene WHERE artist_id = ?", &[serde_json::json!(artist_id)]).map_err(err)?;
     if let Some(sc) = scene { db.exec("INSERT INTO artist_scene VALUES (?, ?, 9.0)", &[serde_json::json!(artist_id), serde_json::json!(sc)]).map_err(err)?; }
     Ok(())
+}
+
+/// Phase 9g: log today's forecast once (summary §3.2). Idempotent: a second call for the same date is a no-op,
+/// so the accuracy line is never rewritten after the fact.
+#[tauri::command]
+pub fn forecast_log_write(state: State<'_, AppState>, date: String, weekday: i64, payload: String) -> CmdResult<bool> {
+    if date.len() != 10 || !date.chars().all(|c| c.is_ascii_digit() || c == '-') { return Err("date must be YYYY-MM-DD".into()); }
+    let before = state.real.scalar_i64("SELECT COUNT(*) FROM forecast_log").map_err(err)?;
+    state.real.exec("INSERT INTO forecast_log (forecast_date, weekday, payload) VALUES (CAST(? AS DATE), ?, CAST(? AS JSON)) ON CONFLICT (forecast_date) DO NOTHING", &[serde_json::json!(date), serde_json::json!(weekday), serde_json::json!(payload)]).map_err(err)?;
+    let after = state.real.scalar_i64("SELECT COUNT(*) FROM forecast_log").map_err(err)?;
+    Ok(after > before)
+}
+
+/// Phase 9f: progress of the lyric v2 re-analysis, for the Settings card.
+#[tauri::command]
+pub fn lyrics_status(state: State<'_, AppState>) -> CmdResult<serde_json::Value> {
+    let (old, current, never) = crate::connectors::lyrics::pending(&state.real);
+    let llm = state.real.query("SELECT value FROM app_meta WHERE key = 'lyrics_llm_enabled'", &[]).ok().and_then(|r| r.first().and_then(|m| m.get("value")).and_then(|v| v.as_str().map(|s| s == "true"))).unwrap_or(false);
+    Ok(serde_json::json!({ "oldRules": old, "current": current, "never": never, "llmEnabled": llm }))
+}
+
+// ---- Phase 9f: the scene vocabulary as data (mirrors dev-server.mjs). See src/lib/sceneQueries.ts.
+fn valid_scene_key(k: &str) -> bool { !k.is_empty() && k.len() <= 40 && k.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') }
+
+#[tauri::command]
+pub fn scene_family_upsert(state: State<'_, AppState>, scene: String, label: String, kind: String, blurb: Option<String>, hidden: Option<bool>) -> CmdResult<()> {
+    if !valid_scene_key(&scene) { return Err("scene key must be lowercase letters, digits and hyphens".into()); }
+    let kind = if kind == "region" { "region" } else { "style" };
+    state.real.exec("INSERT INTO scene_families (scene, label, kind, blurb, builtin, hidden) VALUES (?, ?, ?, ?, FALSE, ?) \
+                     ON CONFLICT (scene) DO UPDATE SET label = excluded.label, kind = excluded.kind, blurb = excluded.blurb, hidden = excluded.hidden",
+        &[serde_json::json!(scene), serde_json::json!(label), serde_json::json!(kind), serde_json::json!(blurb), serde_json::json!(hidden.unwrap_or(false))]).map_err(err)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub fn scene_family_delete(state: State<'_, AppState>, scene: String) -> CmdResult<()> {
+    let db = &state.real;
+    let builtin = db.query("SELECT builtin FROM scene_families WHERE scene = ?", &[serde_json::json!(scene)]).map_err(err)?.first().and_then(|r| r.get("builtin")).and_then(|v| v.as_bool());
+    match builtin { None => return Ok(()), Some(true) => return Err("Built-in families can be hidden, not deleted.".into()), Some(false) => {} }
+    for sql in ["DELETE FROM scene_tag_map WHERE scene = ?", "DELETE FROM scene_origin_map WHERE scene = ?", "DELETE FROM scene_overrides WHERE scene = ?", "DELETE FROM artist_scene WHERE scene = ?", "DELETE FROM scene_families WHERE scene = ?"] {
+        db.exec(sql, &[serde_json::json!(scene)]).map_err(err)?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn scene_tag_set(state: State<'_, AppState>, tag: String, scene: Option<String>) -> CmdResult<()> {
+    let tag = tag.trim().to_lowercase();
+    if tag.is_empty() { return Err("tag required".into()); }
+    match scene {
+        None => state.real.exec("DELETE FROM scene_tag_map WHERE tag = ?", &[serde_json::json!(tag)]).map_err(err)?,
+        Some(sc) => state.real.exec("INSERT INTO scene_tag_map (tag, scene, builtin) VALUES (?, ?, FALSE) ON CONFLICT (tag) DO UPDATE SET scene = excluded.scene, builtin = FALSE", &[serde_json::json!(tag), serde_json::json!(sc)]).map_err(err)?,
+    };
+    Ok(())
+}
+
+#[tauri::command]
+pub fn scene_origin_set(state: State<'_, AppState>, country: String, scene: Option<String>) -> CmdResult<()> {
+    let country = country.trim().to_uppercase();
+    if country.len() != 2 || !country.chars().all(|c| c.is_ascii_uppercase()) { return Err("country must be an ISO alpha-2 code".into()); }
+    match scene {
+        None => state.real.exec("DELETE FROM scene_origin_map WHERE country = ?", &[serde_json::json!(country)]).map_err(err)?,
+        Some(sc) => state.real.exec("INSERT INTO scene_origin_map (country, scene, builtin) VALUES (?, ?, FALSE) ON CONFLICT (country) DO UPDATE SET scene = excluded.scene, builtin = FALSE", &[serde_json::json!(country), serde_json::json!(sc)]).map_err(err)?,
+    };
+    Ok(())
+}
+
+/// Re-run compute_scenes.sql now so the Crate / Scenes follow a vocabulary edit without the nightly rebuild.
+#[tauri::command]
+pub async fn recompute_scenes(state: State<'_, AppState>, app: AppHandle) -> CmdResult<serde_json::Value> {
+    let real = state.real.clone();
+    let out = tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<serde_json::Value> {
+        real.exec_batch(crate::db::COMPUTE_SCENES_SQL)?;
+        let artists = real.scalar_i64("SELECT COUNT(DISTINCT artist_id) FROM artist_scene")?;
+        let families = real.scalar_i64("SELECT COUNT(DISTINCT scene) FROM artist_scene")?;
+        real.log_activity("scenes", "info", &format!("Re-filed {artists} artists across {families} scene families"), None);
+        Ok(serde_json::json!({ "artists": artists, "families": families }))
+    }).await.map_err(err)?.map_err(err)?;
+    events::emit(&app, events::DATA_CHANGED, serde_json::json!({ "reason": "scenes" }));
+    Ok(out)
 }
 
 /// Phase 9b: drop one track on the end of the active Spotify queue. Returns an outcome, not an error, so the UI can branch (no device / needs reconnect).

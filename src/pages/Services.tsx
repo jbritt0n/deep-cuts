@@ -13,6 +13,7 @@ const META: Record<string, { name: string; adds: string; color: string }> = {
   lastfm: { name: 'Last.fm', adds: 'Genre and mood tags per artist, and the similar-artist graph that will power recommendations.', color: C.coral },
   musicbrainz: { name: 'MusicBrainz', adds: 'Canonical artist identities so renamed artists merge, plus folksonomy tags. No account needed.', color: C.amber },
   statsfm: { name: 'stats.fm', adds: 'Plays Spotify never recorded from other devices you pointed at stats.fm.', color: C.violet },
+  freqblog: { name: 'FreqBlog', adds: 'Audio features per track — tempo, key, energy, loudness — for the Sound section on Insights. Free tier, no card.', color: '#7FC8A9' },
   lastfm_wild: { name: 'Heard in the Wild', adds: 'Songs your phone recognised out in the world (Google Now Playing, Shazam) via a Last.fm scrobbler. Kept as their own class — never counted as your listening.', color: '#F2C27B' },
 };
 
@@ -32,7 +33,7 @@ export function ServicesPage() {
   if (err && !rows) return <ErrorBox message={err} />;
   if (!rows) return <Loading />;
   const by = (s: string) => rows.find((r) => r.service === s);
-  const sp = by('spotify'), lf = by('lastfm'), mb = by('musicbrainz'), sf = by('statsfm'), lb = by('listenbrainz'), wd = by('lastfm_wild');
+  const sp = by('spotify'), lf = by('lastfm'), mb = by('musicbrainz'), sf = by('statsfm'), lb = by('listenbrainz'), wd = by('lastfm_wild'), fq = by('freqblog');
 
   return (
     <div className="mx-auto max-w-5xl">
@@ -57,6 +58,9 @@ export function ServicesPage() {
               ? <button disabled={!!busy} onClick={() => run('mb', () => invoke('musicbrainz_disconnect'), () => 'MusicBrainz disconnected.')} className="text-sm text-dust hover:text-cream">Disconnect</button>
               : <button disabled={!!busy} onClick={() => run('mb', () => invoke('musicbrainz_connect'), () => 'MusicBrainz connected. Artists resolve in the background.')} className="rounded-full bg-amber px-4 py-2 text-sm font-medium text-ink disabled:opacity-40">Connect</button>}
           </div>
+        </ServiceCard>}
+        {fq && <ServiceCard row={fq} busy={busy} onSync={() => run('freqblog', () => invoke<string>('sync_now', { service: 'freqblog' }), (r) => String(r))}>
+          <FreqblogBody row={fq} busy={busy} run={run} />
         </ServiceCard>}
         {lb && <ServiceCard row={lb} busy={busy} onSync={() => run('listenbrainz', () => invoke<string>('sync_now', { service: 'listenbrainz' }), (r) => String(r))}>
           <p className="text-xs text-dust">Similar artists are fetched for your resolved artists (MusicBrainz first) a few at a time.</p>
@@ -222,6 +226,29 @@ function WildBody({ row, busy, run, lastfmConnected }: { row: Row; busy: string 
         <button disabled={!!busy || !lastfmConnected} onClick={() => run('wild', () => invoke<string>('lastfm_wild_connect', { username: user.trim() || null, since: since || null }), (r) => `Heard in the Wild set up for ${String(r)}. Captures arrive within 30 minutes; use Sync now to pull immediately.`)} className="rounded-full bg-amber px-3 py-1.5 text-xs font-medium text-ink disabled:opacity-40">Set up</button>
       </div>
       <p className="mt-2 text-dust/70">“Since” defaults to today so an existing Last.fm history isn't mistaken for things you overheard. Per-app origin (Shazam vs. Now Playing) isn't recoverable from Last.fm, so both land in one bucket.</p>
+    </div>
+  );
+}
+
+/** Phase 9g — FreqBlog audio features. Key from freqblog.com (free tier: 1,000 requests a month; a bulk request covers 25 tracks). */
+function FreqblogBody({ row, busy, run }: { row: Row; busy: string | null; run: Run }) {
+  const [key, setKey] = useState('');
+  const used = Number(row.extra.requestsThisMonth ?? 0), cap = Number(row.extra.monthlyCap ?? 900);
+  if (row.status === 'connected' || row.status === 'error') return (
+    <div className="num text-xs text-dust">
+      <p>{fmtInt(Number(row.extra.featuredTracks ?? 0))} of {fmtInt(Number(row.extra.playedTracks ?? 0))} played tracks have features{Number(row.extra.missedTracks ?? 0) > 0 ? ` · ${fmtInt(Number(row.extra.missedTracks))} not in FreqBlog's catalogue` : ''}. One bulk request every six hours, most-played first.</p>
+      <div className="mt-2 flex items-center gap-2"><span>this month</span><div className="h-1.5 w-40 overflow-hidden rounded-full bg-raised"><div className={`h-full rounded-full ${used / cap > 0.85 ? 'bg-coral' : 'bg-moss/80'}`} style={{ width: `${Math.min(100, (used / cap) * 100)}%` }} /></div><span>{used} / {cap} requests</span></div>
+      {row.lastError && <p className="mt-1 text-coral">{row.lastError}</p>}
+      <button disabled={!!busy} onClick={() => run('freqblog', () => invoke('freqblog_disconnect'), () => 'FreqBlog disconnected. Features already fetched are kept.')} className="mt-2 text-dust hover:text-cream">Disconnect</button>
+    </div>
+  );
+  return (
+    <div className="rounded-xl border border-line bg-ink/40 p-3 text-xs text-dust">
+      <p className="text-cream/80">Free key at freqblog.com (1,000 requests a month, no card). Deep Cuts asks for 25 tracks per request and stops at 900 so you keep headroom.</p>
+      <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_auto]">
+        <input value={key} onChange={(e) => setKey(e.target.value)} placeholder="API key" type="password" className="num rounded-lg border border-line bg-ink px-3 py-1.5 text-xs" />
+        <button disabled={!!busy || key.trim().length < 16} onClick={() => run('freqblog', () => invoke<string>('freqblog_connect', { apiKey: key }), () => 'Connected to FreqBlog. Features fill in from the next tick.')} className="rounded-full bg-amber px-3 py-1.5 text-xs font-medium text-ink disabled:opacity-40">Connect</button>
+      </div>
     </div>
   );
 }

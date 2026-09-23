@@ -13,6 +13,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { execFileSync } from 'node:child_process';
 import { DuckDBInstance } from '@duckdb/node-api';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -65,6 +66,14 @@ const rowsOf = async (sql, params = []) => {
   const reader = await stmt.runAndReadAll();
   return reader.getRowObjectsJson();
 };
+// a move bundle is a folder here; a .zip from the desktop app is unpacked next to itself with the unzip CLI
+function bundleDir(p) {
+  if (fs.statSync(p).isDirectory()) return p;
+  const out = p.replace(/\.zip$/i, '');
+  if (!fs.existsSync(path.join(out, 'manifest.json'))) { fs.mkdirSync(out, { recursive: true }); execFileSync('unzip', ['-o', '-q', p, '-d', out]); }
+  return out;
+}
+const q = (v) => `'${String(v).replace(/'/g, "''")}'`;
 const scalar = async (sql) => Object.values((await rowsOf(sql))[0] ?? {})[0] ?? 0;
 const ro = (sql) => {
   const t = sql.trim().replace(/;$/, '');
@@ -76,6 +85,7 @@ async function rebuild() {
   await con.run(rd('entity_resolution.sql'));
   await con.run(rd('compute_sessions.sql'));
   await con.run(rd('compute_milestones.sql'));
+  await con.run(rd('compute_scenes.sql'));
   await con.run(rd('compute_insights.sql'));
   await con.run('CHECKPOINT');
 }
@@ -175,6 +185,37 @@ const commands = {
     const text = await r.text(); if (!r.ok) throw new Error(`Ollama ${r.status}: ${text.slice(0, 300)}`);
     return JSON.parse(text).message?.content ?? '';
   },
+  // Phase 9f — scene vocabulary edits (mirror of commands.rs)
+  async scene_family_upsert({ scene, label, kind, blurb, hidden }) {
+    if (!/^[a-z0-9-]{1,40}$/.test(scene)) throw new Error('scene key must be lowercase letters, digits and hyphens');
+    await con.run(`INSERT INTO scene_families (scene, label, kind, blurb, builtin, hidden) VALUES (${q(scene)}, ${q(label)}, ${q(kind === 'region' ? 'region' : 'style')}, ${blurb ? q(blurb) : 'NULL'}, FALSE, ${hidden ? 'TRUE' : 'FALSE'})
+                   ON CONFLICT (scene) DO UPDATE SET label = excluded.label, kind = excluded.kind, blurb = excluded.blurb, hidden = excluded.hidden`);
+    emit('data:changed', { reason: 'scenes' }); return null;
+  },
+  async scene_family_delete({ scene }) {
+    const [row] = await rowsOf('SELECT builtin FROM scene_families WHERE scene = $1', [scene]);
+    if (!row) return null; if (row.builtin) throw new Error('Built-in families can be hidden, not deleted.');
+    await con.run(`DELETE FROM scene_tag_map WHERE scene = ${q(scene)}`); await con.run(`DELETE FROM scene_origin_map WHERE scene = ${q(scene)}`);
+    await con.run(`DELETE FROM scene_overrides WHERE scene = ${q(scene)}`); await con.run(`DELETE FROM artist_scene WHERE scene = ${q(scene)}`); await con.run(`DELETE FROM scene_families WHERE scene = ${q(scene)}`);
+    emit('data:changed', { reason: 'scenes' }); return null;
+  },
+  async scene_tag_set({ tag, scene }) {
+    if (!tag) throw new Error('tag required');
+    if (scene === null || scene === undefined) await con.run(`DELETE FROM scene_tag_map WHERE tag = ${q(tag)}`);
+    else await con.run(`INSERT INTO scene_tag_map (tag, scene, builtin) VALUES (${q(tag)}, ${q(scene)}, FALSE) ON CONFLICT (tag) DO UPDATE SET scene = excluded.scene, builtin = FALSE`);
+    return null;
+  },
+  async scene_origin_set({ country, scene }) {
+    if (!/^[A-Z]{2}$/.test(country)) throw new Error('country must be an ISO alpha-2 code');
+    if (scene === null || scene === undefined) await con.run(`DELETE FROM scene_origin_map WHERE country = ${q(country)}`);
+    else await con.run(`INSERT INTO scene_origin_map (country, scene, builtin) VALUES (${q(country)}, ${q(scene)}, FALSE) ON CONFLICT (country) DO UPDATE SET scene = excluded.scene, builtin = FALSE`);
+    return null;
+  },
+  async recompute_scenes() {
+    await con.run(rd('compute_scenes.sql'));
+    const [r] = await rowsOf('SELECT COUNT(DISTINCT artist_id) AS artists, COUNT(DISTINCT scene) AS families FROM artist_scene');
+    emit('data:changed', { reason: 'scenes' }); return { artists: Number(r.artists), families: Number(r.families) };
+  },
   async set_artist_scene({ artistId, scene }) {
     const q = (v) => (v == null ? 'NULL' : `'${String(v).replace(/'/g, "''")}'`);
     await con.run(`INSERT INTO scene_overrides (artist_id, scene) VALUES (${q(artistId)}, ${q(scene)}) ON CONFLICT (artist_id) DO UPDATE SET scene = excluded.scene, decided_at = now()`);
@@ -195,7 +236,56 @@ const commands = {
   async mark_insight_surfaced({ id }) { await con.run(`UPDATE insights SET surfaced = TRUE WHERE CAST(insight_id AS VARCHAR) = '${id}'`); return null; },
   async spotify_tracks_for_artists() { throw new Error('Needs the desktop app connected to Spotify.'); },
   async clear_blend() { await con.run('DELETE FROM blend_plays'); return null; },
+  // Phase 9f — Move to another computer (mirror of migrate.rs). The harness writes a *folder* bundle (no zip
+  // library in Node); the desktop app writes a .zip. Restore accepts either (zips via the `unzip` CLI when present).
+  async export_move_bundle({ destDir, passphrase }) {
+    const stamp = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 15);
+    const dir = path.join(destDir || path.dirname(dbPath), `deep-cuts-move-${stamp}`); fs.mkdirSync(path.join(dir, 'tables'), { recursive: true });
+    await con.run('CHECKPOINT');
+    const names = (await rowsOf("SELECT table_name FROM information_schema.tables WHERE table_schema = 'main' AND table_type = 'BASE TABLE' ORDER BY 1")).map((r) => r.table_name).filter((t) => t !== 'tz_offsets' && !t.startsWith('_'));
+    const tables = [];
+    for (const t of names) { await con.run(`COPY (SELECT * FROM "${t}") TO ${q(path.join(dir, 'tables', `${t}.parquet`))} (FORMAT PARQUET, COMPRESSION ZSTD)`); tables.push({ name: t, rows: Number(await scalar(`SELECT COUNT(*) FROM "${t}"`)) }); }
+    const [span] = await rowsOf('SELECT CAST(MIN(played_at) AS VARCHAR) AS f, CAST(MAX(played_at) AS VARCHAR) AS l FROM plays_resolved');
+    const manifest = { format: 1, app_version: 'dev-server', pipeline_rev: 'dev', created_at: new Date().toISOString(), zone, tables, events: Number(await scalar('SELECT COUNT(*) FROM events')), plays: Number(await scalar('SELECT COUNT(*) FROM plays_resolved')), first_play: span?.f ?? null, last_play: span?.l ?? null, secrets: false, source_os: process.platform, source_data_dir: path.dirname(dbPath) };
+    if (passphrase) console.warn('dev-server has no keyring; secrets are not included in folder bundles');
+    fs.writeFileSync(path.join(dir, 'manifest.json'), JSON.stringify(manifest, null, 2));
+    await con.run(`INSERT INTO activity_log (task, level, message, detail) VALUES ('move', 'info', 'Move bundle written (folder)', ${q(dir)})`);
+    return dir;
+  },
+  async inspect_move_bundle({ path: p }) { return JSON.parse(fs.readFileSync(path.join(bundleDir(p), 'manifest.json'), 'utf8')); },
+  async restore_move_bundle({ path: p }) {
+    const dir = bundleDir(p); const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8'));
+    let backup = null;
+    if (Number(await scalar('SELECT COUNT(*) FROM events')) > 0) { backup = path.join(path.dirname(dbPath), `events-before-restore-${Date.now()}.parquet`); await con.run(`COPY (SELECT * FROM events ORDER BY occurred_at) TO ${q(backup)} (FORMAT PARQUET)`); }
+    const existing = new Set((await rowsOf("SELECT table_name FROM information_schema.tables WHERE table_schema = 'main' AND table_type = 'BASE TABLE'")).map((r) => r.table_name));
+    let tables = 0, rows = 0; const skipped = [];
+    await con.run('BEGIN TRANSACTION');
+    try {
+      for (const t of manifest.tables) {
+        const file = path.join(dir, 'tables', `${t.name}.parquet`);
+        if (!existing.has(t.name) || !fs.existsSync(file)) { skipped.push(t.name); continue; }
+        const src = (await rowsOf(`DESCRIBE SELECT * FROM read_parquet(${q(file)})`)).map((r) => r.column_name);
+        const dst = (await rowsOf(`SELECT column_name FROM information_schema.columns WHERE table_schema = 'main' AND table_name = ${q(t.name)} ORDER BY ordinal_position`)).map((r) => r.column_name);
+        const cols = dst.filter((c) => src.includes(c)).map((c) => `"${c}"`);
+        if (!cols.length) { skipped.push(t.name); continue; }
+        await con.run(`DELETE FROM "${t.name}"`); await con.run(`INSERT INTO "${t.name}" (${cols.join(', ')}) SELECT ${cols.join(', ')} FROM read_parquet(${q(file)})`);
+        tables += 1; rows += Number(t.rows);
+      }
+      await con.run('COMMIT');
+    } catch (e) { await con.run('ROLLBACK'); throw e; }
+    let z = zone; try { z = String(await scalar("SELECT value FROM app_meta WHERE key = 'timezone'")) || zone; } catch { /* keep */ }
+    await loadTz(z); await rebuild();
+    emit('data:changed', { reason: 'restore' });
+    return { tables, rows, skipped_tables: skipped, secrets_restored: 0, manifest, backup_of_previous: backup };
+  },
+  async forecast_log_write({ date, weekday, payload }) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('date must be YYYY-MM-DD');
+    const before = Number(await scalar('SELECT COUNT(*) FROM forecast_log'));
+    await con.run(`INSERT INTO forecast_log (forecast_date, weekday, payload) VALUES (CAST(${q(date)} AS DATE), ${Number(weekday)}, CAST(${q(payload)} AS JSON)) ON CONFLICT (forecast_date) DO NOTHING`);
+    return Number(await scalar('SELECT COUNT(*) FROM forecast_log')) > before;
+  },
   async lyrics_enrich_now() { throw new Error('Lyric fetching needs the desktop app.'); },
+  async lyrics_status() { const [r] = await rowsOf("SELECT COUNT(*) FILTER (WHERE found AND COALESCE(features_rev, 1) < 2) AS old_rules, COUNT(*) FILTER (WHERE found AND COALESCE(features_rev, 1) >= 2) AS current FROM track_lyric_features"); const never = await scalar('SELECT COUNT(*) FROM (SELECT DISTINCT track_id FROM plays_resolved WHERE attended AND track_id IS NOT NULL) p WHERE NOT EXISTS (SELECT 1 FROM track_lyric_features f WHERE f.track_id = p.track_id)'); let llm = false; try { llm = String(await scalar("SELECT value FROM app_meta WHERE key = 'lyrics_llm_enabled'")) === 'true'; } catch { /* unset */ } return { oldRules: Number(r.old_rules), current: Number(r.current), never: Number(never), llmEnabled: llm }; },
   async save_binary_file() { return null; },
   async lastfm_wild_connect() { throw new Error('Connectors need the desktop app.'); }, async lastfm_wild_disconnect() { return null; }, async lastfm_wild_reset() { throw new Error('Connectors need the desktop app.'); },
   async statsfm_connect() { throw new Error('Connectors need the desktop app.'); }, async statsfm_disconnect() { return null; }, async musicbrainz_connect() { throw new Error('Connectors need the desktop app.'); }, async musicbrainz_disconnect() { return null; },
@@ -203,7 +293,7 @@ const commands = {
 
 const STATIC = process.env.DEEPCUTS_STATIC ? path.resolve(process.env.DEEPCUTS_STATIC) : (fs.existsSync(path.join(here, 'dist', 'index.html')) && process.env.DEEPCUTS_SERVE_DIST ? path.join(here, 'dist') : null);
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2', '.woff': 'font/woff', '.json': 'application/json', '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json' };
-const WRITE_CMDS = new Set(['set_setting', 'set_timezone', 'rebuild', 'rec_feedback', 'set_artist_scene', 'set_session_attention', 'merge_artists', 'import_files', 'start_import', 'set_tz_override', 'delete_tz_override']);
+const WRITE_CMDS = new Set(['set_setting', 'set_timezone', 'rebuild', 'rec_feedback', 'set_artist_scene', 'scene_family_upsert', 'scene_family_delete', 'scene_tag_set', 'scene_origin_set', 'recompute_scenes', 'restore_move_bundle', 'forecast_log_write', 'set_session_attention', 'merge_artists', 'import_files', 'start_import', 'set_tz_override', 'delete_tz_override']);
 function serveStatic(url, res) {
   if (!STATIC) return false;
   let rel = decodeURIComponent(url.pathname); if (rel === '/' || rel === '') rel = '/index.html';

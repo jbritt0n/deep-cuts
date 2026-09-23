@@ -2,6 +2,8 @@ import { Link } from 'react-router-dom';
 import type { AppStatus, DayCell } from '@/lib/types';
 import { getCalendar, getDashboardStats, recentMilestones, topAlbums, topArtists, topTracks } from '@/lib/queries';
 import { Collage } from '@/components/Collage';
+import { DailyDigCard } from '@/components/DailyDig';
+import { ForecastCard } from '@/components/ForecastCard';
 import { unseenInsights } from '@/lib/phase7Queries';
 import { invoke } from '@/lib/bridge';
 import { albumHref } from '@/lib/format';
@@ -103,6 +105,7 @@ export function Dashboard({ status }: { status: AppStatus }) {
         <Card title="Records" subtitle="Personal bests, computed live from the archive."><Records data={s.records} /></Card>
         <Card title={`On this day · ${todayLabel}`} subtitle="What you were listening to in years past."><OnThisDay data={s.onThisDay} todayLabel={todayLabel} /></Card>
       </section>
+      <section className="mt-6 grid gap-6 lg:grid-cols-2"><ForecastCard /><DailyDigCard /></section>
 
       {shelf.data && shelf.data.length >= 4 && (
         <div className="mt-6"><Card title="Record shelf" subtitle="Your most-played albums. Art arrives from Spotify and the Cover Art Archive once services are connected.">

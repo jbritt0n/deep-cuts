@@ -15,6 +15,7 @@ import { eraParamsFromSettings, matchingPreset } from '@/lib/eraParams';
 import { EraChart, type EraView } from '@/components/charts/EraChart';
 import { useSettings } from '@/lib/hooks';
 import { sceneTracks, scenes, spanDeepCuts } from '@/lib/phase7Queries';
+import { sceneLabels } from '@/lib/sceneQueries';
 import type { TrackRow } from '@/lib/types';
 
 export function ErasPage() {
@@ -34,6 +35,8 @@ export function ErasPage() {
   const [picked, setPicked] = useState<string | null>(null);
   const [retYear, setRetYear] = useState<number | null>(null);
   const sc = useAsync(scenes, [filter]);
+  const labels = useAsync(sceneLabels, []);
+  const lbl = (k: string) => labels.data?.[k] ?? k.replace(/-/g, ' ');
 
   return (
     <div className="mx-auto max-w-6xl">
@@ -65,7 +68,7 @@ export function ErasPage() {
                       {threads.data.map((t) => (
                         <li key={t.tag + t.start} id={`span-thread:${t.tag}:${t.start}`} className={`rounded-xl border border-line bg-ink/40 p-3 transition ${picked === `thread:${t.tag}:${t.start}` ? 'border-amber/60' : ''}`}>
                           <p className="num text-xs text-dust">{fmtDate(t.start, { month: 'short', day: 'numeric', year: 'numeric' })} → {fmtDate(t.end, { month: 'short', day: 'numeric', year: 'numeric' })} · {t.weeks} weeks · {fmtHours(t.hours)} · peak {Math.round(t.peakShare * 100)}%</p>
-                          <p className="font-display text-lg"><span className="capitalize">{t.tag}</span> thread{t.inProgress && <span className="ml-2 align-middle rounded-full border border-amber/50 px-2 py-0.5 font-sans text-[10px] uppercase tracking-wide text-amber">live</span>}</p>
+                          <p className="font-display text-lg"><span className={t.kind === 'scene' ? '' : 'capitalize'}>{t.label}</span> thread{t.kind === 'scene' && <span className="ml-2 align-middle rounded-full border border-line px-2 py-0.5 font-sans text-[10px] uppercase tracking-wide text-dust">scene</span>}{t.inProgress && <span className="ml-2 align-middle rounded-full border border-amber/50 px-2 py-0.5 font-sans text-[10px] uppercase tracking-wide text-amber">live</span>}</p>
                           <p className="mt-0.5 truncate text-sm text-dust">{t.topArtists.map((a, i) => <span key={a.artistId}>{i > 0 ? ', ' : ''}<Link to={artistHref(a.artistId)} className="hover:text-amber">{a.artist}</Link></span>)}</p>
                           <ThreadExport t={t} />
                         </li>
@@ -80,10 +83,10 @@ export function ErasPage() {
       </Section>
       <EraDiagnostic params={eraParams} presetName={matchingPreset(eraParams)?.name ?? null} />
 
-      <Section title="Scenes" subtitle="Clusters of artists that share tags or origin — afrobeat, Turkish, post-punk. Needs Last.fm or MusicBrainz tags; origins arrive from MusicBrainz." state={sc}>
+      <Section title="Scenes" subtitle="Clusters of artists that share tags or origin — West African, Turkish, post-punk, library music. The vocabulary is yours to extend in Settings → Tuning → Scenes. Needs Last.fm or MusicBrainz tags; origins arrive from MusicBrainz." state={sc}>
         {(rows) => rows.length === 0 ? <Muted>No scenes yet — connect Last.fm or MusicBrainz and let tags fill in.</Muted> : (
           <ul className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
-            {rows.map((s) => <li key={s.scene} className="rounded-xl border border-line bg-ink/40 p-4"><p className="font-display text-xl capitalize">{s.scene.replace('-', ' ')}</p><p className="num text-xs text-dust">{s.artists} artists · {fmtHours(s.hours)} · {fmtPct(s.share)} of your listening</p><p className="mt-1 truncate text-sm text-dust">{s.lead.join(', ')}</p><SceneExport scene={s.scene} /></li>)}
+            {rows.map((s) => <li key={s.scene} className="rounded-xl border border-line bg-ink/40 p-4"><p className="font-display text-xl">{lbl(s.scene)}</p><p className="num text-xs text-dust">{s.artists} artists · {fmtHours(s.hours)} · {fmtPct(s.share)} of your listening</p><p className="mt-1 truncate text-sm text-dust">{s.lead.join(', ')}</p><SceneExport scene={s.scene} /></li>)}
           </ul>
         )}
       </Section>
@@ -251,7 +254,7 @@ function EraExport({ era }: { era: I.Era }) {
 }
 function ThreadExport({ t }: { t: GenreThread }) {
   const [tracks, setTracks] = useState<TrackRow[] | null>(null);
-  if (tracks) return <div className="mt-2"><MakePlaylistButton small label={`Export thread · ${tracks.length} tracks`} name={`${t.tag} thread · ${fmtDate(t.start, { month: 'short', year: 'numeric' })}`} tracks={tracks} kind="insight" note={`thread:${t.tag}:${t.start}:${t.endExclusive}`} pool={tracks} /></div>;
+  if (tracks) return <div className="mt-2"><MakePlaylistButton small label={`Export thread · ${tracks.length} tracks`} name={`${t.label} thread · ${fmtDate(t.start, { month: 'short', year: 'numeric' })}`} tracks={tracks} kind="insight" note={`thread:${t.tag}:${t.start}:${t.endExclusive}`} pool={tracks} /></div>;
   return <button onClick={() => threadTracks(t.tag, t.start, t.endExclusive, 30).then(setTracks)} className="mt-2 text-xs text-dust hover:text-amber">Export thread as playlist</button>;
 }
 function SceneExport({ scene }: { scene: string }) {

@@ -100,3 +100,17 @@ Three errors, all fixed: `Mb::get` visibility; `urlencoding::encode(&format!(..)
 - **Poll priority**: enrichment now runs 5 min after each poll and skips while `is_paused()`. Enough for the owner's symptom; a hard reservation in the budget module is the next step if quota stays tight.
 - **Wild reset** deletes only `wild_play` events + `engine='wild'` feedback; the core record is untouched by construction.
 - **Obsessions**: not in Last.fm's API (confirmed) — dropped rather than scraped.
+
+## Phase 9f (Sep 22, 2026) — decisions
+- **Playlist sync root cause was Spotify policy, not quota.** Spotify-owned playlists 403/404 for third-party apps since Nov 2024; the 9e loop aborted on the first one, and since `/me/playlists` lists newest first, older playlists were unreachable in principle. Two-pass, error-isolated, snapshot-aware sync. Followed-playlist item cap raised 300 → 500.
+- **Scenes moved from SQL literals to tables** with ON-CONFLICT seeding, so upgrades add built-ins without touching owner rows (`builtin = FALSE`). The 18 original keys are preserved verbatim; specific African tags moved to four regional families, umbrella tags stay under `afro`.
+- **Lyric keywords are corpus-relative.** TF-IDF over the owner's own songs, with a 35 % document-frequency ceiling; frequency-only keywords were ~always "love/night/baby". Themes require ≥ 2 distinct cues or ≥ 3 hits and score by weighted density; a single trigger word no longer files a song. Lexicons are English-only by design — wrong themes are worse than none.
+- **Move bundle is Parquet, not the DuckDB file**, because DuckDB's on-disk format is not guaranteed readable across versions; Parquet is. Restore intersects columns by name and always rebuilds, so bundles work in both version directions.
+- **Crate deck is uncapped.** 400 was an arbitrary safety cap that hid the last (unsorted) divider on the owner's record.
+
+## Phase 9g (Sep 22, 2026) — decisions
+- **Atlas map is a baked asset, not a library.** Natural Earth 110m → Natural Earth I projection → per-country path strings keyed by ISO alpha-2 (123 KB JSON). No d3 at runtime; hover/click are plain React. Countries with no placed artist stay grey rather than being hidden, so "unplaced" is visible.
+- **The Forecast is a distribution and logs itself write-once.** Same-weekday base rate over 26 weeks; a named call needs ≥ 85 % over ≥ 8 exposures (summary §3.2's floor) — most days it stays quiet. Accuracy is Brier vs climatology so a "skill" of 0 means "no better than your averages"; no verdict is offered under seven scored days. Forecasts are not logged while a year filter is on.
+- **FreqBlog before Setlist.fm** (owner's 9b choice). Only bpm / key / energy / loudness are charted; perceptual fields are stored but labelled coarse, per the service's own caveat. Monthly hard stop at 900 of 1,000.
+- **Scene threads are exempt from the coverage ceiling.** A family covering half your artists is what an era is made of; the ceiling exists to keep *tag* threads niche.
+- **Tuning knobs are numeric only**, so the scene-thread switch is a 0/1 slider rather than a checkbox — one control type in `TuningGroup` keeps Settings honest about what a value does.

@@ -14,7 +14,7 @@ def play(con, ts, track, artist, album='LP', ms=200000, end='trackdone', start='
     con.execute("INSERT INTO events (event_type, occurred_at, payload, source_file) VALUES ('play', CAST(? AS TIMESTAMPTZ), CAST(? AS JSON), 'fixture')", [ts, payload])
 
 def rebuild(con):
-    con.execute(rd('entity_resolution.sql')); con.execute(rd('compute_sessions.sql')); con.execute(rd('compute_milestones.sql'))
+    con.execute(rd('entity_resolution.sql')); con.execute(rd('compute_sessions.sql')); con.execute(rd('compute_milestones.sql')); con.execute(rd('compute_scenes.sql'))
 
 def test_album_ride_and_gap():
     con = fresh()
@@ -177,6 +177,88 @@ def test_chaos_null_without_tags():
     for i, a in enumerate(["A", "B", "C", "D"]): play(con, f"2024-03-05 20:{i*4:02d}:00", f"s{i}", a)
     rebuild(con)
     assert con.execute("SELECT chaos FROM sessions").fetchone()[0] is None
+
+# ---------------------------------------------------------------- Phase 9f
+def test_scenes_from_tables_and_overrides():
+    # The vocabulary is data now: a tag mapped in scene_tag_map files the artist; an owner-added family + tag works the
+    # same way; an unmapped tag files nothing; origin fallback applies only when no tag mapped; overrides win at weight 9.
+    con = fresh()
+    _tag(con, "Molam", [("molam", .9)]); _tag(con, "Jazzman", [("bebop", .8)]); _tag(con, "Nobody", [("seen live", .9)]); _tag(con, "Weak", [("jazz", .2)])
+    for a in ("Molam", "Jazzman", "Nobody", "Weak", "Origin"): play(con, "2024-03-01 20:00:00", f"{a} song", a)
+    con.execute("INSERT INTO artist_origin (artist_id, country) VALUES ('name:origin', 'TH'), ('name:jazzman', 'TH')")
+    con.execute("INSERT INTO scene_families (scene, label, kind, builtin) VALUES ('thai-funk', 'Thai funk', 'region', FALSE)")
+    con.execute("INSERT INTO scene_tag_map (tag, scene, builtin) VALUES ('molam', 'thai-funk', FALSE) ON CONFLICT (tag) DO UPDATE SET scene = excluded.scene")
+    con.execute("INSERT INTO scene_overrides (artist_id, scene) VALUES ('name:nobody', 'jazz')")
+    rebuild(con)
+    rows = {r[0]: (r[1], r[2]) for r in con.execute("SELECT artist_id, scene, weight FROM artist_scene").fetchall()}
+    assert rows['name:molam'][0] == 'thai-funk', rows
+    assert rows['name:jazzman'][0] == 'jazz', rows            # tag beats origin
+    assert rows['name:origin'][0] == 'southeast-asian', rows  # origin fallback
+    assert rows['name:nobody'] == ('jazz', 9.0), rows          # override
+    assert 'name:weak' not in rows, rows                       # below the 0.3 floor
+    # hiding a family removes its filings on the next pass
+    con.execute("UPDATE scene_families SET hidden = TRUE WHERE scene = 'thai-funk'"); con.execute(rd('compute_scenes.sql'))
+    assert con.execute("SELECT COUNT(*) FROM artist_scene WHERE artist_id = 'name:molam'").fetchone()[0] == 0
+
+def test_scene_vocabulary_integrity():
+    con = fresh()
+    assert con.execute("SELECT COUNT(*) FROM scene_tag_map m WHERE NOT EXISTS (SELECT 1 FROM scene_families f WHERE f.scene = m.scene)").fetchone()[0] == 0
+    assert con.execute("SELECT COUNT(*) FROM scene_origin_map m WHERE NOT EXISTS (SELECT 1 FROM scene_families f WHERE f.scene = m.scene)").fetchone()[0] == 0
+    # every 9e key still exists so old scene_overrides resolve
+    for k in ['afro','turkish','japanese','post-punk','dream','psych','hip-hop','jazz','funk-soul','electronic','indie','folk','metal','caribbean','latin','classical','punk','classic-rock']:
+        assert con.execute("SELECT COUNT(*) FROM scene_families WHERE scene = ?", [k]).fetchone()[0] == 1, k
+    assert con.execute("SELECT COUNT(*) FROM scene_families WHERE NOT hidden").fetchone()[0] >= 60
+
+def test_lyric_keywords_are_tfidf_not_frequency():
+    # "love" appears in every song → excluded from every song's keywords; each song's own word ranks first.
+    con = fresh()
+    songs = {'t1': {'love': 9, 'river': 3, 'gold': 1}, 't2': {'love': 8, 'highway': 4, 'gold': 2}, 't3': {'love': 7, 'winter': 5}, 't4': {'love': 6, 'gold': 3, 'ashes': 2}}
+    for tid, terms in songs.items():
+        con.execute("INSERT INTO track_lyric_features (track_id, source, found, features_rev) VALUES (?, 'lrclib', TRUE, 2)", [tid])
+        for term, tf in terms.items(): con.execute("INSERT INTO track_lyric_terms VALUES (?, ?, ?)", [tid, term, tf])
+    kw = {r[0]: r[1] for r in con.execute("SELECT track_id, term FROM track_lyric_keywords WHERE rank = 1").fetchall()}
+    assert kw == {'t1': 'river', 't2': 'highway', 't3': 'winter', 't4': 'ashes'}, kw
+    assert con.execute("SELECT COUNT(*) FROM track_lyric_keywords WHERE term = 'love'").fetchone()[0] == 0
+    # gold is in 3 of 4 songs (75 %) → over the 35 % ceiling → not a keyword either
+    assert con.execute("SELECT COUNT(*) FROM track_lyric_keywords WHERE term = 'gold'").fetchone()[0] == 0
+
+def test_playlist_columns_and_unreadable_marker():
+    con = fresh()
+    con.execute("INSERT INTO playlists (playlist_id, name, owner_is_me, owner_id, track_count, snapshot_id) VALUES ('p1', 'Mine', TRUE, 'me', 10, 's1'), ('p2', 'Discover Weekly', FALSE, 'spotify', 30, 's2')")
+    con.execute("UPDATE playlists SET sync_error = 'unreadable: Spotify-made playlists are closed to third-party apps' WHERE owner_id = 'spotify' AND sync_error IS NULL")
+    todo = con.execute("SELECT playlist_id FROM playlists WHERE (sync_error IS NULL OR sync_error NOT LIKE 'unreadable:%') AND (items_synced_at IS NULL OR items_snapshot_id IS DISTINCT FROM snapshot_id) ORDER BY owner_is_me DESC, items_synced_at ASC NULLS FIRST, first_seen_at ASC").fetchall()
+    assert [r[0] for r in todo] == ['p1'], todo
+    con.execute("UPDATE playlists SET items_synced_at = now(), items_snapshot_id = 's1' WHERE playlist_id = 'p1'")
+    assert con.execute("SELECT COUNT(*) FROM playlists WHERE (sync_error IS NULL OR sync_error NOT LIKE 'unreadable:%') AND (items_synced_at IS NULL OR items_snapshot_id IS DISTINCT FROM snapshot_id)").fetchone()[0] == 0
+    con.execute("UPDATE playlists SET snapshot_id = 's1b' WHERE playlist_id = 'p1'")   # Spotify moved the snapshot → due again
+    assert con.execute("SELECT COUNT(*) FROM playlists WHERE items_snapshot_id IS DISTINCT FROM snapshot_id AND playlist_id = 'p1'").fetchone()[0] == 1
+
+# ---------------------------------------------------------------- Phase 9g
+def test_forecast_log_is_write_once():
+    con = fresh()
+    con.execute("INSERT INTO forecast_log (forecast_date, weekday, payload) VALUES (CAST('2026-09-22' AS DATE), 2, '{\"pAny\": 0.9}'::JSON) ON CONFLICT (forecast_date) DO NOTHING")
+    con.execute("INSERT INTO forecast_log (forecast_date, weekday, payload) VALUES (CAST('2026-09-22' AS DATE), 2, '{\"pAny\": 0.1}'::JSON) ON CONFLICT (forecast_date) DO NOTHING")
+    assert con.execute("SELECT CAST(payload->'pAny' AS DOUBLE) FROM forecast_log").fetchone()[0] == 0.9
+
+def test_scene_week_share_sums_to_at_most_one():
+    con = fresh()
+    _tag(con, "Molam", [("molam", .9)]); _tag(con, "Jazzman", [("bebop", .8)])
+    for d in range(1, 6): play(con, f"2024-03-0{d} 20:00:00", "a", "Molam", ms=2400000); play(con, f"2024-03-0{d} 21:00:00", "b", "Jazzman", ms=1200000)
+    rebuild(con)
+    rows = con.execute("""
+      WITH w AS (SELECT DATE_TRUNC('week', played_at)::DATE AS wk, artist_id, SUM(ms_played)/3600000.0 AS h FROM plays_resolved WHERE artist_id IS NOT NULL GROUP BY 1, 2),
+      tot AS (SELECT wk, SUM(h) AS th FROM w GROUP BY 1),
+      sc AS (SELECT s.artist_id, arg_max(s.scene, s.weight) AS scene FROM artist_scene s JOIN scene_families f USING (scene) WHERE NOT f.hidden GROUP BY 1),
+      sw AS (SELECT sc.scene, w.wk, SUM(w.h) AS h FROM w JOIN sc USING (artist_id) GROUP BY 1, 2)
+      SELECT sw.wk, SUM(sw.h / tot.th) AS s, list(sw.scene) FROM sw JOIN tot USING (wk) GROUP BY 1""").fetchall()
+    assert rows and all(abs(r[1] - 1.0) < 1e-9 for r in rows), rows      # every artist filed → shares sum to exactly 1
+    assert set(rows[0][2]) == {'southeast-asian', 'jazz'}, rows
+
+def test_track_features_and_origin_tables_exist():
+    con = fresh()
+    con.execute("INSERT INTO track_features (track_id, bpm, key_name, mode, energy) VALUES ('t', 120, 'A minor', 0, 0.5)")
+    assert con.execute("SELECT found FROM track_features").fetchone()[0] is True
+    assert con.execute("SELECT status FROM connector_state WHERE service = 'freqblog'").fetchone()[0] == 'disconnected'
 
 if __name__ == '__main__':
     tests = [v for k, v in globals().items() if k.startswith('test_')]

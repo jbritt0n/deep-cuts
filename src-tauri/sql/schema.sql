@@ -624,3 +624,323 @@ CREATE TABLE IF NOT EXISTS scene_overrides (
     scene      VARCHAR,           -- NULL = "unsorted", explicitly
     decided_at TIMESTAMPTZ DEFAULT now()
 );
+
+-- ------------------------------------------------------------
+-- Phase 9f — scenes become data. The fixed 18-family vocabulary that lived inside
+-- compute_insights.sql is now three tables the owner can extend from Settings → Tuning → Scenes:
+--   scene_families   the sections / scenes themselves (label, kind: region | style)
+--   scene_tag_map    Last.fm / MusicBrainz tag → family
+--   scene_origin_map MusicBrainz origin country → family (used when an artist has no mapped tag)
+-- Built-ins are seeded with ON CONFLICT DO NOTHING on every open, so upgrades add new built-ins
+-- without touching anything the owner added or re-pointed (builtin = FALSE rows are theirs).
+-- compute_scenes.sql reads these tables; nothing else hardcodes a scene name any more.
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS scene_families (
+    scene      VARCHAR PRIMARY KEY,   -- stable key, lowercase, hyphenated ('west-african')
+    label      VARCHAR,               -- what the UI shows ('West African')
+    kind       VARCHAR,               -- 'region' | 'style'
+    blurb      VARCHAR,
+    builtin    BOOLEAN DEFAULT TRUE,
+    hidden     BOOLEAN DEFAULT FALSE, -- owner switched it off; tags mapped here fall through to nothing
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS scene_tag_map (
+    tag        VARCHAR PRIMARY KEY,   -- lowercase tag exactly as artist_tags carries it
+    scene      VARCHAR,
+    builtin    BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS scene_origin_map (
+    country    VARCHAR PRIMARY KEY,   -- ISO-3166 alpha-2 as artist_origin.country carries it
+    scene      VARCHAR,
+    builtin    BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT now()
+);
+
+INSERT INTO scene_families (scene, label, kind, blurb) VALUES
+ -- the original 18 (keys unchanged so scene_overrides written in 9e still resolve)
+ ('afro', 'Afro (general)', 'region', 'African music without a finer regional tag.'),
+ ('turkish', 'Turkish', 'region', 'Anatolian rock, arabesk, Turkish psych, pop and folk.'),
+ ('japanese', 'Japanese', 'region', 'J-pop, city pop, Shibuya-kei, enka, J-rock.'),
+ ('post-punk', 'Post-punk', 'style', 'Post-punk, new wave, cold/darkwave, gothic rock, synth-pop.'),
+ ('dream', 'Dream pop / shoegaze', 'style', NULL),
+ ('psych', 'Psych', 'style', 'Psychedelic and garage rock, neo-psych, kraut, space rock.'),
+ ('hip-hop', 'Hip-hop', 'style', NULL),
+ ('jazz', 'Jazz', 'style', NULL),
+ ('funk-soul', 'Funk & soul', 'style', 'Funk, soul, disco, boogie.'),
+ ('electronic', 'Electronic', 'style', 'House, techno, IDM, electro, downtempo.'),
+ ('indie', 'Indie', 'style', NULL),
+ ('folk', 'Folk & country', 'style', NULL),
+ ('metal', 'Metal', 'style', NULL),
+ ('caribbean', 'Caribbean', 'region', 'Reggae, dub, ska, dancehall, soca, calypso.'),
+ ('latin', 'Latin American', 'region', 'Cumbia, salsa, boleros, reggaeton, Andean.'),
+ ('classical', 'Classical & score', 'style', NULL),
+ ('punk', 'Punk & hardcore', 'style', NULL),
+ ('classic-rock', 'Classic rock', 'style', 'Classic, hard, blues and progressive rock.'),
+ -- new regions
+ ('west-african', 'West African', 'region', 'Afrobeat, highlife, mbalax, fuji, jùjú, Malian and Senegalese music.'),
+ ('east-african', 'East African', 'region', 'Ethio-jazz, benga, taarab, Sudanese and Somali pop.'),
+ ('southern-african', 'Southern African', 'region', 'Zamrock, chimurenga, mbaqanga, kwaito, amapiano, gqom.'),
+ ('north-african', 'North African & Maghreb', 'region', 'Raï, chaabi, gnawa, Moroccan and Egyptian music.'),
+ ('arabic', 'Arabic & Levantine', 'region', 'Arabic pop and classical, Lebanese, Iraqi, Gulf.'),
+ ('persian', 'Persian & Central Asian', 'region', NULL),
+ ('south-asian', 'South Asian', 'region', 'Filmi, Hindustani and Carnatic, qawwali, bhangra, Sri Lankan and Bangladeshi music.'),
+ ('korean', 'Korean', 'region', 'K-pop, K-indie, K-hip-hop, trot.'),
+ ('chinese', 'Chinese & Taiwanese', 'region', 'C-pop, Mandopop, Cantopop, Taiwanese indie.'),
+ ('southeast-asian', 'Southeast Asian', 'region', 'Thai molam and luk thung, Indonesian dangdut and pop, Vietnamese, Filipino, Khmer.'),
+ ('greek', 'Greek', 'region', 'Rebetiko, laika, entekhno.'),
+ ('balkan', 'Balkan & Eastern European', 'region', 'Balkan brass, Romani, klezmer, Yugoslav rock, Polish and Hungarian pop.'),
+ ('russian', 'Russian & post-Soviet', 'region', NULL),
+ ('french', 'French', 'region', 'Chanson, yé-yé, French pop and touch.'),
+ ('italian', 'Italian', 'region', 'Cantautori, Italo disco, Italian library music.'),
+ ('german', 'German', 'region', 'NDW, Schlager, German pop and hip-hop.'),
+ ('iberian', 'Spanish & Portuguese', 'region', 'Flamenco, fado, Spanish and Portuguese pop and rock.'),
+ ('nordic', 'Nordic', 'region', 'Scandinavian and Finnish pop, folk and rock.'),
+ ('celtic', 'Celtic & British Isles folk', 'region', NULL),
+ ('brazilian', 'Brazilian', 'region', 'MPB, tropicália, samba, bossa nova, forró, baile funk.'),
+ ('oceanian', 'Australian & Pacific', 'region', NULL),
+ -- new styles (niche families that were previously swallowed by broader ones)
+ ('ambient', 'Ambient & drone', 'style', 'Ambient, drone, kankyō ongaku, new age, dark ambient.'),
+ ('experimental', 'Experimental & noise', 'style', 'Noise, avant-garde, musique concrète, free improvisation.'),
+ ('post-rock', 'Post-rock & math rock', 'style', NULL),
+ ('emo', 'Emo & post-hardcore', 'style', 'Midwest emo, screamo, post-hardcore.'),
+ ('extreme-metal', 'Extreme metal', 'style', 'Black, death, doom, sludge, grind.'),
+ ('industrial', 'Industrial & EBM', 'style', 'Industrial, EBM, minimal wave, power electronics.'),
+ ('synth', 'Synthwave & vapor', 'style', 'Synthwave, vaporwave, chillwave, retrowave.'),
+ ('bass', 'UK bass & breakbeat', 'style', 'Jungle, drum and bass, dubstep, UK garage, grime, footwork.'),
+ ('trap', 'Trap & modern rap', 'style', 'Trap, drill, cloud rap, emo rap, plugg.'),
+ ('rnb', 'R&B', 'style', 'Contemporary and alternative R&B, quiet storm.'),
+ ('gospel-blues', 'Gospel & blues', 'style', NULL),
+ ('country', 'Country', 'style', 'Outlaw, honky-tonk, bluegrass, old-time, alt-country.'),
+ ('americana-folk', 'Freak & psych folk', 'style', 'Freak folk, psych folk, anti-folk, folk baroque.'),
+ ('surf-rockabilly', 'Surf & rockabilly', 'style', NULL),
+ ('britpop', 'Britpop & jangle', 'style', 'Britpop, Madchester, C86, jangle pop.'),
+ ('sophisti', 'Sophisti-pop & yacht rock', 'style', 'Sophisti-pop, yacht rock, blue-eyed soul, AOR.'),
+ ('chamber-pop', 'Chamber & baroque pop', 'style', NULL),
+ ('library', 'Library, lounge & exotica', 'style', 'Library music, exotica, space-age pop, easy listening.'),
+ ('free-jazz', 'Free & spiritual jazz', 'style', NULL),
+ ('minimal', 'Minimalism & modern classical', 'style', NULL),
+ ('early-music', 'Early music & opera', 'style', 'Medieval, Renaissance, baroque vocal, opera.'),
+ ('stage-screen', 'Stage, screen & games', 'style', 'Musicals, anime, video-game music, vocaloid.'),
+ ('hyperpop', 'Hyperpop & PC music', 'style', NULL),
+ ('disco-boogie', 'Disco, boogie & Italo', 'style', 'Disco, boogie, Italo, cosmic, Balearic, nu-disco.'),
+ ('dub-techno', 'Deep & dub techno', 'style', 'Dub techno, deep house, minimal techno.'),
+ ('reggaeton', 'Reggaetón & Latin urban', 'style', NULL),
+ ('cumbia-tropical', 'Cumbia & tropical', 'style', 'Cumbia, chicha, tropical bass, digital cumbia.')
+ON CONFLICT DO NOTHING;
+
+INSERT INTO scene_tag_map (tag, scene) VALUES
+ -- afro (general) — only umbrella tags; specifics go to the regions
+ ('african','afro'),('afro','afro'),('afropop','afro'),('afro pop','afro'),('afro-pop','afro'),('afrobeats','afro'),('world','afro'),
+ -- west african
+ ('afrobeat','west-african'),('afro-funk','west-african'),('afrofunk','west-african'),('highlife','west-african'),('nigerian','west-african'),('ghanaian','west-african'),('desert blues','west-african'),('tuareg','west-african'),('mbalax','west-african'),('senegalese','west-african'),('malian','west-african'),('mali','west-african'),('fuji','west-african'),('juju','west-african'),('jùjú','west-african'),('apala','west-african'),('wassoulou','west-african'),('mandingue','west-african'),('ivorian','west-african'),('coupé-décalé','west-african'),('beninese','west-african'),('guinean','west-african'),('burkinabe','west-african'),('cape verdean','west-african'),('cabo verde','west-african'),('morna','west-african'),('funaná','west-african'),('cameroonian','west-african'),('makossa','west-african'),('bikutsi','west-african'),
+ -- east african
+ ('ethio-jazz','east-african'),('ethiopian','east-african'),('ethiopia','east-african'),('eritrean','east-african'),('benga','east-african'),('kenyan','east-african'),('taarab','east-african'),('tanzanian','east-african'),('bongo flava','east-african'),('sudanese','east-african'),('somali','east-african'),('ugandan','east-african'),('rwandan','east-african'),
+ -- southern african
+ ('zamrock','southern-african'),('zambian','southern-african'),('zimbabwean','southern-african'),('chimurenga','southern-african'),('south african','southern-african'),('mbaqanga','southern-african'),('kwaito','southern-african'),('amapiano','southern-african'),('gqom','southern-african'),('kwela','southern-african'),('marabi','southern-african'),('maskandi','southern-african'),('mozambican','southern-african'),('marrabenta','southern-african'),('angolan','southern-african'),('kizomba','southern-african'),('semba','southern-african'),('kuduro','southern-african'),('malagasy','southern-african'),('congolese','southern-african'),('soukous','southern-african'),('rumba congolaise','southern-african'),('ndombolo','southern-african'),
+ -- north african & maghreb
+ ('rai','north-african'),('raï','north-african'),('chaabi','north-african'),('gnawa','north-african'),('moroccan','north-african'),('algerian','north-african'),('tunisian','north-african'),('egyptian','north-african'),('libyan','north-african'),('maghreb','north-african'),('shaabi','north-african'),('mahraganat','north-african'),
+ -- arabic & levantine
+ ('arabic','arabic'),('arab','arabic'),('arabic pop','arabic'),('lebanese','arabic'),('syrian','arabic'),('iraqi','arabic'),('palestinian','arabic'),('jordanian','arabic'),('khaliji','arabic'),('gulf','arabic'),('dabke','arabic'),('oud','arabic'),('maqam','arabic'),('yemeni','arabic'),('saudi','arabic'),('emirati','arabic'),
+ -- persian & central asian
+ ('persian','persian'),('iranian','persian'),('iran','persian'),('persian pop','persian'),('persian classical','persian'),('afghan','persian'),('tajik','persian'),('uzbek','persian'),('kazakh','persian'),('kyrgyz','persian'),('azerbaijani','persian'),('mugham','persian'),('armenian','persian'),('georgian','persian'),('kurdish','persian'),
+ -- south asian
+ ('indian','south-asian'),('india','south-asian'),('bollywood','south-asian'),('filmi','south-asian'),('hindustani','south-asian'),('hindustani classical','south-asian'),('carnatic','south-asian'),('indian classical','south-asian'),('bhangra','south-asian'),('punjabi','south-asian'),('qawwali','south-asian'),('pakistani','south-asian'),('ghazal','south-asian'),('sufi','south-asian'),('tamil','south-asian'),('telugu','south-asian'),('malayalam','south-asian'),('kannada','south-asian'),('bengali','south-asian'),('bangladeshi','south-asian'),('sri lankan','south-asian'),('nepali','south-asian'),('sitar','south-asian'),('desi','south-asian'),('indian pop','south-asian'),('indie india','south-asian'),
+ -- korean
+ ('korean','korean'),('k-pop','korean'),('kpop','korean'),('k-indie','korean'),('k-rock','korean'),('k-hip hop','korean'),('k-hip-hop','korean'),('khiphop','korean'),('k-r&b','korean'),('trot','korean'),('korean indie','korean'),('korean ballad','korean'),
+ -- chinese & taiwanese
+ ('chinese','chinese'),('c-pop','chinese'),('cpop','chinese'),('mandopop','chinese'),('cantopop','chinese'),('taiwanese','chinese'),('hong kong','chinese'),('mandarin','chinese'),('cantonese','chinese'),('chinese indie','chinese'),('chinese rock','chinese'),('tibetan','chinese'),('mongolian','chinese'),
+ -- southeast asian
+ ('thai','southeast-asian'),('molam','southeast-asian'),('mor lam','southeast-asian'),('luk thung','southeast-asian'),('luk krung','southeast-asian'),('thai funk','southeast-asian'),('indonesian','southeast-asian'),('dangdut','southeast-asian'),('gamelan','southeast-asian'),('indonesian pop','southeast-asian'),('malaysian','southeast-asian'),('vietnamese','southeast-asian'),('v-pop','southeast-asian'),('filipino','southeast-asian'),('opm','southeast-asian'),('pinoy','southeast-asian'),('p-pop','southeast-asian'),('khmer','southeast-asian'),('cambodian','southeast-asian'),('burmese','southeast-asian'),('lao','southeast-asian'),('singaporean','southeast-asian'),
+ -- turkish
+ ('turkish','turkish'),('anatolian rock','turkish'),('anadolu rock','turkish'),('turkish psychedelic','turkish'),('turkish psych','turkish'),('arabesk','turkish'),('turkish pop','turkish'),('turkish folk','turkish'),('turkish jazz','turkish'),('turkish hip hop','turkish'),('türkçe','turkish'),('türkçe pop','turkish'),('türkçe rap','turkish'),('turkish rap','turkish'),('turkish rock','turkish'),('ottoman','turkish'),('fasıl','turkish'),
+ -- japanese
+ ('japanese','japanese'),('j-pop','japanese'),('jpop','japanese'),('city pop','japanese'),('shamisen','japanese'),('enka','japanese'),('shibuya-kei','japanese'),('shibuya kei','japanese'),('j-rock','japanese'),('jrock','japanese'),('kayokyoku','japanese'),('kayōkyoku','japanese'),('japanese jazz','japanese'),('j-jazz','japanese'),('japanese indie','japanese'),('japanese hip hop','japanese'),('j-hip hop','japanese'),('visual kei','japanese'),('japanese ambient','japanese'),('kankyo ongaku','japanese'),('kankyō ongaku','japanese'),('japanese folk','japanese'),('group sounds','japanese'),('japanese psychedelic','japanese'),('japanese electronic','japanese'),('japanoise','japanese'),('idol','japanese'),('japanese classical','japanese'),
+ -- greek
+ ('greek','greek'),('rebetiko','greek'),('laika','greek'),('laïka','greek'),('entekhno','greek'),('greek folk','greek'),('greek pop','greek'),('greek rock','greek'),('cypriot','greek'),
+ -- balkan & eastern european
+ ('balkan','balkan'),('balkan brass','balkan'),('romani','balkan'),('gypsy','balkan'),('klezmer','balkan'),('yugoslav','balkan'),('ex-yu','balkan'),('serbian','balkan'),('croatian','balkan'),('bosnian','balkan'),('slovenian','balkan'),('macedonian','balkan'),('bulgarian','balkan'),('romanian','balkan'),('manele','balkan'),('albanian','balkan'),('hungarian','balkan'),('polish','balkan'),('czech','balkan'),('slovak','balkan'),('ukrainian','balkan'),('moldovan','balkan'),('sevdah','balkan'),('turbo folk','balkan'),
+ -- russian & post-soviet
+ ('russian','russian'),('russian rock','russian'),('russian pop','russian'),('soviet','russian'),('russian folk','russian'),('russian hip hop','russian'),('belarusian','russian'),('bard','russian'),('estrada','russian'),('baltic','russian'),('lithuanian','russian'),('latvian','russian'),('estonian','russian'),
+ -- french
+ ('french','french'),('chanson','french'),('chanson française','french'),('french pop','french'),('yé-yé','french'),('ye-ye','french'),('yeye','french'),('french touch','french'),('french house','french'),('french rap','french'),('french hip hop','french'),('variété française','french'),('belgian','french'),('quebec','french'),('québécois','french'),('swiss','french'),('francophone','french'),
+ -- italian
+ ('italian','italian'),('cantautori','italian'),('cantautore','italian'),('italo disco','disco-boogie'),('italian pop','italian'),('italian rock','italian'),('italian prog','italian'),('italian library','library'),('italian hip hop','italian'),('canzone napoletana','italian'),('neapolitan','italian'),('sardinian','italian'),
+ -- german
+ ('german','german'),('neue deutsche welle','german'),('ndw','german'),('schlager','german'),('deutschrap','german'),('german hip hop','german'),('german pop','german'),('deutschpop','german'),('austrian','german'),('hamburger schule','german'),('krautrock','psych'),
+ -- iberian
+ ('spanish','iberian'),('flamenco','iberian'),('spanish pop','iberian'),('spanish rock','iberian'),('spanish indie','iberian'),('rumba catalana','iberian'),('catalan','iberian'),('basque','iberian'),('galician','iberian'),('portuguese','iberian'),('fado','iberian'),('portuguese pop','iberian'),('portuguese rock','iberian'),('copla','iberian'),('movida','iberian'),
+ -- nordic
+ ('swedish','nordic'),('swedish pop','nordic'),('swedish indie','nordic'),('norwegian','nordic'),('danish','nordic'),('finnish','nordic'),('icelandic','nordic'),('scandinavian','nordic'),('nordic','nordic'),('nordic folk','nordic'),('sami','nordic'),('faroese','nordic'),
+ -- celtic & british isles folk
+ ('celtic','celtic'),('irish','celtic'),('irish folk','celtic'),('scottish','celtic'),('scottish folk','celtic'),('welsh','celtic'),('breton','celtic'),('british folk','celtic'),('english folk','celtic'),('folk rock','celtic'),('sea shanty','celtic'),('trad','celtic'),
+ -- brazilian (split from latin)
+ ('brazilian','brazilian'),('brazil','brazilian'),('mpb','brazilian'),('bossa nova','brazilian'),('samba','brazilian'),('tropicalia','brazilian'),('tropicália','brazilian'),('forró','brazilian'),('forro','brazilian'),('baile funk','brazilian'),('funk carioca','brazilian'),('brazilian jazz','brazilian'),('brazilian psychedelic','brazilian'),('brazilian rock','brazilian'),('brazilian indie','brazilian'),('sertanejo','brazilian'),('axé','brazilian'),('pagode','brazilian'),('choro','brazilian'),('samba rock','brazilian'),('samba soul','brazilian'),('brazilian pop','brazilian'),('brazilian hip hop','brazilian'),('bahia','brazilian'),
+ -- latin american
+ ('latin','latin'),('latin america','latin'),('latin pop','latin'),('latin rock','latin'),('latin alternative','latin'),('latin jazz','latin'),('salsa','latin'),('bolero','latin'),('boleros','latin'),('mariachi','latin'),('ranchera','latin'),('norteño','latin'),('norteno','latin'),('tejano','latin'),('tex-mex','latin'),('banda','latin'),('corridos','latin'),('corridos tumbados','latin'),('mexican','latin'),('mexico','latin'),('argentine','latin'),('argentina','latin'),('tango','latin'),('rock nacional','latin'),('rock en español','latin'),('rock en espanol','latin'),('chilean','latin'),('nueva canción','latin'),('nueva cancion','latin'),('andean','latin'),('peruvian','latin'),('colombian','latin'),('vallenato','latin'),('champeta','latin'),('venezuelan','latin'),('cuban','latin'),('son cubano','latin'),('timba','latin'),('afro-cuban','latin'),('afro cuban','latin'),('rumba','latin'),('merengue','latin'),('bachata','latin'),('dominican','latin'),('puerto rican','latin'),('uruguayan','latin'),('candombe','latin'),('bolivian','latin'),('ecuadorian','latin'),('boogaloo','latin'),('latin soul','latin'),
+ ('cumbia','cumbia-tropical'),('chicha','cumbia-tropical'),('cumbia peruana','cumbia-tropical'),('tropical','cumbia-tropical'),('tropical bass','cumbia-tropical'),('digital cumbia','cumbia-tropical'),('nu cumbia','cumbia-tropical'),('cumbia villera','cumbia-tropical'),
+ ('reggaeton','reggaeton'),('reggaetón','reggaeton'),('latin urban','reggaeton'),('urbano','reggaeton'),('urbano latino','reggaeton'),('latin trap','reggaeton'),('dembow','reggaeton'),('perreo','reggaeton'),('neoperreo','reggaeton'),
+ -- caribbean
+ ('reggae','caribbean'),('dub','caribbean'),('ska','caribbean'),('rocksteady','caribbean'),('calypso','caribbean'),('dancehall','caribbean'),('soca','caribbean'),('jamaican','caribbean'),('roots reggae','caribbean'),('lovers rock','caribbean'),('mento','caribbean'),('trinidadian','caribbean'),('haitian','caribbean'),('kompa','caribbean'),('compas','caribbean'),('zouk','caribbean'),('rapso','caribbean'),('caribbean','caribbean'),('reggae fusion','caribbean'),('ragga','caribbean'),('bahamian','caribbean'),('junkanoo','caribbean'),
+ -- oceanian
+ ('australian','oceanian'),('aussie','oceanian'),('australian indie','oceanian'),('australian hip hop','oceanian'),('new zealand','oceanian'),('kiwi','oceanian'),('dunedin sound','oceanian'),('maori','oceanian'),('māori','oceanian'),('hawaiian','oceanian'),('polynesian','oceanian'),('pacific','oceanian'),('papuan','oceanian'),('fijian','oceanian'),
+ -- post-punk
+ ('post-punk','post-punk'),('post punk','post-punk'),('new wave','post-punk'),('coldwave','post-punk'),('cold wave','post-punk'),('darkwave','post-punk'),('dark wave','post-punk'),('synth-pop','post-punk'),('synthpop','post-punk'),('synth pop','post-punk'),('gothic rock','post-punk'),('goth rock','post-punk'),('goth','post-punk'),('no wave','post-punk'),('post-punk revival','post-punk'),('minimal synth','post-punk'),('art punk','post-punk'),('dance-punk','post-punk'),('ethereal wave','post-punk'),('deathrock','post-punk'),
+ -- dream pop / shoegaze
+ ('shoegaze','dream'),('dream pop','dream'),('ethereal','dream'),('slowcore','dream'),('sadcore','dream'),('nu gaze','dream'),('nugaze','dream'),('noise pop','dream'),
+ -- psych
+ ('psychedelic','psych'),('psychedelic rock','psych'),('neo-psychedelia','psych'),('neo-psychedelic','psych'),('neo psychedelia','psych'),('space rock','psych'),('garage rock','psych'),('garage psych','psych'),('psych rock','psych'),('acid rock','psych'),('kosmische','psych'),('kosmische musik','psych'),('freakbeat','psych'),('psychedelic pop','psych'),('stoner rock','psych'),('desert rock','psych'),('heavy psych','psych'),('psychedelic soul','psych'),('psych pop','psych'),('paisley underground','psych'),
+ -- hip-hop
+ ('hip-hop','hip-hop'),('hip hop','hip-hop'),('hiphop','hip-hop'),('rap','hip-hop'),('trip-hop','hip-hop'),('trip hop','hip-hop'),('instrumental hip-hop','hip-hop'),('instrumental hip hop','hip-hop'),('boom bap','hip-hop'),('abstract hip-hop','hip-hop'),('abstract hip hop','hip-hop'),('underground hip-hop','hip-hop'),('underground hip hop','hip-hop'),('conscious hip hop','hip-hop'),('east coast hip hop','hip-hop'),('west coast hip hop','hip-hop'),('southern hip hop','hip-hop'),('g-funk','hip-hop'),('golden age hip hop','hip-hop'),('jazz rap','hip-hop'),('alternative hip hop','hip-hop'),('alternative rap','hip-hop'),('lo-fi hip hop','hip-hop'),('lofi hip hop','hip-hop'),('turntablism','hip-hop'),('grime','bass'),
+ ('trap','trap'),('drill','trap'),('uk drill','trap'),('cloud rap','trap'),('emo rap','trap'),('plugg','trap'),('rage','trap'),('phonk','trap'),('mumble rap','trap'),('melodic rap','trap'),('memphis rap','trap'),('sad rap','trap'),
+ -- jazz
+ ('jazz','jazz'),('jazz fusion','jazz'),('fusion','jazz'),('bebop','jazz'),('hard bop','jazz'),('cool jazz','jazz'),('nu jazz','jazz'),('nu-jazz','jazz'),('modal jazz','jazz'),('post-bop','jazz'),('swing','jazz'),('big band','jazz'),('vocal jazz','jazz'),('jazz funk','jazz'),('jazz-funk','jazz'),('smooth jazz','jazz'),('acid jazz','jazz'),('contemporary jazz','jazz'),('ecm','jazz'),('jazz vocal','jazz'),('bossa jazz','jazz'),('soul jazz','jazz'),('jazztronica','jazz'),('uk jazz','jazz'),('modern jazz','jazz'),
+ ('spiritual jazz','free-jazz'),('free jazz','free-jazz'),('avant-garde jazz','free-jazz'),('avant garde jazz','free-jazz'),('fire music','free-jazz'),('free improvisation','free-jazz'),('loft jazz','free-jazz'),('creative music','free-jazz'),
+ -- funk & soul
+ ('funk','funk-soul'),('soul','funk-soul'),('neo-soul','funk-soul'),('neo soul','funk-soul'),('northern soul','funk-soul'),('deep soul','funk-soul'),('southern soul','funk-soul'),('motown','funk-soul'),('philly soul','funk-soul'),('psychedelic funk','funk-soul'),('p-funk','funk-soul'),('rare groove','funk-soul'),('soul funk','funk-soul'),('classic soul','funk-soul'),('60s soul','funk-soul'),('70s soul','funk-soul'),('funk rock','funk-soul'),('go-go','funk-soul'),('new orleans funk','funk-soul'),
+ ('disco','disco-boogie'),('boogie','disco-boogie'),('nu disco','disco-boogie'),('nu-disco','disco-boogie'),('italo','disco-boogie'),('italo-disco','disco-boogie'),('cosmic disco','disco-boogie'),('cosmic','disco-boogie'),('balearic','disco-boogie'),('disco funk','disco-boogie'),('euro disco','disco-boogie'),('hi-nrg','disco-boogie'),('space disco','disco-boogie'),('post-disco','disco-boogie'),('electro-funk','disco-boogie'),('electrofunk','disco-boogie'),
+ ('r&b','rnb'),('rnb','rnb'),('r and b','rnb'),('contemporary r&b','rnb'),('alternative r&b','rnb'),('alt r&b','rnb'),('quiet storm','rnb'),('new jack swing','rnb'),('pbr&b','rnb'),('90s r&b','rnb'),('slow jams','rnb'),
+ ('gospel','gospel-blues'),('blues','gospel-blues'),('delta blues','gospel-blues'),('chicago blues','gospel-blues'),('electric blues','gospel-blues'),('country blues','gospel-blues'),('soul blues','gospel-blues'),('spirituals','gospel-blues'),('doo-wop','gospel-blues'),('doo wop','gospel-blues'),('zydeco','gospel-blues'),('cajun','gospel-blues'),('piedmont blues','gospel-blues'),('jump blues','gospel-blues'),('gospel soul','gospel-blues'),('southern gospel','gospel-blues'),
+ -- electronic
+ ('electronic','electronic'),('electronica','electronic'),('house','electronic'),('techno','electronic'),('idm','electronic'),('downtempo','electronic'),('electro','electronic'),('acid house','electronic'),('acid','electronic'),('chicago house','electronic'),('detroit techno','electronic'),('trance','electronic'),('progressive house','electronic'),('tech house','electronic'),('breaks','electronic'),('big beat','electronic'),('glitch','electronic'),('braindance','electronic'),('leftfield','electronic'),('electropop','electronic'),('electro pop','electronic'),('dance','electronic'),('edm','electronic'),('deep house','dub-techno'),('dub techno','dub-techno'),('minimal techno','dub-techno'),('minimal','dub-techno'),('microhouse','dub-techno'),('ambient techno','dub-techno'),('ambient house','dub-techno'),('lo-fi house','dub-techno'),('outsider house','dub-techno'),('deep techno','dub-techno'),
+ ('jungle','bass'),('drum and bass','bass'),('drum n bass','bass'),('drum & bass','bass'),('dnb','bass'),('liquid funk','bass'),('dubstep','bass'),('uk garage','bass'),('ukg','bass'),('2-step','bass'),('2 step','bass'),('garage','bass'),('speed garage','bass'),('footwork','bass'),('juke','bass'),('uk bass','bass'),('bass music','bass'),('breakbeat','bass'),('hardcore breaks','bass'),('uk funky','bass'),('wonky','bass'),('future garage','bass'),('post-dubstep','bass'),('bassline','bass'),('grime instrumental','bass'),('baltimore club','bass'),('jersey club','bass'),('ghettotech','bass'),
+ ('ambient','ambient'),('drone','ambient'),('dark ambient','ambient'),('new age','ambient'),('space ambient','ambient'),('ambient drone','ambient'),('environmental','ambient'),('fourth world','ambient'),('healing','ambient'),('meditation','ambient'),('lowercase','ambient'),('field recordings','ambient'),('field recording','ambient'),('isolationism','ambient'),
+ ('synthwave','synth'),('retrowave','synth'),('outrun','synth'),('vaporwave','synth'),('chillwave','synth'),('darksynth','synth'),('dreamwave','synth'),('future funk','synth'),('mallsoft','synth'),('synthwave pop','synth'),('80s synth','synth'),
+ ('hyperpop','hyperpop'),('pc music','hyperpop'),('bubblegum bass','hyperpop'),('glitchcore','hyperpop'),('digicore','hyperpop'),('nightcore','hyperpop'),('deconstructed club','hyperpop'),
+ ('industrial','industrial'),('ebm','industrial'),('electronic body music','industrial'),('minimal wave','industrial'),('power electronics','industrial'),('industrial rock','industrial'),('aggrotech','industrial'),('futurepop','industrial'),('industrial techno','industrial'),('rhythmic noise','industrial'),('martial industrial','industrial'),('neofolk','industrial'),('death industrial','industrial'),('industrial metal','industrial'),
+ ('noise','experimental'),('experimental','experimental'),('avant-garde','experimental'),('avant garde','experimental'),('musique concrète','experimental'),('musique concrete','experimental'),('noise rock','experimental'),('sound art','experimental'),('electroacoustic','experimental'),('free improv','experimental'),('improvisation','experimental'),('harsh noise','experimental'),('plunderphonics','experimental'),('sound collage','experimental'),('outsider','experimental'),('zeuhl','experimental'),('rock in opposition','experimental'),('rio','experimental'),('lowercase noise','experimental'),('glitch noise','experimental'),('japanoise','experimental'),
+ -- indie
+ ('indie rock','indie'),('indie pop','indie'),('indie folk','indie'),('indie','indie'),('lo-fi','indie'),('lo fi','indie'),('bedroom pop','indie'),('slacker rock','indie'),('alternative rock','indie'),('alternative','indie'),('college rock','indie'),('twee','indie'),('twee pop','indie'),('power pop','indie'),('art rock','indie'),('art pop','indie'),('garage pop','indie'),('surf pop','indie'),('grunge','indie'),('90s alternative','indie'),('alt rock','indie'),('indietronica','indie'),('folktronica','indie'),('anti-folk','americana-folk'),
+ ('britpop','britpop'),('madchester','britpop'),('baggy','britpop'),('c86','britpop'),('jangle pop','britpop'),('jangle','britpop'),('british indie','britpop'),('uk indie','britpop'),('shambling','britpop'),('post-britpop','britpop'),('new rave','britpop'),
+ ('sophisti-pop','sophisti'),('sophisti pop','sophisti'),('yacht rock','sophisti'),('blue-eyed soul','sophisti'),('aor','sophisti'),('soft rock','sophisti'),('adult contemporary','sophisti'),('westcoast','sophisti'),('west coast pop','sophisti'),('smooth pop','sophisti'),
+ ('chamber pop','chamber-pop'),('baroque pop','chamber-pop'),('orchestral pop','chamber-pop'),('sunshine pop','chamber-pop'),('wall of sound','chamber-pop'),('symphonic pop','chamber-pop'),
+ ('post-rock','post-rock'),('post rock','post-rock'),('math rock','post-rock'),('instrumental rock','post-rock'),('crescendocore','post-rock'),('slint','post-rock'),('midwest math','post-rock'),
+ -- folk & country
+ ('folk','folk'),('singer-songwriter','folk'),('singer songwriter','folk'),('americana','folk'),('acoustic','folk'),('contemporary folk','folk'),('folk pop','folk'),('chamber folk','folk'),('traditional folk','folk'),('folk revival','folk'),('protest','folk'),
+ ('freak folk','americana-folk'),('psych folk','americana-folk'),('psychedelic folk','americana-folk'),('acid folk','americana-folk'),('folk baroque','americana-folk'),('new weird america','americana-folk'),('avant-folk','americana-folk'),('wyrd folk','americana-folk'),('progressive folk','americana-folk'),
+ ('alt-country','country'),('alt country','country'),('country','country'),('bluegrass','country'),('outlaw country','country'),('honky tonk','country'),('honky-tonk','country'),('old-time','country'),('old time','country'),('country rock','country'),('cosmic country','country'),('western swing','country'),('classic country','country'),('countrypolitan','country'),('bakersfield sound','country'),('nashville sound','country'),('country soul','country'),('red dirt','country'),('newgrass','country'),('appalachian','country'),('texas country','country'),('country pop','country'),
+ -- metal
+ ('metal','metal'),('heavy metal','metal'),('thrash metal','metal'),('thrash','metal'),('power metal','metal'),('progressive metal','metal'),('prog metal','metal'),('nwobhm','metal'),('speed metal','metal'),('groove metal','metal'),('nu metal','metal'),('nu-metal','metal'),('alternative metal','metal'),('metalcore','metal'),('symphonic metal','metal'),('folk metal','metal'),('glam metal','metal'),('hair metal','metal'),('traditional metal','metal'),('djent','metal'),
+ ('doom metal','extreme-metal'),('doom','extreme-metal'),('sludge','extreme-metal'),('sludge metal','extreme-metal'),('post-metal','extreme-metal'),('black metal','extreme-metal'),('death metal','extreme-metal'),('atmospheric black metal','extreme-metal'),('blackgaze','extreme-metal'),('grindcore','extreme-metal'),('drone metal','extreme-metal'),('funeral doom','extreme-metal'),('stoner metal','extreme-metal'),('technical death metal','extreme-metal'),('melodic death metal','extreme-metal'),('deathcore','extreme-metal'),('war metal','extreme-metal'),('crust','extreme-metal'),('crust punk','extreme-metal'),
+ -- punk
+ ('punk','punk'),('punk rock','punk'),('hardcore','punk'),('hardcore punk','punk'),('pop punk','punk'),('pop-punk','punk'),('oi','punk'),('street punk','punk'),('anarcho-punk','punk'),('anarcho punk','punk'),('garage punk','punk'),('proto-punk','punk'),('proto punk','punk'),('ska punk','punk'),('skate punk','punk'),('psychobilly','surf-rockabilly'),('riot grrrl','punk'),('queercore','punk'),('egg punk','punk'),('powerviolence','punk'),('d-beat','punk'),('nyhc','punk'),('straight edge','punk'),('youth crew','punk'),('melodic hardcore','punk'),('post-punk hardcore','punk'),('folk punk','punk'),('cowpunk','punk'),
+ ('post-hardcore','emo'),('emo','emo'),('midwest emo','emo'),('screamo','emo'),('emoviolence','emo'),('skramz','emo'),('emo pop','emo'),('emocore','emo'),('math emo','emo'),('5th wave emo','emo'),('emo revival','emo'),('sasscore','emo'),
+ -- classic rock
+ ('classic rock','classic-rock'),('blues rock','classic-rock'),('hard rock','classic-rock'),('progressive rock','classic-rock'),('prog rock','classic-rock'),('prog','classic-rock'),('southern rock','classic-rock'),('rock','classic-rock'),('rock and roll','classic-rock'),('rock n roll','classic-rock'),('rock & roll','classic-rock'),('arena rock','classic-rock'),('glam rock','classic-rock'),('glam','classic-rock'),('pub rock','classic-rock'),('boogie rock','classic-rock'),('heartland rock','classic-rock'),('roots rock','classic-rock'),('jam band','classic-rock'),('jam','classic-rock'),('folk rock 60s','classic-rock'),('60s rock','classic-rock'),('70s rock','classic-rock'),('british invasion','classic-rock'),('merseybeat','classic-rock'),('canterbury scene','classic-rock'),('canterbury','classic-rock'),('symphonic prog','classic-rock'),('space prog','classic-rock'),
+ ('surf','surf-rockabilly'),('surf rock','surf-rockabilly'),('rockabilly','surf-rockabilly'),('instrumental surf','surf-rockabilly'),('garage surf','surf-rockabilly'),('hot rod','surf-rockabilly'),('exotica surf','surf-rockabilly'),('twang','surf-rockabilly'),('girl group','surf-rockabilly'),('girl groups','surf-rockabilly'),('teen pop 60s','surf-rockabilly'),('northern soul surf','surf-rockabilly'),
+ -- classical & score
+ ('classical','classical'),('baroque','classical'),('contemporary classical','classical'),('piano','classical'),('soundtrack','classical'),('film score','classical'),('film soundtrack','classical'),('score','classical'),('orchestral','classical'),('romantic','classical'),('chamber music','classical'),('string quartet','classical'),('symphony','classical'),('20th century classical','classical'),('impressionism','classical'),('neoclassical','classical'),('cinematic','classical'),('composer','classical'),
+ ('minimalism','minimal'),('minimal classical','minimal'),('modern classical','minimal'),('post-minimalism','minimal'),('holy minimalism','minimal'),('process music','minimal'),('tape music','minimal'),('neoclassical darkwave','minimal'),('piano ambient','minimal'),('contemporary piano','minimal'),
+ ('early music','early-music'),('medieval','early-music'),('renaissance','early-music'),('opera','early-music'),('gregorian chant','early-music'),('plainchant','early-music'),('choral','early-music'),('sacred music','early-music'),('lute','early-music'),('harpsichord','early-music'),('baroque opera','early-music'),('lieder','early-music'),('art song','early-music'),
+ ('musicals','stage-screen'),('musical','stage-screen'),('broadway','stage-screen'),('show tunes','stage-screen'),('anime','stage-screen'),('video game music','stage-screen'),('vgm','stage-screen'),('game soundtrack','stage-screen'),('chiptune','stage-screen'),('vocaloid','stage-screen'),('disney','stage-screen'),('cartoon','stage-screen'),('tv theme','stage-screen'),
+ ('library music','library'),('library','library'),('lounge','library'),('exotica','library'),('space age pop','library'),('space-age pop','library'),('easy listening','library'),('mood music','library'),('elevator','library'),('production music','library'),('bachelor pad','library'),('cocktail','library'),('tiki','library'),('muzak','library'),('lounge exotica','library'),('kpm','library'),('beat library','library'),('groovy library','library')
+ON CONFLICT DO NOTHING;
+
+INSERT INTO scene_origin_map (country, scene) VALUES
+ ('TR','turkish'),('JP','japanese'),('KR','korean'),('KP','korean'),('CN','chinese'),('TW','chinese'),('HK','chinese'),('MO','chinese'),('MN','chinese'),
+ ('TH','southeast-asian'),('ID','southeast-asian'),('MY','southeast-asian'),('VN','southeast-asian'),('PH','southeast-asian'),('KH','southeast-asian'),('LA','southeast-asian'),('MM','southeast-asian'),('SG','southeast-asian'),
+ ('IN','south-asian'),('PK','south-asian'),('BD','south-asian'),('LK','south-asian'),('NP','south-asian'),('BT','south-asian'),('MV','south-asian'),
+ ('IR','persian'),('AF','persian'),('TJ','persian'),('UZ','persian'),('KZ','persian'),('KG','persian'),('TM','persian'),('AZ','persian'),('AM','persian'),('GE','persian'),
+ ('SA','arabic'),('AE','arabic'),('QA','arabic'),('KW','arabic'),('BH','arabic'),('OM','arabic'),('YE','arabic'),('IQ','arabic'),('SY','arabic'),('LB','arabic'),('JO','arabic'),('PS','arabic'),
+ ('EG','north-african'),('MA','north-african'),('DZ','north-african'),('TN','north-african'),('LY','north-african'),('MR','north-african'),('SD','north-african'),
+ ('NG','west-african'),('GH','west-african'),('ML','west-african'),('SN','west-african'),('GN','west-african'),('GW','west-african'),('CI','west-african'),('BF','west-african'),('BJ','west-african'),('TG','west-african'),('NE','west-african'),('CM','west-african'),('CV','west-african'),('SL','west-african'),('LR','west-african'),('GM','west-african'),('TD','west-african'),('GA','west-african'),('CG','southern-african'),('CD','southern-african'),
+ ('ET','east-african'),('ER','east-african'),('KE','east-african'),('TZ','east-african'),('UG','east-african'),('RW','east-african'),('BI','east-african'),('SO','east-african'),('DJ','east-african'),('SS','east-african'),
+ ('ZM','southern-african'),('ZW','southern-african'),('ZA','southern-african'),('MZ','southern-african'),('AO','southern-african'),('NA','southern-african'),('BW','southern-african'),('MW','southern-african'),('LS','southern-african'),('SZ','southern-african'),('MG','southern-african'),('MU','southern-african'),
+ ('BR','brazilian'),('JM','caribbean'),('TT','caribbean'),('BB','caribbean'),('HT','caribbean'),('BS','caribbean'),('GD','caribbean'),('LC','caribbean'),('VC','caribbean'),('AG','caribbean'),('DM','caribbean'),('KN','caribbean'),('BZ','caribbean'),('GY','caribbean'),('SR','caribbean'),('MQ','caribbean'),('GP','caribbean'),('CW','caribbean'),('AW','caribbean'),
+ ('MX','latin'),('AR','latin'),('CL','latin'),('CO','latin'),('PE','latin'),('VE','latin'),('CU','latin'),('DO','latin'),('PR','latin'),('UY','latin'),('BO','latin'),('EC','latin'),('PY','latin'),('GT','latin'),('HN','latin'),('SV','latin'),('NI','latin'),('CR','latin'),('PA','latin'),
+ ('GR','greek'),('CY','greek'),('RS','balkan'),('HR','balkan'),('BA','balkan'),('SI','balkan'),('MK','balkan'),('ME','balkan'),('BG','balkan'),('RO','balkan'),('AL','balkan'),('XK','balkan'),('HU','balkan'),('PL','balkan'),('CZ','balkan'),('SK','balkan'),('UA','balkan'),('MD','balkan'),
+ ('RU','russian'),('BY','russian'),('LT','russian'),('LV','russian'),('EE','russian'),
+ ('FR','french'),('BE','french'),('IT','italian'),('DE','german'),('AT','german'),('CH','german'),('ES','iberian'),('PT','iberian'),
+ ('SE','nordic'),('NO','nordic'),('DK','nordic'),('FI','nordic'),('IS','nordic'),('FO','nordic'),('IE','celtic'),
+ ('AU','oceanian'),('NZ','oceanian'),('PG','oceanian'),('FJ','oceanian'),('WS','oceanian'),('TO','oceanian'),('NC','oceanian'),('PF','oceanian')
+ON CONFLICT DO NOTHING;
+
+-- ------------------------------------------------------------
+-- Phase 9f — lyric features v2. Keywords become distinctive (TF-IDF over your own lyric corpus
+-- instead of raw frequency), themes are scored rather than triggered by a single word, and a
+-- handful of structural features join them. The text itself is still never stored.
+-- ------------------------------------------------------------
+ALTER TABLE track_lyric_features ADD COLUMN IF NOT EXISTS features_rev INTEGER DEFAULT 1;   -- 1 = 9e rules, 2 = 9f rules; rows below the current rev are re-fetched and re-featurised
+ALTER TABLE track_lyric_features ADD COLUMN IF NOT EXISTS theme_scores JSON;                -- {"night": 0.42, "heartbreak": 0.31, ...} — every theme that scored, not just the winners
+ALTER TABLE track_lyric_features ADD COLUMN IF NOT EXISTS valence DOUBLE;                   -- −1 (bleak) … +1 (bright), from a small sentiment lexicon
+ALTER TABLE track_lyric_features ADD COLUMN IF NOT EXISTS repetition DOUBLE;                -- 1 − distinct/total: 0 = every line new, 0.9 = a chant
+ALTER TABLE track_lyric_features ADD COLUMN IF NOT EXISTS vocab INTEGER;                    -- distinct content words
+ALTER TABLE track_lyric_features ADD COLUMN IF NOT EXISTS llm_themes VARCHAR[];             -- optional: themes named by the local model (Ollama), from the transient text
+ALTER TABLE track_lyric_features ADD COLUMN IF NOT EXISTS llm_mood VARCHAR;                 -- optional: one-phrase mood from the local model
+ALTER TABLE track_lyric_features ADD COLUMN IF NOT EXISTS llm_model VARCHAR;
+ALTER TABLE track_lyric_features ADD COLUMN IF NOT EXISTS llm_at TIMESTAMPTZ;
+
+-- per-track term frequencies (top 60 content words). Keywords are derived from these against the
+-- whole corpus, so a word that is in every song ("love") stops counting as a keyword for any of them.
+CREATE TABLE IF NOT EXISTS track_lyric_terms (
+    track_id  VARCHAR,
+    term      VARCHAR,
+    tf        INTEGER,       -- occurrences in this song
+    PRIMARY KEY (track_id, term)
+);
+
+-- TF-IDF keywords: tf × ln(N / df), top 15 per track. N = songs with lyrics found; df = songs containing the term.
+CREATE OR REPLACE VIEW track_lyric_keywords AS
+WITH n AS (SELECT COUNT(*) AS n FROM track_lyric_features WHERE found AND COALESCE(features_rev, 1) >= 2),
+     df AS (SELECT term, COUNT(*) AS df FROM track_lyric_terms GROUP BY 1),
+     scored AS (SELECT t.track_id, t.term, t.tf, d.df, t.tf * LN(GREATEST((SELECT n FROM n), 2) * 1.0 / d.df) AS score
+                FROM track_lyric_terms t JOIN df d USING (term)
+                WHERE d.df < GREATEST((SELECT n FROM n), 2) * 0.35)     -- a word in over a third of your songs is not distinctive of any of them
+SELECT track_id, term, tf, df, score, ROW_NUMBER() OVER (PARTITION BY track_id ORDER BY score DESC, tf DESC, term) AS rank
+FROM scored
+QUALIFY rank <= 15;
+
+-- ------------------------------------------------------------
+-- Phase 9f — playlist sync that survives quota and unreadable playlists.
+-- ------------------------------------------------------------
+ALTER TABLE playlists ADD COLUMN IF NOT EXISTS owner_id VARCHAR;              -- Spotify user id of the owner ('spotify' = Spotify-made)
+ALTER TABLE playlists ADD COLUMN IF NOT EXISTS items_synced_at TIMESTAMPTZ;   -- when the items were last pulled in full
+ALTER TABLE playlists ADD COLUMN IF NOT EXISTS items_snapshot_id VARCHAR;     -- the snapshot the items belong to; unchanged snapshot → no re-fetch
+ALTER TABLE playlists ADD COLUMN IF NOT EXISTS sync_error VARCHAR;            -- last item-fetch failure ('unreadable: Spotify-owned playlists are closed to third-party apps')
+ALTER TABLE playlists ADD COLUMN IF NOT EXISTS first_seen_at TIMESTAMPTZ DEFAULT now();
+
+-- ------------------------------------------------------------
+-- Phase 9g — the Forecast (summary §3.2). One row per local date: what the app predicted for that day, written
+-- the first time the dashboard is opened that day. Never overwritten, so the accuracy line stays honest.
+-- payload: {"weekday": 0-6, "pAny": 0.83, "scenes": [{"scene": "psych", "p": 0.62}, ...], "slots": [{"slot": "evening", "p": 0.7}, ...],
+--           "calls": [{"kind": "artist", "key": "name:...", "label": "Bon Iver", "p": 0.92, "n": 11}]}
+-- Accuracy is computed by joining payload against plays_resolved for forecast_date (forecastQueries.ts); no outcome column needed.
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS forecast_log (
+    forecast_date DATE PRIMARY KEY,
+    weekday       INTEGER,
+    payload       JSON,
+    created_at    TIMESTAMPTZ DEFAULT now()
+);
+
+-- ------------------------------------------------------------
+-- Phase 9g — audio features via FreqBlog (free tier 1,000 req/month; POST /bulk = 50 tracks per request).
+-- Derived numbers only. bpm / key / energy / loudness are 100 %-coverage fields; valence / mood / danceability are
+-- perceptual estimates and the UI labels them "directional". `feature_source` records which lookup matched (isrc | name).
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS track_features (
+    track_id         VARCHAR PRIMARY KEY,
+    isrc             VARCHAR,
+    bpm              DOUBLE,
+    bpm_alt          DOUBLE,          -- half/double-time alternative when the service reports one
+    bpm_confidence   DOUBLE,
+    key_name         VARCHAR,         -- 'F# minor'
+    key_int          INTEGER,         -- 0 = C … 11 = B, -1 unknown
+    mode             INTEGER,         -- 1 major, 0 minor
+    camelot          VARCHAR,         -- '11A'
+    energy           DOUBLE,
+    loudness_db      DOUBLE,
+    danceability     DOUBLE,
+    valence          DOUBLE,
+    mood             VARCHAR,
+    time_signature   INTEGER,
+    acousticness     DOUBLE,
+    instrumentalness DOUBLE,
+    liveness         DOUBLE,
+    speechiness      DOUBLE,
+    genre            VARCHAR,
+    feature_source   VARCHAR,
+    found            BOOLEAN DEFAULT TRUE,   -- FALSE = asked, service had nothing (don't ask again for 90 days)
+    fetched_at       TIMESTAMPTZ DEFAULT now()
+);
+INSERT INTO connector_state (service, status) VALUES ('freqblog', 'disconnected') ON CONFLICT (service) DO NOTHING;

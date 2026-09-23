@@ -18,6 +18,7 @@ export type PlaylistScope = 'all' | 'mine' | 'followed';
 export type PlaylistHealth = {
   playlistId: string; name: string; description: string | null; ownerIsMe: boolean; isPublic: boolean | null;
   trackCount: number; synced: number; partial: boolean;
+  unreadable: boolean; syncError: string | null; itemsSyncedAt: string | null;   // Phase 9f: Spotify-made playlists are closed to third-party apps
   heard: number; completion: number;            // distinct tracks with any play since added / synced
   playsWithin: number; hoursWithin: number; skipRate: number;
   lastPlayedWithin: string | null; daysSinceTouched: number | null;
@@ -51,7 +52,7 @@ const HEALTH_SQL = () => `
              MAX(last_in) AS last_in, COUNT(*) FILTER (WHERE gem) AS gems, COUNT(*) FILTER (WHERE dead) AS dead, COUNT(*) FILTER (WHERE unheard) AS unheard,
              MIN(added_at) AS oldest_add, MAX(added_at) AS newest_add
       FROM cls GROUP BY 1)
-    SELECT pl.playlist_id, pl.name, pl.description, pl.owner_is_me, pl.public, pl.track_count,
+    SELECT pl.playlist_id, pl.name, pl.description, pl.owner_is_me, pl.public, pl.track_count, pl.sync_error, CAST(pl.items_synced_at AS VARCHAR) AS items_synced_at,
            COALESCE(a.synced, 0) AS synced, COALESCE(a.heard, 0) AS heard, COALESCE(a.plays_in, 0) AS plays_in, ROUND(COALESCE(a.hours_in, 0), 1) AS hours_in,
            COALESCE(a.sr, 0) AS sr, CAST(a.last_in AS VARCHAR) AS last_in,
            CASE WHEN a.last_in IS NULL THEN NULL ELSE CAST(CAST($1 AS DATE) - CAST(a.last_in AS DATE) AS INTEGER) END AS days_since,
@@ -63,7 +64,8 @@ const toHealth = (r: Record<string, unknown>): PlaylistHealth => {
   const synced = num(r.synced), heard = num(r.heard), tc = num(r.track_count);
   return {
     playlistId: String(r.playlist_id), name: String(r.name), description: str(r.description), ownerIsMe: Boolean(r.owner_is_me), isPublic: r.public == null ? null : Boolean(r.public),
-    trackCount: tc, synced, partial: tc > 0 && synced < tc, heard, completion: synced ? heard / synced : 0,
+    trackCount: tc, synced, partial: tc > 0 && synced < tc && !String(r.sync_error ?? '').startsWith('unreadable'), heard, completion: synced ? heard / synced : 0,
+    unreadable: String(r.sync_error ?? '').startsWith('unreadable'), syncError: str(r.sync_error), itemsSyncedAt: str(r.items_synced_at),
     playsWithin: num(r.plays_in), hoursWithin: num(r.hours_in), skipRate: num(r.sr), lastPlayedWithin: str(r.last_in), daysSinceTouched: r.days_since == null ? null : num(r.days_since),
     gems: num(r.gems), deadWeight: num(r.dead), unheard: num(r.unheard), oldestAdd: str(r.oldest_add), newestAdd: str(r.newest_add),
   };
@@ -85,13 +87,14 @@ export async function playlistHealth(scope: PlaylistScope = 'all', sort: Playlis
 }
 
 /** Library-wide picture: how much of what you've saved into playlists you actually reach, and how much sync is missing. */
-export type PlaylistTotals = { playlists: number; mine: number; synced: number; expected: number; partial: number; heard: number; gems: number; dead: number };
+export type PlaylistTotals = { playlists: number; mine: number; synced: number; expected: number; partial: number; unreadable: number; heard: number; gems: number; dead: number };
 export async function playlistTotals(): Promise<PlaylistTotals> {
   const rows = await query(`${HEALTH_SQL()}`, [localToday()]);
-  const z: PlaylistTotals = { playlists: 0, mine: 0, synced: 0, expected: 0, partial: 0, heard: 0, gems: 0, dead: 0 };
+  const z: PlaylistTotals = { playlists: 0, mine: 0, synced: 0, expected: 0, partial: 0, unreadable: 0, heard: 0, gems: 0, dead: 0 };
   for (const r of rows) {
-    z.playlists += 1; z.mine += r.owner_is_me ? 1 : 0; z.synced += num(r.synced); z.expected += num(r.track_count);
-    z.partial += num(r.track_count) > num(r.synced) ? 1 : 0; z.heard += num(r.heard); z.gems += num(r.gems); z.dead += num(r.dead);
+    const unreadable = String(r.sync_error ?? '').startsWith('unreadable');
+    z.playlists += 1; z.mine += r.owner_is_me ? 1 : 0; z.synced += num(r.synced); z.expected += unreadable ? 0 : num(r.track_count);
+    z.partial += !unreadable && num(r.track_count) > num(r.synced) ? 1 : 0; z.unreadable += unreadable ? 1 : 0; z.heard += num(r.heard); z.gems += num(r.gems); z.dead += num(r.dead);
   }
   return z;
 }

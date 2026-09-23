@@ -1,42 +1,11 @@
 -- ============================================================
 -- Insights cache (spec §7, nightly). Rebuilds `insights` for the dashboard's
--- "unseen" row; keeps `surfaced`. Also rebuilds scenes (tag clusters).
+-- "unseen" row; keeps `surfaced`. Scenes are rebuilt by compute_scenes.sql beforehand.
 -- ============================================================
 CREATE OR REPLACE TEMP TABLE _surf AS SELECT kind, subject_type, subject_id, period_start FROM insights WHERE surfaced;
 DELETE FROM insights;
 
--- ---- scenes: a small fixed vocabulary of tag families → scene; artist joins scenes by tag weight
-DELETE FROM artist_scene;
-CREATE OR REPLACE TEMP TABLE _scene_map AS SELECT * FROM (VALUES
- ('afrobeat','afro'),('afro-funk','afro'),('afrofunk','afro'),('highlife','afro'),('ethio-jazz','afro'),('ethiopian','afro'),('zamrock','afro'),('african','afro'),('nigerian','afro'),('ghanaian','afro'),('desert blues','afro'),('tuareg','afro'),('mbalax','afro'),('soukous','afro'),
- ('turkish','turkish'),('anatolian rock','turkish'),('turkish psychedelic','turkish'),('arabesk','turkish'),('turkish pop','turkish'),('turkish folk','turkish'),
- ('japanese','japanese'),('j-pop','japanese'),('city pop','japanese'),('shamisen','japanese'),('enka','japanese'),('shibuya-kei','japanese'),('j-rock','japanese'),
- ('post-punk','post-punk'),('new wave','post-punk'),('coldwave','post-punk'),('darkwave','post-punk'),('synth-pop','post-punk'),('gothic rock','post-punk'),
- ('shoegaze','dream'),('dream pop','dream'),('ethereal','dream'),('slowcore','dream'),
- ('psychedelic','psych'),('psychedelic rock','psych'),('neo-psychedelia','psych'),('krautrock','psych'),('space rock','psych'),('garage rock','psych'),('garage psych','psych'),
- ('hip-hop','hip-hop'),('trip-hop','hip-hop'),('instrumental hip-hop','hip-hop'),('boom bap','hip-hop'),('abstract hip-hop','hip-hop'),
- ('jazz','jazz'),('jazz fusion','jazz'),('spiritual jazz','jazz'),('bebop','jazz'),('hard bop','jazz'),('cool jazz','jazz'),('nu jazz','jazz'),
- ('funk','funk-soul'),('soul','funk-soul'),('neo-soul','funk-soul'),('northern soul','funk-soul'),('disco','funk-soul'),('boogie','funk-soul'),
- ('electronic','electronic'),('house','electronic'),('techno','electronic'),('idm','electronic'),('ambient','electronic'),('downtempo','electronic'),('electro','electronic'),('nu disco','electronic'),
- ('indie rock','indie'),('indie pop','indie'),('indie folk','indie'),('lo-fi','indie'),('bedroom pop','indie'),('slacker rock','indie'),
- ('folk','folk'),('singer-songwriter','folk'),('americana','folk'),('alt-country','folk'),('country','folk'),('bluegrass','folk'),
- ('metal','metal'),('industrial','metal'),('heavy metal','metal'),('doom metal','metal'),('sludge','metal'),('post-metal','metal'),('industrial metal','metal'),
- ('reggae','caribbean'),('dub','caribbean'),('ska','caribbean'),('rocksteady','caribbean'),('calypso','caribbean'),('dancehall','caribbean'),('soca','caribbean'),
- ('latin','latin'),('cumbia','latin'),('bossa nova','latin'),('samba','latin'),('tropicalia','latin'),('salsa','latin'),('mpb','latin'),('brazilian','latin'),
- ('classical','classical'),('baroque','classical'),('contemporary classical','classical'),('minimalism','classical'),('piano','classical'),('soundtrack','classical'),('film score','classical'),
- ('punk','punk'),('punk rock','punk'),('hardcore','punk'),('post-hardcore','punk'),('emo','punk'),('pop punk','punk'),
- ('classic rock','classic-rock'),('blues rock','classic-rock'),('hard rock','classic-rock'),('progressive rock','classic-rock'),('blues','classic-rock'),('southern rock','classic-rock')
-) v(tag, scene);
-INSERT INTO artist_scene
-SELECT t.artist_id, m.scene, SUM(t.weight) AS w FROM artist_tags t JOIN _scene_map m USING (tag) GROUP BY 1, 2 HAVING SUM(t.weight) >= 0.3;
--- origin-based scenes when tags are missing
-INSERT INTO artist_scene
-SELECT o.artist_id, CASE o.country WHEN 'TR' THEN 'turkish' WHEN 'JP' THEN 'japanese' WHEN 'NG' THEN 'afro' WHEN 'GH' THEN 'afro' WHEN 'ET' THEN 'afro' WHEN 'ML' THEN 'afro' WHEN 'ZM' THEN 'afro' WHEN 'SN' THEN 'afro' WHEN 'BR' THEN 'latin' WHEN 'JM' THEN 'caribbean' END, 0.5
-FROM artist_origin o WHERE o.country IN ('TR','JP','NG','GH','ET','ML','ZM','SN','BR','JM')
-  AND NOT EXISTS (SELECT 1 FROM artist_scene s WHERE s.artist_id = o.artist_id);
--- Phase 9e: the owner's filing decisions win
-DELETE FROM artist_scene WHERE artist_id IN (SELECT artist_id FROM scene_overrides);
-INSERT INTO artist_scene SELECT artist_id, scene, 9.0 FROM scene_overrides WHERE scene IS NOT NULL;
+-- ---- scenes: rebuilt by compute_scenes.sql (Phase 9f), which runs right before this file.
 
 -- ---- INS-02 obsessions (artist, last 26 weeks) --------------------------------
 INSERT INTO insights (kind, period_start, period_end, subject_type, subject_id, payload, score)
@@ -89,5 +58,5 @@ FROM agg a JOIN mo m USING (track_id)
 WHERE a.plays >= 7 AND m.months >= 3 AND a.span >= 90 AND a.alone >= 0.6 AND a.sr <= 0.15;
 
 UPDATE insights i SET surfaced = TRUE FROM _surf s WHERE i.kind = s.kind AND i.subject_type = s.subject_type AND i.subject_id = s.subject_id AND i.period_start = s.period_start;
-DROP TABLE _surf; DROP TABLE _scene_map;
+DROP TABLE _surf;
 INSERT INTO app_meta (key, value) VALUES ('last_insights', CAST(now() AS VARCHAR)) ON CONFLICT (key) DO UPDATE SET value = excluded.value;

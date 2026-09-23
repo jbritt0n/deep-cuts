@@ -23,6 +23,7 @@ pub const IMPORT_MARK_KEYS_SQL: &str = include_str!("../sql/import_mark_keys.sql
 pub const POLL_INSERT_SQL: &str = include_str!("../sql/poll_insert.sql");
 pub const IMPORT_BLEND_SQL: &str = include_str!("../sql/import_blend.sql");
 pub const COMPUTE_MILESTONES_SQL: &str = include_str!("../sql/compute_milestones.sql");
+pub const COMPUTE_SCENES_SQL: &str = include_str!("../sql/compute_scenes.sql");     // Phase 9f
 pub const COMPUTE_INSIGHTS_SQL: &str = include_str!("../sql/compute_insights.sql");
 pub const WILD_INSERT_SQL: &str = include_str!("../sql/wild_insert.sql");   // Phase 8
 
@@ -183,6 +184,7 @@ impl Db {
         self.exec_batch(ENTITY_RESOLUTION_SQL).context("entity_resolution.sql")?;
         self.exec_batch(COMPUTE_SESSIONS_SQL).context("compute_sessions.sql")?;
         self.exec_batch(COMPUTE_MILESTONES_SQL).context("compute_milestones.sql")?;
+        self.exec_batch(COMPUTE_SCENES_SQL).context("compute_scenes.sql")?;
         self.exec_batch(COMPUTE_INSIGHTS_SQL).context("compute_insights.sql")?;
         self.checkpoint()
     }

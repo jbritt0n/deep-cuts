@@ -51,13 +51,23 @@ pub fn start(app: AppHandle) {
                     if !st.spotify.is_connected() { return Ok(()); }
                     let c = st.spotify_ref();
                     let (me, _) = sync::whoami(&c, &st.real)?;
-                    sync::sync_liked(&c, &st.real)?;
-                    sync::sync_playlists(&c, &st.real, &me)?;
+                    if let Err(e) = sync::sync_liked(&c, &st.real) { st.real.log_activity("sync", "warn", &format!("Liked songs: {e}"), None); }
+                    if let Err(e) = sync::sync_playlists(&c, &st.real, &me) { st.real.log_activity("sync", "warn", &format!("Playlists: {e}"), None); }
                     Ok(())
                 }).await;
             }
             ticks += 1;
             tokio::time::sleep(Duration::from_secs(budget::POLL_EVERY_SECS)).await;
+        }
+    });
+
+    // Phase 9g — FreqBlog audio features: one bulk tick every 6 h (25 tracks / request keeps a month under the free tier).
+    let a = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(4 * 60)).await;
+        loop {
+            run_blocking(&a, "freqblog", |st| { crate::connectors::freqblog::enrich(&st.real, 25)?; Ok(()) }).await;
+            tokio::time::sleep(Duration::from_secs(6 * 3600)).await;
         }
     });
 

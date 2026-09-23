@@ -11,6 +11,7 @@ const NAV: { to: string; label: string; group?: string }[] = [
   { to: '/crate', label: 'The Crate' },
   { to: '/sessions', label: 'Sessions', group: 'Understand' },
   { to: '/eras', label: 'Eras' },
+  { to: '/atlas', label: 'Atlas' },
   { to: '/insights', label: 'Insights' },
   { to: '/notes', label: 'Liner Notes' },
   { to: '/review', label: 'In Review' },

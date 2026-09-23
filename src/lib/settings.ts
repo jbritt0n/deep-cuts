@@ -21,7 +21,7 @@ export const settingBool = (key: string, fallback = false) => (cache[key] === un
 /** For tests / the browser harness: seed the cache without a round-trip. */
 export const primeSettings = (v: Record<string, string>) => { cache = { ...v }; };
 
-export type Tunable = { key: string; label: string; unit: string; min: number; max: number; step: number; def: number; why: string; group: 'sessions' | 'discovery' | 'connectors'; rebuild?: boolean };
+export type Tunable = { key: string; label: string; unit: string; min: number; max: number; step: number; def: number; why: string; group: 'sessions' | 'discovery' | 'threads' | 'connectors'; rebuild?: boolean };
 export const TUNING: Tunable[] = [
   { key: 'attention_gap_min', group: 'sessions', label: 'Attention gap', unit: 'min', min: 15, max: 600, step: 15, def: 120, rebuild: true, why: 'How long autoplay may run without you touching anything before it stops counting as listening. 120: a double album still counts; a laptop left on overnight does not.' },
   { key: 'short_play_seconds', group: 'sessions', label: 'Short-play cutoff', unit: 's', min: 10, max: 60, step: 5, def: 30, rebuild: true, why: 'Plays shorter than this count as "under 30 s" in skip forensics and patience-by-year. Skips themselves are button presses, not a duration.' },
@@ -32,6 +32,13 @@ export const TUNING: Tunable[] = [
   { key: 'feedback_memory_days', group: 'discovery', label: 'Discover feedback memory', unit: 'days', min: 14, max: 365, step: 7, def: 90, why: 'How long a dismissed recommendation stays hidden. One setting now, where three separate copies of "90" used to live.' },
   { key: 'forgotten_days', group: 'discovery', label: 'Forgotten-artist window', unit: 'days', min: 180, max: 1460, step: 30, def: 540, why: 'How long an artist must be silent before the comeback engine suggests them. Shorter feels current; longer feels sentimental.' },
   { key: 'tag_floor', group: 'discovery', label: 'Genre tag confidence floor', unit: '', min: 0.05, max: 0.6, step: 0.05, def: 0.2, why: 'Minimum Last.fm/MusicBrainz tag weight before a tag counts — for genre browse, genre threads and Discover alike.' },
+  // Phase 9g — the two roadmap "expose it" items: genre-thread detection and the Not-for-me bar
+  { key: 'thread_min_weeks', group: 'threads', label: 'Thread · minimum length', unit: 'weeks', min: 2, max: 12, step: 1, def: 3, why: 'How many consecutive weeks a tag or scene must hold its share before it counts as a thread on Eras.' },
+  { key: 'thread_share_floor', group: 'threads', label: 'Thread · share floor', unit: '', min: 0.03, max: 0.3, step: 0.01, def: 0.08, why: 'Minimum share of a week\'s listening the tag must carry, every week of the run. 0.08 = eight percent.' },
+  { key: 'thread_max_coverage', group: 'threads', label: 'Thread · tag coverage ceiling', unit: '', min: 0.05, max: 0.6, step: 0.05, def: 0.2, why: 'A tag carried by more than this share of your tagged artists is generic for you and can\'t thread. Lower = nichier threads.' },
+  { key: 'thread_scenes', group: 'threads', label: 'Scene-family threads (0 off · 1 on)', unit: '', min: 0, max: 1, step: 1, def: 1, why: 'Also detect threads on scene families (West African, post-punk…) — the broad line above the niche tag threads. Families are exempt from the coverage ceiling.' },
+  { key: 'skiphall_min_shown', group: 'threads', label: 'Not for me · minimum exposures', unit: 'plays', min: 3, max: 30, step: 1, def: 8, why: 'How many times a song must have been put in front of you before it can enter Not for me.' },
+  { key: 'skiphall_min_rate', group: 'threads', label: 'Not for me · skip rate', unit: '', min: 0.5, max: 0.98, step: 0.01, def: 0.85, why: 'Share of those exposures you skipped. 0.85 = you rejected it six times in seven.' },
   { key: 'lyrics_batch', group: 'connectors', label: 'Lyric batch size', unit: 'tracks / 15 min', min: 10, max: 100, step: 10, def: 40, why: 'How many tracks LRCLIB is asked about per tick. Politeness vs. speed.' },
 ];
 export const tuningDefault = (key: string) => TUNING.find((t) => t.key === key)?.def ?? 0;

@@ -19,6 +19,7 @@ import { DayPage } from './pages/Day';
 import { MonthPage } from './pages/Month';
 import { SessionsPage } from './pages/Sessions';
 import { ErasPage } from './pages/Eras';
+import { AtlasPage } from './pages/Atlas';
 import { InsightsPage } from './pages/Insights';
 import { ActivityPage } from './pages/Activity';
 import { SkipHallPage } from './pages/SkipHall';
@@ -89,6 +90,7 @@ export function App() {
             <Route path="/day/:date" element={<DayPage />} />
             <Route path="/month/:key" element={<MonthPage />} />
             <Route path="/eras" element={<ErasPage />} />
+            <Route path="/atlas" element={<AtlasPage />} />
             <Route path="/insights" element={<InsightsPage />} />
             <Route path="/activity" element={<ActivityPage />} />
             <Route path="/notforme" element={<SkipHallPage />} />

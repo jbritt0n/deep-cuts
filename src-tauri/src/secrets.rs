@@ -29,3 +29,4 @@ pub const SPOTIFY_CLIENT_ID: &str = "spotify_client_id";
 pub const LASTFM_KEY: &str = "lastfm_api_key";
 pub const LASTFM_USER: &str = "lastfm_username";
 pub const STATSFM_KEY: &str = "statsfm_api_key";
+pub const FREQBLOG_KEY: &str = "freqblog_api_key";   // Phase 9g

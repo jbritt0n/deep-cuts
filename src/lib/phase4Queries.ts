@@ -273,7 +273,11 @@ export async function lyricSearch(term: string, limit = 60): Promise<{ coverage:
   if (q.length < 2) return { coverage: num(c?.cov), hits: [] };
   const hits = (await query(`
     SELECT ${T}, f.keywords, f.themes FROM plays_resolved p JOIN track_lyric_features f USING (track_id)
-    WHERE (list_contains(f.keywords, $1) OR list_contains(f.themes, $1)) ${playsWhere('p')} GROUP BY 1, 2, 3, 4, f.keywords, f.themes ORDER BY plays DESC LIMIT ${limit}`, [q])).map((r) => ({ ...toT(r), keywords: (r.keywords as string[]) ?? [], themes: (r.themes as string[]) ?? [] }));
+    WHERE (EXISTS (SELECT 1 FROM track_lyric_terms lt WHERE lt.track_id = f.track_id AND (lt.term = $1 OR lt.term = $1 || 's' OR lt.term || 's' = $1))
+        OR EXISTS (SELECT 1 FROM json_each(COALESCE(f.theme_scores, '{}'::JSON)) j WHERE j.key ILIKE '%' || $1 || '%')
+        OR list_contains(f.themes, $1) OR list_contains(COALESCE(f.llm_themes, []::VARCHAR[]), $1) OR f.llm_mood ILIKE '%' || $1 || '%'
+        OR list_contains(f.keywords, $1))
+      ${playsWhere('p')} GROUP BY 1, 2, 3, 4, f.keywords, f.themes ORDER BY plays DESC LIMIT ${limit}`, [q])).map((r) => ({ ...toT(r), keywords: (r.keywords as string[]) ?? [], themes: (r.themes as string[]) ?? [] }));
   return { coverage: num(c?.cov), hits };
 }
 

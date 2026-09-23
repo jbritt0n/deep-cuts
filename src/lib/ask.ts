@@ -29,10 +29,17 @@ artists: artist_id, name, mbid, catalogue_tracks (approx. recordings the artist 
 albums: album_id, name, artist_id, release_date DATE, total_tracks, image_url.
 tracks: track_id, name, artist_id, album_id, duration_ms, release_date DATE, explicit BOOLEAN, isrc, track_number.
 artist_tags: artist_id, tag, weight (0–1), source ('lastfm'|'musicbrainz').   -- genre tags
-artist_scene: artist_id, scene ('psych','indie','electronic','jazz','afro','turkish','japanese','dream','post-punk','hip-hop','funk-soul','folk','metal','classical','punk','latin','caribbean','classic-rock'), weight.
+artist_scene: artist_id, scene, weight. Scene keys are rows of scene_families (scene, label, kind 'region'|'style') — e.g. 'psych','west-african','turkish','japanese','korean','dream','post-punk','bass','library'; join scene_families for the label. weight >= 9 means the owner filed it by hand.
+scene_tag_map: tag, scene. scene_origin_map: country (ISO-2), scene.
+track_lyric_terms: track_id, term, tf (content-word counts). track_lyric_keywords (view): track_id, term, score, rank (TF-IDF, rank 1 = most distinctive).
+artist_popularity_history: artist_id, listeners, snapshot_at (Last.fm listener snapshots over time).
+artist_origin: artist_id, country (ISO-2), country_name, city — where the artist is from (MusicBrainz).
+track_features: track_id, bpm, key_name ('F# minor'), mode (1 major / 0 minor), camelot, energy (0-1), loudness_db, danceability, acousticness, found. Audio features from FreqBlog; only rows with found = TRUE have numbers.
+forecast_log: forecast_date, weekday, payload JSON — the app's own daily listening forecast (scene probabilities), for scoring.
+playlists also has: owner_id ('spotify' = Spotify-made), sync_error (LIKE 'unreadable:%' means its tracks cannot be read), items_synced_at.
 artist_obscurity (view): artist_id, listeners (Last.fm), obscurity (0 mainstream → 1 unknown).
 artist_origin: artist_id, country (ISO-2), city.
-track_lyric_features: track_id, found, keywords VARCHAR[], themes VARCHAR[], colours VARCHAR[], lang.
+track_lyric_features: track_id, found, keywords VARCHAR[], themes VARCHAR[], theme_scores JSON (theme → strength), colours VARCHAR[], lang, valence (-1..1), repetition (0..1), vocab, llm_themes VARCHAR[], llm_mood.
 liked_songs: track_id, added_at.   playlists: playlist_id, name, owner_is_me.   playlist_items: playlist_id, track_id, added_at.
 milestones: kind, happened_at, subject_type, subject_id, payload JSON.
 recommendation_feedback: subject_type, subject_key, engine, verdict ('accepted'|'dismissed'), decided_at.

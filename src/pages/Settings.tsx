@@ -11,6 +11,8 @@ import { THEMES } from '@/lib/theme';
 import { fmtInt } from '@/lib/format';
 import { Card, ErrorBox, Sleeve } from '@/components/Card';
 import { Importer } from '@/components/Importer';
+import { SceneEditor } from '@/components/SceneEditor';
+import { MoveCard } from '@/components/MoveCard';
 import { search } from '@/lib/queries';
 import type { ArtistRow } from '@/lib/types';
 import { sessionOverrides, travel } from '@/lib/phase7Queries';
@@ -24,7 +26,7 @@ type Tab = 'look' | 'record' | 'tuning' | 'connectors' | 'hygiene';
 const TABS: { id: Tab; label: string; blurb: string }[] = [
   { id: 'look', label: 'Appearance', blurb: 'Skins.' },
   { id: 'record', label: 'Record', blurb: 'Your history, time zones, data.' },
-  { id: 'tuning', label: 'Tuning', blurb: 'The thresholds behind eras, sessions and discovery.' },
+  { id: 'tuning', label: 'Tuning', blurb: 'Eras, scenes, sessions and discovery thresholds.' },
   { id: 'connectors', label: 'Connectors', blurb: 'Budgets and batch sizes for the background jobs.' },
   { id: 'hygiene', label: 'Hygiene', blurb: 'Outliers, corrected sessions, merged artists.' },
 ];
@@ -102,15 +104,18 @@ export function SettingsPage({ status, onChanged }: { status: AppStatus; onChang
             </div>
             <p className="mt-3 text-xs text-dust">Portable mode: put an empty file named <span className="num">portable.flag</span> next to the app and it keeps its data in a <span className="num">data</span> folder beside it.</p>
           </Card>
+          <div className="md:col-span-2"><MoveCard onChanged={onChanged} /></div>
         </div>
       )}
 
       {tab === 'tuning' && (
         <div className="space-y-6">
           <EraTuning />
+          <SceneEditor />
           <TuningGroup group="sessions" title="Sessions" subtitle="Attention, skips and the session-shape rules. These are baked into the session table, so changes apply after a rebuild (a few seconds)." busy={busy} run={run} />
           <div className="grid gap-6 md:grid-cols-2">
             <TuningGroup group="discovery" title="Discovery and tags" subtitle="Read live by Discover, genre browse and genre threads — no rebuild." busy={busy} run={run} />
+            <TuningGroup group="threads" title="Genre threads and Not for me" subtitle="Phase 9g: the detection rules behind the threads on Eras and the bar for Not for me. Read live — no rebuild." busy={busy} run={run} />
             <Preferences busy={busy} run={run} />
           </div>
         </div>
@@ -124,6 +129,7 @@ export function SettingsPage({ status, onChanged }: { status: AppStatus; onChang
               <input type="checkbox" checked={lyrics} onChange={(e) => { setLyrics(e.target.checked); void run('lyrics', () => invoke('set_setting', { key: 'lyrics_enabled', value: String(e.target.checked) }), e.target.checked ? 'Lyric features enabled.' : 'Lyric features paused.'); }} />
               Enable lyric features
             </label>
+            <LyricsV2 enabled={lyrics} busy={busy} run={run} />
             <button disabled={!!busy || !lyrics} onClick={() => run('lyricsnow', () => invoke<string>('lyrics_enrich_now').then((m) => setMsg(m)), 'Done.')} className="mt-3 rounded-full border border-line px-4 py-2 text-sm text-dust hover:text-cream disabled:opacity-40">Fetch a batch now</button>
           </Card>
           <TuningGroup group="connectors" title="Batch sizes" subtitle="Speed against politeness for the background connectors." busy={busy} run={run} />
@@ -416,5 +422,22 @@ function OllamaCard({ busy, run }: { busy: string | null; run: (l: string, fn: (
       <p className={`mt-2 text-xs ${st.data?.reachable ? 'text-moss' : 'text-dust'}`}>{!st.data ? 'checking…' : st.data.reachable ? `Reachable · ${st.data.models.length} model${st.data.models.length === 1 ? '' : 's'}: ${st.data.models.join(', ') || 'none pulled yet'}` : `Not reachable at ${st.data.url}${st.data.error ? ` — ${st.data.error.slice(0, 100)}` : ''}`}</p>
       <p className="mt-2 text-[11px] text-dust/70">In Docker, set <span className="num">OLLAMA_URL=http://host.docker.internal:11434</span> (or the host's LAN address) — the container proxies to it.</p>
     </Card>
+  );
+}
+
+/** Phase 9f: lyric features v2 — progress of the re-analysis and the optional local-model theming. */
+function LyricsV2({ enabled, busy, run }: { enabled: boolean; busy: string | null; run: (l: string, fn: () => Promise<unknown>, ok: string) => Promise<void> }) {
+  const st = useAsync(() => invoke<{ oldRules: number; current: number; never: number; llmEnabled: boolean }>('lyrics_status'), [busy]);
+  if (!st.data) return null;
+  const d = st.data;
+  return (
+    <div className="mt-3 space-y-2 text-xs text-dust">
+      <p>New in this build: keywords are scored against your whole lyric corpus (so “love” and “night” stop being everyone's keyword), themes need several cues before they fire, and each song gets a valence, a repetition score and a language. {d.oldRules > 0 ? <>{fmtInt(d.oldRules)} songs still carry the old features and are re-fetched a batch at a time; {fmtInt(d.current)} are done.</> : <>{fmtInt(d.current)} songs analysed under the new rules.</>}{d.never > 0 && <> {fmtInt(d.never)} played tracks not looked up yet.</>}</p>
+      <label className="flex items-center gap-3 text-sm text-cream">
+        <input type="checkbox" checked={d.llmEnabled} disabled={!enabled || !!busy} onChange={(e) => void run('lyricsllm', () => invoke('set_setting', { key: 'lyrics_llm_enabled', value: String(e.target.checked) }), e.target.checked ? 'The local model will name themes and a mood for each English song as it is fetched.' : 'Local-model theming off.')} />
+        Let the local model (Ollama) name themes and a mood too
+      </label>
+      <p>The text is shown to the model on this machine and discarded — only its 3–5 theme phrases and one mood line are kept. Needs a model picked in the Ollama card. Slower: a few seconds per song.</p>
+    </div>
   );
 }

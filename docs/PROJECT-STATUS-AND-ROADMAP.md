@@ -1,7 +1,7 @@
 # Deep Cuts v3 — Project Summary & Roadmap
-**Handoff document — September 11, 2026 (current through Phase 9a)**
+**Handoff document — September 22, 2026 (current through Phase 9g)**
 
-> For what to build next, read **`docs/HANDOFF-PHASE-9B.md`** — it is the working handoff. This file is the durable project summary.
+> For what to build next, read **`docs/HANDOFF-PHASE-9G.md`** — it is the working handoff. This file is the durable project summary.
 
 This file is written for whoever picks up this project next (human or AI agent). It summarizes what exists, how it's built, what's been tested, what's broken, and what's planned. Read this before touching code.
 
@@ -94,6 +94,23 @@ SQL/TS verified (tsc, 29 vitest, 14 fixtures, 9 smoke scripts incl. the Ask pipe
 - **Docker** (`docker/`, `docs/DOCKER.md`): `dev-server.mjs` grew into the headless server — serves `dist/`, `HOST`/`PORT`, `/_health`, `DEEPCUTS_READONLY` (opens the file read-only and refuses writes politely), `OLLAMA_URL` proxy. The container is the *analyst*; the desktop app stays the *collector* (connectors, tokens, the single DuckDB writer). `bridge.ts` uses same-origin when the UI is served by that server.
 - **9d feedback:** Settings → Record → **Stored data** (exact file size, estimated bytes per group, rows per table, sources). Crate sections: wrapped strip (no scrollbar), one-click jump vs ⊙ filter, highlight follows the front card, an explanation of how sections are derived, and **re-filing** an artist from the record card (`scene_overrides`, honoured by `compute_insights.sql`, applied immediately by `set_artist_scene`). Obscurity **tier word** beside the number. **Playlists**: ids deduped, 400 ms between 100-URI chunks, and the count Spotify reports is verified and shown when short; **queueMany** paces 250 ms and continues past one-off refusals. **Threads** exclude umbrella/meta tags and any tag on > 20 % of your artists, and gain **decade threads** from `tracks.release_date`. All background timestamps render in the record's zone (`fmtStamp`). **Lyric keyword cloud** on Insights (own SVG spiral layout; click a word → tracks → playlist).
 
+### Phase 9g — roadmap: Atlas, Forecast, FreqBlog audio features, scene threads, tuning knobs
+SQL/TS verified (tsc, 29 vitest, 21 fixtures incl. three new, 11 smoke scripts incl. `smoke-9g.ts`, `vite build --mode browser`). **Rust uncompiled** — `docs/HANDOFF-PHASE-9G.md` §1.
+- **Atlas** (`/atlas`, `originQueries.ts`, `src/assets/world-110m.json`): world map of artist origins shaded by hours (Natural Earth 110m via world-atlas → Natural Earth I projection → alpha-2-keyed path strings, 175 countries, 123 KB, baked offline — no runtime map library); hover card, click → artist list, table twin, "how the map widened" by year.
+- **Forecast** (summary §3.2; `forecastQueries.ts`, `ForecastCard.tsx`, `forecast_log` table, `forecast_log_write` command): base rate = last 26 same-weekdays; scene / day-part probabilities; high-confidence calls only ≥ 85 % over ≥ 8 exposures; logged once per local date (write-once, fixture-tested); accuracy = Brier vs climatology skill, per month, on Insights. Verdict withheld under 7 scored days.
+- **FreqBlog** (`connectors/freqblog.rs`, `track_features`, `featureQueries.ts`, `SoundSection.tsx`, Services card): free-tier contract from the 9b handoff; ISRC-first `/bulk` in batches of 25, 202/429 handling, monthly counter in `connector_state.detail`, hard stop at 900. Response parsed defensively (`parse_items`, `parse_feat`) — record a real reply as a fixture at first compile. Sound charts only the full-coverage fields (bpm, key, energy, loudness).
+- **Scene-family threads** (`sceneWeekShares`, `kind: 'scene'`, `label`): threads on the strongest family per artist, exempt from the coverage ceiling; Eras badges them; export-as-playlist works through `threadTracks`.
+- **Tuning** (`group: 'threads'`): `thread_min_weeks`, `thread_share_floor`, `thread_max_coverage`, `thread_scenes`, `skiphall_min_shown`, `skiphall_min_rate` — read live by `genreThreads()` and `skipHall()`; whitelisted in `set_setting`.
+
+### Phase 9f — owner feedback on 9e: move bundles, lyrics v2, scenes as data, playlist sync, Daily Dig
+SQL/TS verified (tsc, 29 vitest, 18 fixtures incl. four new, 10 smoke scripts incl. `smoke-9f.ts`, `vite build --mode browser`, a full export → restore round-trip in the harness). **Rust uncompiled** — `docs/HANDOFF-PHASE-9F.md` §1.
+- **Move to another computer** (`migrate.rs`, Settings → Record): every table → Parquet in one zip + `manifest.json`; keyring secrets optionally encrypted (XChaCha20-Poly1305, passphrase-derived key). Restore intersects columns by name, backs up current events first, rebuilds under the receiving pipeline, restores secrets to the keyring. `docs/MOVING.md`.
+- **Lyrics v2** (`features_rev 2`): `track_lyric_terms` + `track_lyric_keywords` TF-IDF view (fixture: a word in every song is never a keyword); 34 scored themes with weighted cues; `theme_scores`, `valence`, `repetition`, `vocab`, `lang` (11-language function-word detector; English-only lexicons); optional Ollama theming from the transient text (`llm_themes`, `llm_mood`). Old rows are re-fetched a batch at a time; the Insights cloud excludes them so vocabularies never mix.
+- **Scenes as data**: `scene_families` (66: the 18 originals + 22 regions + 26 niche styles), `scene_tag_map` (1,087), `scene_origin_map` (180); `compute_scenes.sql` replaces the `VALUES` list; Settings → Tuning → Scenes editor (`SceneEditor.tsx`, `sceneQueries.ts`) with an unfiled-tag queue weighted by hours; Rust/dev-server commands `scene_*`, `recompute_scenes`. All 9e keys preserved so `scene_overrides` still resolve.
+- **Crate**: `unsorted` is a real filter (`section IS NULL`); the 400-record cap that hid the last divider is lifted; labels come from `scene_families`.
+- **Playlist sync** (`sync.rs`): two passes (all metadata, then items only where never synced or `snapshot_id` moved), per-playlist error isolation, Spotify-made playlists marked `unreadable` (Spotify closed them to third-party apps in Nov 2024 — the actual reason old playlists never appeared: the abort happened at the first one). New columns `owner_id`, `items_synced_at`, `items_snapshot_id`, `sync_error`, `first_seen_at`; Library distinguishes *unreadable* from *partial*.
+- **Roadmap**: Daily Dig (date-seeded pick from rediscover / abandoned / back-room pools, queue album, put away), obscurity trajectory (`popularityTrajectory`, `popularityMovers`; artist-page sparkline, *Rising and fading* on Insights). `PIPELINE_REV` → 10.
+
 **Pivoted / dropped in 9a:** Last.fm obsessions export (the obsession isn't in Last.fm's API — read or write; scrape-only, rejected); journal/notes (owner deprioritised); Setlist.fm as next connector (owner chose an audio-features source — see 9b).
 
 ---
@@ -114,7 +131,7 @@ SQL/TS verified (tsc, 29 vitest, 14 fixtures, 9 smoke scripts incl. the Ask pipe
 
 ## 3. What's next
 
-**Read `docs/HANDOFF-PHASE-9E.md`** first, then `docs/HANDOFF-PHASE-9D.md`, then `docs/HANDOFF-PHASE-9C.md` for what 9b/9c shipped, what must be compiled first, and what remains. `docs/HANDOFF-PHASE-9B.md` still carries the un-started 9b menu items (audio-features connector, dynamic playlists, world map, weekly review + Liner Notes redesign, remaining owner items) and the longer menu after that. Nothing is duplicated here so the two files can't drift.
+**Read `docs/HANDOFF-PHASE-9G.md`** first, then `docs/HANDOFF-PHASE-9F.md`, `docs/HANDOFF-PHASE-9E.md`, `docs/HANDOFF-PHASE-9D.md`, then `docs/HANDOFF-PHASE-9C.md` for what 9b/9c shipped, what must be compiled first, and what remains. `docs/HANDOFF-PHASE-9B.md` still carries the un-started 9b menu items (audio-features connector, dynamic playlists, world map, weekly review + Liner Notes redesign, remaining owner items) and the longer menu after that. Nothing is duplicated here so the two files can't drift.
 
 ---
 
@@ -149,6 +166,12 @@ SQL/TS verified (tsc, 29 vitest, 14 fixtures, 9 smoke scripts incl. the Ask pipe
 | Add a playlist lens or track class | `src/lib/playlistQueries.ts` (`ORDER`, `HEALTH_SQL`, `playlistTracks` kind rules) |
 | Add a hygiene/outlier detector | `src/lib/hygieneQueries.ts` + the *Review outliers* panel in `src/pages/Settings.tsx` |
 | Add a genre lens | `src/lib/genreQueries.ts` + `GenreBrowser` in `src/pages/Discovery.tsx` |
+| Add / change a scene family or tag mapping | Settings → Tuning → Scenes at runtime; built-ins in the Phase 9f block of `src-tauri/sql/schema.sql`; logic in `src-tauri/sql/compute_scenes.sql` |
+| Change lyric themes / stop words | `src-tauri/src/connectors/lyrics.rs` (`themes()`, `STOP`) and bump `FEATURES_REV` so rows re-analyse |
+| Add an audio-feature chart | `src/lib/featureQueries.ts` + `src/components/SoundSection.tsx`; connector budget in `connectors/freqblog.rs` (`BATCH`, `MONTHLY_CAP`) |
+| Change the forecast's window or call threshold | `WINDOW_WEEKS`, `CALL_MIN_P`, `CALL_MIN_N` in `src/lib/forecastQueries.ts` (old logs keep scoring under the rules they were made with) |
+| Re-bake the world map | `world-atlas` + `topojson-client` + `d3-geo` one-off script (see HANDOFF-PHASE-9G §3) → `src/assets/world-110m.json` |
+| Change what a move bundle carries | `src-tauri/src/migrate.rs` (`SKIP_TABLES`, `SECRET_KEYS`) + the mirror in `dev-server.mjs` |
 | Add a unit test for TS logic | `src/lib/__tests__/*.test.ts` (`npm test`); use `@duckdb/node-api` in-memory for SQL fragments as `platformFamily.test.ts` does |
 | Change what counts as "attended" | `src-tauri/sql/compute_sessions.sql` (`is_interaction` definition) — **be very careful here, this is the most-tested and most-bug-prone piece of logic in the app** |
 

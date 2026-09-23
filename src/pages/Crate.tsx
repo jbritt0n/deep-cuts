@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useAsync, useFilter } from '@/lib/hooks';
-import { SCENES, albumTracks, crateRecords, crateSections, crateSummary, obscurityTier, related, type CrateRecord, type CrateSort, type Shelf } from '@/lib/crateQueries';
+import { albumTracks, crateRecords, crateSections, crateSummary, obscurityTier, related, type CrateRecord, type CrateSort, type Shelf } from '@/lib/crateQueries';
+import { sceneLabels, sceneOptions } from '@/lib/sceneQueries';
 import { invoke } from '@/lib/bridge';
 import { QueueButton, useQueue } from '@/components/QueueButton';
 import { albumHref, artistHref, fmtDate, fmtHours, fmtInt, trackHref } from '@/lib/format';
@@ -25,7 +26,9 @@ const SHELVES: { id: Shelf; label: string; blurb: string }[] = [
   { id: 'rediscover', label: 'Rediscover', blurb: 'Played hard once, untouched for a year or more.' },
 ];
 const SORTS: { id: CrateSort; label: string }[] = [{ id: 'section', label: 'by section' }, { id: 'obscurity', label: 'rarest first' }, { id: 'plays', label: 'most played' }, { id: 'recent', label: 'last played' }, { id: 'oldest', label: 'first played' }];
-const sectionLabel = (s: string) => ({ 'funk-soul': 'funk & soul', 'post-punk': 'post-punk', 'hip-hop': 'hip-hop', 'classic-rock': 'classic rock', afro: 'afro', psych: 'psych', dream: 'dream pop / shoegaze', unsorted: 'unsorted' } as Record<string, string>)[s] ?? s;
+/** Phase 9f: labels come from scene_families (the owner can add families), cached once per page load; the key itself is the fallback. */
+let LABELS: Record<string, string> = { unsorted: 'unsorted' };
+const sectionLabel = (s: string) => LABELS[s] ?? s.replace(/-/g, ' ');
 
 export function CratePage() {
   const { filter } = useFilter();
@@ -33,6 +36,8 @@ export function CratePage() {
   const [sort, setSort] = useState<CrateSort>('section');
   const [section, setSection] = useState<string | null>(null);
   const summary = useAsync(crateSummary, [filter]);
+  const labels = useAsync(sceneLabels, []);
+  useEffect(() => { if (labels.data) LABELS = { ...labels.data, unsorted: 'unsorted' }; }, [labels.data]);
   const sections = useAsync(() => crateSections(shelf), [filter, shelf]);
   const [fbTick, setFbTick] = useState(0);
   const records = useAsync(() => crateRecords({ shelf, section, sort: shelf === 'backroom' && sort === 'section' ? 'obscurity' : sort }), [filter, shelf, section, sort, fbTick]);
@@ -84,15 +89,15 @@ export function CratePage() {
             <button onClick={() => { setSection(null); setI(0); }} className={`rounded-md border-b-2 px-2 py-1 text-xs ${section === null && !currentSection ? 'border-amber text-cream' : 'border-line text-dust hover:text-cream'}`}>all</button>
             {sections.data.map((s) => { const active = section === s.section || (section === null && currentSection === s.section); return (
               <span key={s.section} className={`flex items-stretch rounded-md border-b-2 text-xs capitalize transition-colors ${active ? 'border-amber' : 'border-line'}`}>
-                <button role="tab" aria-selected={active} onClick={() => { if (section === null && hasDividers) jumpTo(s.section); else { setSection(s.section === 'unsorted' ? null : s.section); } }}
+                <button role="tab" aria-selected={active} onClick={() => { if (section === null && hasDividers && deck.some((d) => d.kind === 'divider' && d.section === s.section)) jumpTo(s.section); else setSection(s.section); }}
                   title={section === null && hasDividers ? `Jump to the ${sectionLabel(s.section)} divider` : `Show only ${sectionLabel(s.section)}`}
                   className={`px-2 py-1 ${active ? 'text-cream' : 'text-dust hover:text-cream'}`}>{sectionLabel(s.section)} <span className="num text-dust/70">{s.records}</span></button>
-                {section === null && hasDividers && s.section !== 'unsorted' && <button onClick={() => setSection(s.section)} title={`Only ${sectionLabel(s.section)}`} aria-label={`Filter to ${sectionLabel(s.section)}`} className="border-l border-line/60 px-1.5 text-dust/60 hover:text-amber">⊙</button>}
+                {section === null && hasDividers && <button onClick={() => setSection(s.section)} title={`Only ${sectionLabel(s.section)}`} aria-label={`Filter to ${sectionLabel(s.section)}`} className="border-l border-line/60 px-1.5 text-dust/60 hover:text-amber">⊙</button>}
               </span>
             ); })}
             {section && <button onClick={() => setSection(null)} className="px-2 py-1 text-xs text-amber hover:text-cream">× show every section</button>}
           </div>
-          <p className="mt-1.5 text-[11px] text-dust/70">Sections come from each artist's Last.fm / MusicBrainz tags mapped onto {SCENES.length} scene families — the same map Scenes uses. Click a name to jump to its divider, ⊙ to show only that section; misfiled records can be re-filed from the record card.</p>
+          <p className="mt-1.5 text-[11px] text-dust/70">Sections come from each artist's Last.fm / MusicBrainz tags mapped onto {labels.data ? Object.keys(labels.data).length - 1 : 'the'} scene families — the same vocabulary Scenes uses, editable in <Link to="/settings?tab=tuning" className="underline hover:text-cream">Settings → Tuning → Scenes</Link>. Click a name to jump to its divider, ⊙ to show only that section (unsorted included); misfiled records can be re-filed from the record card.</p>
         </div>
       )}
       {deckHint && <p className="mb-3 text-xs text-moss">{deckHint}</p>}
@@ -261,6 +266,7 @@ function Filing({ r }: { r: CrateRecord }) {
   const [open, setOpen] = useState(false);
   const [cur, setCur] = useState<string | null>(r.section);
   const [saved, setSaved] = useState(false);
+  const options = useAsync(sceneOptions, []);
   const file = async (scene: string | null) => { if (!r.artistId) return; setCur(scene); setOpen(false); await invoke('set_artist_scene', { artistId: r.artistId, scene }).catch(() => {}); setSaved(true); };
   return (
     <span className="mr-1 inline-flex items-center gap-1">
@@ -269,7 +275,8 @@ function Filing({ r }: { r: CrateRecord }) {
       {open && (
         <span className="absolute z-20 mt-6 max-w-sm rounded-xl border border-line bg-surface p-3 text-xs shadow-glow">
           <p className="mb-2 normal-case text-dust">{r.topTags.length ? <>Tags for {r.artist}: {r.topTags.join(', ')}. </> : null}File {r.artist} under:</p>
-          <span className="flex flex-wrap gap-1">{SCENES.map((sc) => <button key={sc} onClick={() => file(sc)} className={`rounded-full border px-2 py-0.5 capitalize ${cur === sc ? 'border-amber text-cream' : 'border-line text-dust hover:text-cream'}`}>{sectionLabel(sc)}</button>)}<button onClick={() => file(null)} className="rounded-full border border-line px-2 py-0.5 text-dust hover:text-coral">unsorted</button></span>
+          {(['region', 'style'] as const).map((k) => <span key={k} className="mb-1 block"><span className="mr-1 text-[10px] uppercase tracking-wide text-dust/60">{k === 'region' ? 'regions' : 'styles'}</span><span className="inline-flex flex-wrap gap-1">{(options.data ?? []).filter((o) => o.kind === k).map((o) => <button key={o.scene} onClick={() => file(o.scene)} className={`rounded-full border px-2 py-0.5 ${cur === o.scene ? 'border-amber text-cream' : 'border-line text-dust hover:text-cream'}`}>{o.label}</button>)}</span></span>)}
+          <span className="flex flex-wrap gap-1"><button onClick={() => file(null)} className="rounded-full border border-line px-2 py-0.5 text-dust hover:text-coral">unsorted</button><Link to="/settings?tab=tuning" className="rounded-full border border-dashed border-line px-2 py-0.5 text-dust hover:text-amber">+ new family…</Link></span>
           <p className="mt-2 normal-case text-dust/70">Takes effect on the next flip through and everywhere Scenes are used. Reloads of the crate reflect it immediately.</p>
         </span>
       )}

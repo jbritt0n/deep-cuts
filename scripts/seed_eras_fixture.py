@@ -33,6 +33,6 @@ for p, artists in enumerate(phases):
             for k in range(3): play(wk + dt.timedelta(days=d, hours=18, minutes=5 * k), f"Noise {d}{k}", f"Stranger {d}{k}")
 for f in ('entity_resolution.sql', 'compute_sessions.sql', 'compute_milestones.sql'): con.execute(rd(f))
 for a in afro: con.execute("INSERT INTO artist_tags (artist_id, tag, weight, source) VALUES (?, 'afrobeat', 0.9, 'lastfm')", [f"name:{a.lower()}"])
-con.execute(rd('compute_insights.sql'))
+con.execute(rd('compute_scenes.sql')); con.execute(rd('compute_insights.sql'))
 con.execute("CHECKPOINT")
 print("plays", con.execute("SELECT COUNT(*) FROM plays_resolved").fetchone()[0], "weeks", week, "→", DB)

@@ -14,6 +14,7 @@ mod spotify;
 mod tray;
 
 mod llm; // Phase 9e — Ollama provider (spec §9.1)
+mod migrate; // Phase 9f — move the whole record to another computer
 
 use db::Db;
 use std::sync::atomic::AtomicBool;
@@ -21,7 +22,7 @@ use std::sync::{Arc, Mutex};
 use tauri::Manager;
 
 /// Bump when the SQL pipeline changes so existing records rebuild on first launch.
-pub const PIPELINE_REV: &str = "9";
+pub const PIPELINE_REV: &str = "10";   // Phase 9f: scenes from tables, lyric v2 view, playlist sync columns
 
 pub struct AppState {
     pub paths: paths::DataPaths,
@@ -183,6 +184,19 @@ pub fn run() {
             commands::lastfm_wild_connect,
             commands::lastfm_wild_disconnect,
             commands::lastfm_wild_reset,
+            // Phase 9f
+            commands::lyrics_status,
+            commands::forecast_log_write,
+            commands::freqblog_connect,
+            commands::freqblog_disconnect,
+            commands::scene_family_upsert,
+            commands::scene_family_delete,
+            commands::scene_tag_set,
+            commands::scene_origin_set,
+            commands::recompute_scenes,
+            commands::export_move_bundle,
+            commands::inspect_move_bundle,
+            commands::restore_move_bundle,
         ])
         .on_window_event(|window, event| {
             // Close hides to the tray so the poller keeps running (ING-05). Quit from the tray menu.

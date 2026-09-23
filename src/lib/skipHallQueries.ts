@@ -10,12 +10,13 @@
  *     negative signal the recommendation engines have; they can read it later.
  * Playlist-context vs own-play skips are not separable today (plays don't record which playlist they came from).
  */
+import { numSetting } from './settings';
 import { query, num, str } from './db';
 import { playsWhere } from './filter';
 
 export type SkipHallRow = { trackId: string; track: string; artistId: string | null; artist: string; shown: number; skipped: number; skipRate: number; firstSkipped: string; lastSkipped: string; sessions: number; meanMs: number; verdict: string | null };
 
-export async function skipHall(limit = 60, minShown = 8, minRate = 0.85): Promise<{ rows: SkipHallRow[]; tried: SkipHallRow[]; confirmed: SkipHallRow[] }> {
+export async function skipHall(limit = 60, minShown = Math.round(numSetting('skiphall_min_shown')), minRate = numSetting('skiphall_min_rate')): Promise<{ rows: SkipHallRow[]; tried: SkipHallRow[]; confirmed: SkipHallRow[] }> {
   const rows = (await query(`
     WITH spree AS (SELECT session_id FROM sessions WHERE skip_count >= 10 AND skip_rate >= 0.7),
     p AS (SELECT p.track_id, p.track_name, p.artist_id, p.artist_name, p.was_skipped, p.played_at, p.ms_played, ps.session_id

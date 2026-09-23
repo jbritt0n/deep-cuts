@@ -23,11 +23,14 @@ import { numSetting } from './settings';
 
 export type ThreadWeek = { week: string; hours: number; share: number };
 export type GenreThread = {
-  tag: string; start: string; end: string; endExclusive: string; weeks: number; hours: number; peakShare: number; meanShare: number;
+  tag: string; label: string; kind: 'tag' | 'decade' | 'scene'; start: string; end: string; endExclusive: string; weeks: number; hours: number; peakShare: number; meanShare: number;
   topArtists: { artistId: string; artist: string; hours: number }[]; inProgress: boolean; series: ThreadWeek[];
 };
-export type ThreadParams = { minWeeks: number; shareFloor: number; tagFloor: number; maxThreads: number; maxCoverage: number; decades: boolean };
-export const THREAD_DEFAULTS: ThreadParams = { minWeeks: 3, shareFloor: 0.08, tagFloor: 0.2, maxThreads: 12, maxCoverage: 0.2, decades: true };
+export type ThreadParams = { minWeeks: number; shareFloor: number; tagFloor: number; maxThreads: number; maxCoverage: number; decades: boolean; scenes: boolean };
+export const THREAD_DEFAULTS: ThreadParams = { minWeeks: 3, shareFloor: 0.08, tagFloor: 0.2, maxThreads: 12, maxCoverage: 0.2, decades: true, scenes: true };
+/** Phase 9g: scene-family threads carry this prefix in `tag` ('scene:west-african'); `threadLabel` renders them. */
+export const SCENE_PREFIX = 'scene:';
+export const isSceneThread = (tag: string) => tag.startsWith(SCENE_PREFIX);
 
 /**
  * Phase 9e (owner: "rock could mean many things"): tags too broad to be a thread. Two filters, both applied:
@@ -37,7 +40,7 @@ export const THREAD_DEFAULTS: ThreadParams = { minWeeks: 3, shareFloor: 0.08, ta
  */
 export const GENERIC_TAGS = new Set(['rock', 'pop', 'indie', 'alternative', 'alternative rock', 'indie rock', 'indie pop', 'electronic', 'electronica', 'experimental', 'seen live', 'favorites', 'favourites', 'favorite', 'awesome', 'love', 'beautiful', 'chill', 'chillout', 'male vocalists', 'female vocalists', 'female vocalist', 'male vocalist', 'singer-songwriter', 'american', 'british', 'usa', 'uk', 'english', 'canadian', 'australian', 'german', 'french', '00s', '90s', '80s', '70s', '60s', '10s', '2000s', '2010s', '2020s', 'under 2000 listeners', 'all', 'music', 'good', 'cool', 'fun', 'classic', 'soundtrack', 'instrumental', 'live', 'cover', 'covers', 'remix', 'compilation', 'various artists', 'oldies', 'new', 'old']);
 /** Defaults with the owner's tag floor applied (Settings → Tuning). */
-const threadDefaults = (): ThreadParams => ({ ...THREAD_DEFAULTS, tagFloor: numSetting('tag_floor') });
+const threadDefaults = (): ThreadParams => ({ ...THREAD_DEFAULTS, tagFloor: numSetting('tag_floor'), minWeeks: Math.round(numSetting('thread_min_weeks')), shareFloor: numSetting('thread_share_floor'), maxCoverage: numSetting('thread_max_coverage'), scenes: numSetting('thread_scenes') >= 0.5 });
 
 /** Contiguous runs of weeks where `share >= floor`, at least `minWeeks` long. Weeks are consecutive ISO Mondays; a missing week breaks the run. */
 export function findRuns(weeks: ThreadWeek[], floor: number, minWeeks: number): ThreadWeek[][] {
@@ -78,6 +81,30 @@ export async function tagWeekShares(tagFloor = THREAD_DEFAULTS.tagFloor, weekFlo
 }
 
 /**
+ * Phase 9g: scene families as a third kind of thread (roadmap: "collapse genre threads onto scene families").
+ * Share of each week's listening from artists whose strongest family is X. Families are broader than tags, so a
+ * scene thread is the "what kind of music ruled these weeks" line; tag threads keep the niche detail underneath.
+ * The coverage ceiling does not apply — a family covering half your artists is exactly what an era is made of.
+ */
+export async function sceneWeekShares(weekFloorH = 0.5): Promise<ShareRow[]> {
+  return (await query(`
+    WITH w AS (SELECT DATE_TRUNC('week', played_at)::DATE AS wk, artist_id, SUM(ms_played)/3600000.0 AS h
+               FROM plays_resolved WHERE artist_id IS NOT NULL ${playsWhere()} GROUP BY 1, 2),
+    tot AS (SELECT wk, SUM(h) AS th FROM w GROUP BY 1 HAVING SUM(h) >= ${Number(weekFloorH)}),
+    sc AS (SELECT s.artist_id, arg_max(s.scene, s.weight) AS scene FROM artist_scene s JOIN scene_families f USING (scene) WHERE NOT f.hidden GROUP BY 1),
+    sw AS (SELECT sc.scene, w.wk, SUM(w.h) AS h FROM w JOIN sc USING (artist_id) GROUP BY 1, 2)
+    SELECT '${SCENE_PREFIX}' || sw.scene AS tag, CAST(sw.wk AS VARCHAR) AS wk, ROUND(sw.h, 2) AS h, sw.h / tot.th AS share
+    FROM sw JOIN tot USING (wk) ORDER BY 1, 2`)).map((r) => ({ tag: String(r.tag), week: String(r.wk).slice(0, 10), hours: num(r.h), share: num(r.share) }));
+}
+
+/** Display label for any thread tag: 'scene:west-african' → 'West African', '1970s' → '1970s', 'slowcore' → 'slowcore'. */
+export async function threadLabels(): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  for (const r of await query(`SELECT scene, label FROM scene_families`)) out[SCENE_PREFIX + String(r.scene)] = String(r.label ?? r.scene);
+  return out;
+}
+
+/**
  * Phase 9e: decades as a second kind of thread — the share of each week's listening from tracks RELEASED in a decade
  * (Spotify enrichment's release_date). Tagged '1970s' etc. so they display like genre threads; the current decade is
  * skipped because most listening is recent and it would always be a thread.
@@ -92,7 +119,7 @@ export async function decadeWeekShares(weekFloorH = 0.5): Promise<ShareRow[]> {
 }
 
 /** Top artists carrying `tag` inside a span — the names on a thread's card. */
-async function threadArtists(tag: string, from: string, toExclusive: string, tagFloor: number, n = 3) {
+export async function threadArtists(tag: string, from: string, toExclusive: string, tagFloor: number, n = 3) {
   if (/^\d{4}s$/.test(tag)) {
     const d = Number(tag.slice(0, 4));
     return (await query(`
@@ -101,11 +128,13 @@ async function threadArtists(tag: string, from: string, toExclusive: string, tag
       WHERE EXTRACT(year FROM t.release_date) >= $1 AND EXTRACT(year FROM t.release_date) < $1 + 10 AND p.played_at >= CAST($2 AS DATE) AND p.played_at < CAST($3 AS DATE) ${playsWhere('p')}
       GROUP BY 1 ORDER BY h DESC LIMIT ${n}`, [d, from, toExclusive])).map((r) => ({ artistId: String(r.artist_id), artist: String(r.name), hours: num(r.h) }));
   }
+  const src = isSceneThread(tag) ? `(SELECT artist_id FROM artist_scene s WHERE s.scene = $1 QUALIFY s.weight = MAX(s.weight) OVER (PARTITION BY artist_id))` : `(SELECT artist_id FROM artist_tags WHERE tag = $1 AND weight >= ${Number(tagFloor)} GROUP BY 1)`;
+  const key = isSceneThread(tag) ? tag.slice(SCENE_PREFIX.length) : tag;
   return (await query(`
     SELECT p.artist_id, arg_max(p.artist_name, p.ms_played) AS name, ROUND(SUM(p.ms_played)/3600000.0, 1) AS h
-    FROM plays_resolved p JOIN (SELECT artist_id FROM artist_tags WHERE tag = $1 AND weight >= ${Number(tagFloor)} GROUP BY 1) t USING (artist_id)
+    FROM plays_resolved p JOIN ${src} t USING (artist_id)
     WHERE p.played_at >= CAST($2 AS DATE) AND p.played_at < CAST($3 AS DATE) ${playsWhere('p')}
-    GROUP BY 1 ORDER BY h DESC LIMIT ${n}`, [tag, from, toExclusive])).map((r) => ({ artistId: String(r.artist_id), artist: String(r.name), hours: num(r.h) }));
+    GROUP BY 1 ORDER BY h DESC LIMIT ${n}`, [key, from, toExclusive])).map((r) => ({ artistId: String(r.artist_id), artist: String(r.name), hours: num(r.h) }));
 }
 
 /**
@@ -114,16 +143,17 @@ async function threadArtists(tag: string, from: string, toExclusive: string, tag
  */
 export async function genreThreads(params?: Partial<ThreadParams>): Promise<GenreThread[]> {
   const p = { ...threadDefaults(), ...(params ?? {}) };
-  const rows = [...await tagWeekShares(p.tagFloor, 0.5, p.maxCoverage), ...(p.decades ? await decadeWeekShares() : [])];
+  const rows = [...await tagWeekShares(p.tagFloor, 0.5, p.maxCoverage), ...(p.decades ? await decadeWeekShares() : []), ...(p.scenes ? await sceneWeekShares() : [])];
   const byTag = new Map<string, ThreadWeek[]>();
   for (const r of rows) { const arr = byTag.get(r.tag) ?? []; arr.push({ week: r.week, hours: r.hours, share: r.share }); byTag.set(r.tag, arr); }
   const thisWeek = isoMonday(localToday());
+  const labels = p.scenes ? await threadLabels() : {};
   const candidates: Omit<GenreThread, 'topArtists'>[] = [];
   for (const [tag, weeks] of byTag) {
     for (const run of findRuns(weeks, p.shareFloor, p.minWeeks)) {
       const start = run[0].week, end = run[run.length - 1].week;
       const hours = run.reduce((s, w) => s + w.hours, 0);
-      candidates.push({ tag, start, end, endExclusive: addDays(end, 7), weeks: run.length, hours, peakShare: Math.max(...run.map((w) => w.share)), meanShare: run.reduce((s, w) => s + w.share, 0) / run.length, inProgress: end === thisWeek, series: run });
+      candidates.push({ tag, label: labels[tag] ?? tag, kind: isSceneThread(tag) ? 'scene' : /^\d{4}s$/.test(tag) ? 'decade' : 'tag', start, end, endExclusive: addDays(end, 7), weeks: run.length, hours, peakShare: Math.max(...run.map((w) => w.share)), meanShare: run.reduce((s, w) => s + w.share, 0) / run.length, inProgress: end === thisWeek, series: run });
     }
   }
   candidates.sort((a, b) => b.hours - a.hours);
@@ -144,12 +174,14 @@ export async function threadTracks(tag: string, from: string, toExclusive: strin
       WHERE EXTRACT(year FROM t.release_date) >= $1 AND EXTRACT(year FROM t.release_date) < $1 + 10 AND p.track_id IS NOT NULL AND p.played_at >= CAST($2 AS DATE) AND p.played_at < CAST($3 AS DATE) ${playsWhere('p')}
       GROUP BY 1, 2, 3, 4 ORDER BY SUM(p.ms_played) DESC LIMIT ${n}`, [d, from, toExclusive])).map((r) => ({ trackId: String(r.trackId), track: String(r.track), artistId: str(r.artistId), artist: String(r.artist ?? ''), plays: num(r.plays), hours: num(r.hours), skipRate: num(r.skipRate) }));
   }
+  const src = isSceneThread(tag) ? `(SELECT artist_id FROM artist_scene s WHERE s.scene = $1 QUALIFY s.weight = MAX(s.weight) OVER (PARTITION BY artist_id))` : `(SELECT artist_id FROM artist_tags WHERE tag = $1 AND weight >= ${Number(tagFloor)} GROUP BY 1)`;
+  const key = isSceneThread(tag) ? tag.slice(SCENE_PREFIX.length) : tag;
   return (await query(`
     SELECT p.track_id AS "trackId", p.track_name AS track, p.artist_id AS "artistId", p.artist_name AS artist, COUNT(*) AS plays,
            ROUND(SUM(p.ms_played)/3600000.0, 1) AS hours, AVG(CASE WHEN p.was_skipped THEN 1.0 ELSE 0 END) AS "skipRate"
-    FROM plays_resolved p JOIN (SELECT artist_id FROM artist_tags WHERE tag = $1 AND weight >= ${Number(tagFloor)} GROUP BY 1) t USING (artist_id)
+    FROM plays_resolved p JOIN ${src} t USING (artist_id)
     WHERE p.track_id IS NOT NULL AND p.played_at >= CAST($2 AS DATE) AND p.played_at < CAST($3 AS DATE) ${playsWhere('p')}
-    GROUP BY 1, 2, 3, 4 ORDER BY SUM(p.ms_played) DESC LIMIT ${n}`, [tag, from, toExclusive])).map((r) => ({
+    GROUP BY 1, 2, 3, 4 ORDER BY SUM(p.ms_played) DESC LIMIT ${n}`, [key, from, toExclusive])).map((r) => ({
     trackId: String(r.trackId), track: String(r.track), artistId: str(r.artistId), artist: String(r.artist ?? ''), plays: num(r.plays), hours: num(r.hours), skipRate: num(r.skipRate),
   }));
 }

@@ -93,47 +93,104 @@ pub fn sync_liked(client: &SpotifyClient, db: &Db) -> Result<usize> {
     Ok(total)
 }
 
-/// ING-08: the user's own playlists + items (read-only).
+/// ING-08 (rewritten in Phase 9f): the user's playlists + items, in two passes.
+///
+/// Why two passes: the 9e version fetched every playlist's items inline, in the order Spotify returns
+/// them (newest first), and aborted the whole sync on the first error. Since Spotify closed its own
+/// playlists (Discover Weekly, editorial lists) to third-party apps, a followed one near the top returned
+/// 403/404 and killed the run — so playlists made before Deep Cuts existed were never reached.
+///   Pass 1 pages `/me/playlists` and upserts every playlist's metadata (≈ N/50 calls, always completes).
+///   Pass 2 fetches items only where needed — never synced, or Spotify's `snapshot_id` moved — your own
+///   playlists first, then followed, oldest-known first so a quota cut-off rotates through the backlog.
+///   A per-playlist failure is recorded in `playlists.sync_error` and the loop continues; a quota error
+///   stops pass 2 but pass 1's metadata is already saved. Returns (playlists seen, item syncs done).
 pub fn sync_playlists(client: &SpotifyClient, db: &Db, me_id: &str) -> Result<usize> {
+    let (seen, _) = sync_playlists_detailed(client, db, me_id)?;
+    Ok(seen)
+}
+
+pub fn sync_playlists_detailed(client: &SpotifyClient, db: &Db, me_id: &str) -> Result<(usize, usize)> {
+    // ---- pass 1: metadata
     let mut offset = 0u32;
-    let mut n = 0usize;
+    let mut seen = 0usize;
+    let mut live_ids: Vec<String> = Vec::new();
     loop {
         let v = client.get(db, &ep::my_playlists(50, offset), true).map_err(|e| anyhow::anyhow!("{e}"))?;
         let items = v[f::ITEMS].as_array().cloned().unwrap_or_default();
         if items.is_empty() { break; }
         for p in &items {
             let Some(id) = s(&p[f::ID]) else { continue };
-            let mine = s(&p[f::OWNER][f::ID]).as_deref() == Some(me_id);
-            db.exec("INSERT INTO playlists (playlist_id, name, description, owner_is_me, track_count, snapshot_id, public, synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, now()) \
-                     ON CONFLICT (playlist_id) DO UPDATE SET name = excluded.name, description = excluded.description, track_count = excluded.track_count, snapshot_id = excluded.snapshot_id, public = excluded.public, synced_at = now()",
-                &[json!(id), json!(s(&p[f::NAME])), json!(s(&p[f::DESCRIPTION])), json!(mine), json!(p["tracks"][f::TOTAL].as_i64().or(p[f::ITEMS][f::TOTAL].as_i64())), json!(s(&p[f::SNAPSHOT_ID])), json!(p[f::PUBLIC].as_bool())])?;
-            // items for your own playlists always; for followed ones up to 300 tracks each (quota-friendly)
-            let item_cap = if mine { u32::MAX } else { 300 };
-            {
-                db.exec("DELETE FROM playlist_items WHERE playlist_id = ?", &[json!(id)])?;
-                let mut off = 0u32; let mut pos = 0i64;
-                loop {
-                    let iv = client.get(db, &ep::playlist_items(&id, 100, off), true).map_err(|e| anyhow::anyhow!("{e}"))?;
-                    let its = iv[f::ITEMS].as_array().cloned().unwrap_or_default();
-                    if its.is_empty() { break; }
-                    for it in &its {
-                        let t = &it[f::ITEM]; // API-04
-                        if let Some(tid) = s(&t[f::ID]) {
-                            db.exec("INSERT INTO playlist_items (playlist_id, track_id, added_at, position) VALUES (?, ?, CAST(? AS TIMESTAMPTZ), ?)", &[json!(id), json!(tid), json!(s(&it[f::ADDED_AT])), json!(pos)])?;
-                            pos += 1;
-                        }
-                    }
-                    if iv[f::NEXT].is_null() || off + 100 >= item_cap { break; }
-                    off += 100;
-                }
-            }
-            n += 1;
+            let owner_id = s(&p[f::OWNER][f::ID]);
+            let mine = owner_id.as_deref() == Some(me_id);
+            db.exec("INSERT INTO playlists (playlist_id, name, description, owner_is_me, owner_id, track_count, snapshot_id, public, synced_at, first_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, now(), now()) \
+                     ON CONFLICT (playlist_id) DO UPDATE SET name = excluded.name, description = excluded.description, owner_is_me = excluded.owner_is_me, owner_id = excluded.owner_id, track_count = excluded.track_count, snapshot_id = excluded.snapshot_id, public = excluded.public, synced_at = now()",
+                &[json!(id), json!(s(&p[f::NAME])), json!(s(&p[f::DESCRIPTION])), json!(mine), json!(owner_id), json!(p["tracks"][f::TOTAL].as_i64().or(p[f::ITEMS][f::TOTAL].as_i64())), json!(s(&p[f::SNAPSHOT_ID])), json!(p[f::PUBLIC].as_bool())])?;
+            live_ids.push(id);
+            seen += 1;
         }
         if v[f::NEXT].is_null() { break; }
         offset += 50;
     }
-    db.log_activity("sync", "info", &format!("Playlists synced: {n}"), None);
-    Ok(n)
+    // Spotify-made playlists can't be read by third-party apps any more: say so once, don't spend calls on them.
+    db.exec("UPDATE playlists SET sync_error = 'unreadable: Spotify-made playlists are closed to third-party apps' WHERE owner_id = 'spotify' AND sync_error IS NULL", &[])?;
+    db.log_activity("sync", "info", &format!("Playlists: {seen} known"), None);
+
+    // ---- pass 2: items where needed
+    let todo = db.query(
+        "SELECT playlist_id, owner_is_me, track_count FROM playlists
+         WHERE (sync_error IS NULL OR sync_error NOT LIKE 'unreadable:%')
+           AND (items_synced_at IS NULL OR items_snapshot_id IS DISTINCT FROM snapshot_id)
+         ORDER BY owner_is_me DESC, items_synced_at ASC NULLS FIRST, first_seen_at ASC", &[])?;
+    let mut synced = 0usize;
+    for r in todo {
+        let Some(id) = r.get("playlist_id").and_then(|v| v.as_str()).map(str::to_string) else { continue };
+        let mine = r.get("owner_is_me").and_then(|v| v.as_bool()).unwrap_or(false);
+        // your own playlists in full; followed ones up to 500 tracks (quota-friendly, still covers almost all)
+        let item_cap = if mine { u32::MAX } else { 500 };
+        match fetch_items(client, db, &id, item_cap) {
+            Ok((n, snapshot)) => {
+                db.exec("UPDATE playlists SET items_synced_at = now(), items_snapshot_id = COALESCE(?, snapshot_id), sync_error = NULL WHERE playlist_id = ?", &[json!(snapshot), json!(id)])?;
+                let _ = n; synced += 1;
+            }
+            Err(ApiError::Quota) => { db.log_activity("sync", "warn", &format!("Playlist items: quota reached after {synced} playlists; the rest continue on the next sync"), None); break; }
+            Err(ApiError::Unauthorized) => break,
+            Err(ApiError::Http { status, body }) if status == 403 || status == 404 => {
+                db.exec("UPDATE playlists SET sync_error = ? WHERE playlist_id = ?", &[json!(format!("unreadable: Spotify {status} — {}", body.chars().take(120).collect::<String>())), json!(id)])?;
+            }
+            Err(e) => {
+                db.exec("UPDATE playlists SET sync_error = ? WHERE playlist_id = ?", &[json!(format!("{e}").chars().take(200).collect::<String>()), json!(id)])?;
+                log::warn!("playlist {id}: {e}");
+            }
+        }
+    }
+    let _ = live_ids;
+    db.log_activity("sync", "info", &format!("Playlists synced: {seen} known, items refreshed for {synced}"), None);
+    Ok((seen, synced))
+}
+
+/// Replace one playlist's items. Returns (items written, snapshot_id reported by the items endpoint if any).
+/// The DELETE happens only after the first page arrives, so a failing playlist keeps its old items.
+fn fetch_items(client: &SpotifyClient, db: &Db, id: &str, item_cap: u32) -> Result<(i64, Option<String>), ApiError> {
+    let mut off = 0u32; let mut pos = 0i64; let mut cleared = false;
+    let mut snapshot: Option<String> = None;
+    loop {
+        let iv = client.get(db, &ep::playlist_items(id, 100, off), true)?;
+        if snapshot.is_none() { snapshot = s(&iv[f::SNAPSHOT_ID]); }
+        let its = iv[f::ITEMS].as_array().cloned().unwrap_or_default();
+        if !cleared { db.exec("DELETE FROM playlist_items WHERE playlist_id = ?", &[json!(id)]).map_err(ApiError::Other)?; cleared = true; }
+        if its.is_empty() { break; }
+        for it in &its {
+            let t = &it[f::ITEM]; // API-04
+            if let Some(tid) = s(&t[f::ID]) {
+                db.exec("INSERT INTO playlist_items (playlist_id, track_id, added_at, position) VALUES (?, ?, CAST(? AS TIMESTAMPTZ), ?)", &[json!(id), json!(tid), json!(s(&it[f::ADDED_AT])), json!(pos)]).map_err(ApiError::Other)?;
+                pos += 1;
+            }
+        }
+        if iv[f::NEXT].is_null() || off + 100 >= item_cap { break; }
+        off += 100;
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+    Ok((pos, snapshot))
 }
 
 /// Write everything a full track object tells us (also used by liked-songs sync,
