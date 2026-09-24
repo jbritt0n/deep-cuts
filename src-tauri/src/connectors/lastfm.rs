@@ -80,6 +80,7 @@ pub fn enrich_tags(db: &Db, max_artists: usize) -> Result<usize> {
         n += 1;
     }
     if n > 0 { set_state(db, "lastfm", "connected", None, None); db.log_activity("lastfm", "info", &format!("Tagged {n} artists"), None); }
+    db.apply_tag_blocks()?;
     Ok(n)
 }
 

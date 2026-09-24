@@ -1,6 +1,7 @@
 import { C } from '@/lib/theme';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
+import { SessionArc } from '@/components/SoundTools';
 import { DEFAULT_SESSION_FILTERS, PAGE, getSessionDetail, getSessionsOverview, listSessions, type SessionFilters } from '@/lib/sessionQueries';
 import { useAsync, useDebounced, useFilter } from '@/lib/hooks';
 import { QueueButton } from '@/components/QueueButton';
@@ -233,6 +234,7 @@ function SessionDetailPage({ id }: { id: string }) {
           <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-dust">{[...new Set(d.plays.map((p) => p.scene).filter(Boolean))].map((sc) => <span key={sc} className="flex items-center gap-1 capitalize"><span className="inline-block h-2 w-2 rounded-sm" style={{ background: `hsl(${sceneHue(sc!)} 40% 45%)` }} />{sc!.replace('-', ' ')}</span>)}{d.plays.some((p) => !p.scene) && <span className="flex items-center gap-1"><span className="inline-block h-2 w-2 rounded-sm border border-line" />no scene yet</span>}</div>
         </section>
       )}
+      <div className="mt-6"><SessionArc sessionId={id} /></div>
       <section className="mt-6 grid gap-6 lg:grid-cols-[1.5fr_1fr]">
         <Card title="Run-through" subtitle="Bar length is how long each play ran. Red is a skip, violet is autoplay you weren't there for.">
           <ol className="divide-y divide-line/60">

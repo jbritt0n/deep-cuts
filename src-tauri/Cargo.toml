@@ -41,6 +41,8 @@ base64 = "0.22"
 rand = "0.8"
 # Phase 9f: passphrase-encrypted secrets inside the move bundle (migrate.rs)
 chacha20poly1305 = "0.10"
+# Phase 9m: Stylus — the small synchronous HTTP server behind the ListenBrainz-compatible receiver
+tiny_http = "0.12"
 url = "2"
 urlencoding = "2"
 env_logger = "0.11"

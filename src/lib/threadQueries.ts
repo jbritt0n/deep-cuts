@@ -26,8 +26,8 @@ export type GenreThread = {
   tag: string; label: string; kind: 'tag' | 'decade' | 'scene'; start: string; end: string; endExclusive: string; weeks: number; hours: number; peakShare: number; meanShare: number;
   topArtists: { artistId: string; artist: string; hours: number }[]; inProgress: boolean; series: ThreadWeek[];
 };
-export type ThreadParams = { minWeeks: number; shareFloor: number; tagFloor: number; maxThreads: number; maxCoverage: number; decades: boolean; scenes: boolean; perYear: number };
-export const THREAD_DEFAULTS: ThreadParams = { minWeeks: 3, shareFloor: 0.08, tagFloor: 0.2, maxThreads: 24, maxCoverage: 0.2, decades: true, scenes: true, perYear: 2 };
+export type ThreadParams = { minWeeks: number; shareFloor: number; tagFloor: number; maxThreads: number; maxCoverage: number; decades: boolean; scenes: boolean; perYear: number; maxScene: number; maxDecade: number };
+export const THREAD_DEFAULTS: ThreadParams = { minWeeks: 3, shareFloor: 0.08, tagFloor: 0.2, maxThreads: 24, maxCoverage: 0.2, decades: true, scenes: true, perYear: 2, maxScene: 8, maxDecade: 4 };
 /** Phase 9g: scene-family threads carry this prefix in `tag` ('scene:west-african'); `threadLabel` renders them. */
 export const SCENE_PREFIX = 'scene:';
 export const isSceneThread = (tag: string) => tag.startsWith(SCENE_PREFIX);
@@ -40,7 +40,7 @@ export const isSceneThread = (tag: string) => tag.startsWith(SCENE_PREFIX);
  */
 export const GENERIC_TAGS = new Set(['rock', 'pop', 'indie', 'alternative', 'alternative rock', 'indie rock', 'indie pop', 'electronic', 'electronica', 'experimental', 'seen live', 'favorites', 'favourites', 'favorite', 'awesome', 'love', 'beautiful', 'chill', 'chillout', 'male vocalists', 'female vocalists', 'female vocalist', 'male vocalist', 'singer-songwriter', 'american', 'british', 'usa', 'uk', 'english', 'canadian', 'australian', 'german', 'french', '00s', '90s', '80s', '70s', '60s', '10s', '2000s', '2010s', '2020s', 'under 2000 listeners', 'all', 'music', 'good', 'cool', 'fun', 'classic', 'soundtrack', 'instrumental', 'live', 'cover', 'covers', 'remix', 'compilation', 'various artists', 'oldies', 'new', 'old']);
 /** Defaults with the owner's tag floor applied (Settings → Tuning). */
-const threadDefaults = (): ThreadParams => ({ ...THREAD_DEFAULTS, tagFloor: numSetting('tag_floor'), minWeeks: Math.round(numSetting('thread_min_weeks')), shareFloor: numSetting('thread_share_floor'), maxCoverage: numSetting('thread_max_coverage'), scenes: numSetting('thread_scenes') >= 0.5, maxThreads: Math.round(numSetting('thread_max')), perYear: Math.round(numSetting('thread_per_year')) });
+const threadDefaults = (): ThreadParams => ({ ...THREAD_DEFAULTS, tagFloor: numSetting('tag_floor'), minWeeks: Math.round(numSetting('thread_min_weeks')), shareFloor: numSetting('thread_share_floor'), maxCoverage: numSetting('thread_max_coverage'), scenes: numSetting('thread_scenes') >= 0.5, maxThreads: Math.round(numSetting('thread_max')), perYear: Math.round(numSetting('thread_per_year')), maxScene: Math.round(numSetting('thread_max_scene')), maxDecade: Math.round(numSetting('thread_max_decade')) });
 
 /** Contiguous runs of weeks where `share >= floor`, at least `minWeeks` long. Weeks are consecutive ISO Mondays; a missing week breaks the run. */
 export function findRuns(weeks: ThreadWeek[], floor: number, minWeeks: number): ThreadWeek[][] {
@@ -165,9 +165,10 @@ export async function genreThreads(params?: Partial<ThreadParams>): Promise<Genr
   const cap = Math.max(1, p.maxThreads);
   const recentCut = addDays(thisWeek, -84);
   const chosen = new Set<(typeof candidates)[number]>();
-  const sceneCap = Math.max(1, Math.floor(cap / 3));
-  const scenesIn = () => [...chosen].filter((c) => c.kind === 'scene').length;
-  const take = (c: (typeof candidates)[number]) => { if (chosen.size >= cap || chosen.has(c)) return; if (c.kind === 'scene' && scenesIn() >= sceneCap) return; chosen.add(c); };
+  // Phase 9m: per-kind caps (Tuning) instead of a fixed third — tag threads can't be crowded out by broad ones
+  const kindCap = { scene: Math.max(0, p.maxScene), decade: Math.max(0, p.maxDecade), tag: cap } as const;
+  const inKind = (k: string) => [...chosen].filter((c) => c.kind === k).length;
+  const take = (c: (typeof candidates)[number]) => { if (chosen.size >= cap || chosen.has(c)) return; if (inKind(c.kind) >= kindCap[c.kind as keyof typeof kindCap]) return; chosen.add(c); };
   candidates.filter((c) => c.end >= recentCut).slice(0, Math.max(2, Math.floor(cap / 3))).forEach(take);
   const years = [...new Set(candidates.map((c) => c.start.slice(0, 4)))].sort();
   for (const y of years) candidates.filter((c) => c.start.startsWith(y)).slice(0, Math.max(0, p.perYear)).forEach(take);

@@ -1,3 +1,4 @@
+import { StylusCard } from '@/components/StylusCard';
 import { C } from '@/lib/theme';
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
@@ -59,6 +60,7 @@ export function ServicesPage() {
               : <button disabled={!!busy} onClick={() => run('mb', () => invoke('musicbrainz_connect'), () => 'MusicBrainz connected. Artists resolve in the background.')} className="rounded-full bg-amber px-4 py-2 text-sm font-medium text-ink disabled:opacity-40">Connect</button>}
           </div>
         </ServiceCard>}
+        <div className="md:col-span-2"><StylusCard /></div>
         {fq && <ServiceCard row={fq} busy={busy} onSync={() => run('freqblog', () => invoke<string>('sync_now', { service: 'freqblog' }), (r) => String(r))}>
           <FreqblogBody row={fq} busy={busy} run={run} />
         </ServiceCard>}

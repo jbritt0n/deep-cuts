@@ -1,7 +1,7 @@
 # Deep Cuts v3 — Project Summary & Roadmap
-**Handoff document — September 22, 2026 (current through Phase 9i)**
+**Handoff document — September 22, 2026 (current through Phase 9m)**
 
-> For what to build next, read **`docs/HANDOFF-PHASE-9I.md`** — it is the working handoff. This file is the durable project summary.
+> For what to build next, read **`docs/HANDOFF-PHASE-9M.md`** — it is the working handoff. This file is the durable project summary.
 
 This file is written for whoever picks up this project next (human or AI agent). It summarizes what exists, how it's built, what's been tested, what's broken, and what's planned. Read this before touching code.
 
@@ -94,6 +94,32 @@ SQL/TS verified (tsc, 29 vitest, 14 fixtures, 9 smoke scripts incl. the Ask pipe
 - **Docker** (`docker/`, `docs/DOCKER.md`): `dev-server.mjs` grew into the headless server — serves `dist/`, `HOST`/`PORT`, `/_health`, `DEEPCUTS_READONLY` (opens the file read-only and refuses writes politely), `OLLAMA_URL` proxy. The container is the *analyst*; the desktop app stays the *collector* (connectors, tokens, the single DuckDB writer). `bridge.ts` uses same-origin when the UI is served by that server.
 - **9d feedback:** Settings → Record → **Stored data** (exact file size, estimated bytes per group, rows per table, sources). Crate sections: wrapped strip (no scrollbar), one-click jump vs ⊙ filter, highlight follows the front card, an explanation of how sections are derived, and **re-filing** an artist from the record card (`scene_overrides`, honoured by `compute_insights.sql`, applied immediately by `set_artist_scene`). Obscurity **tier word** beside the number. **Playlists**: ids deduped, 400 ms between 100-URI chunks, and the count Spotify reports is verified and shown when short; **queueMany** paces 250 ms and continues past one-off refusals. **Threads** exclude umbrella/meta tags and any tag on > 20 % of your artists, and gain **decade threads** from `tracks.release_date`. All background timestamps render in the record's zone (`fmtStamp`). **Lyric keyword cloud** on Insights (own SVG spiral layout; click a word → tracks → playlist).
 
+### Phase 9m — Stylus S1, era weather, per-kind thread caps, weather-gated dynamic playlists
+Verified: tsc, 39 vitest, 30 fixtures (+2 Stylus: real ListenBrainz shapes, privacy, paused, resend, scrobble-before-poll), 17 smoke scripts (`smoke-9m.ts` drives the receiver over HTTP), build, guard scan, 76 commands registered once. **Rust uncompiled** (handoff §1).
+- **Stylus S1** (`src-tauri/src/stylus.rs` on tiny_http; `stylus_process.sql`; tables `stylus_devices`, `stylus_inbox`, `stylus_now_playing`; five commands; `StylusCard.tsx`). Rust authenticates and queues; SQL parses, masks, dedupes. Resolution batched once a minute. ER rule: a Stylus play gives way to a Spotify row of the same listen.
+- **Era weather** (`rangeWeather`, `EraWeather` in the hover card). **Thread caps** (`thread_max_scene`, `thread_max_decade`). **Weather gate** (`DynamicPlaylist.weatherGate`).
+
+### Phase 9l — exports vs polls hardened, launch rebuild fixed, playlists from words
+Verified: tsc, 39 vitest, 28 fixtures (+2: start-or-end poll timestamps incl. back-to-back repeats; watermark), 16 smoke scripts (`smoke-9l.ts`), build, guard scan, command registration. **Rust uncompiled** (handoff §1).
+- **Dedupe**: `entity_resolution.sql` / `poll_insert.sql` match a polled play to an export row of the same track when the poll time is within 15 s of the export's start OR end. `sourceQueries.ts` + `SourceCoverageCard`.
+- **Startup**: watermark `app_meta.resolved_through` written at the end of entity_resolution.sql; `open_databases` returns `rebuild_needed`; the rebuild runs on a thread after setup with `app_meta.rebuilding` driving a banner in `Shell.tsx`. Root cause of repeated rebuilds: `events_n != resolved_n` is permanently true once an export supersedes polls.
+- **Ask v2** (`wordsPlaylist.ts`, `WordsPlaylist.tsx`): rule vocabulary (weather, hours, weekend, tempo, energy, mood, decades, bpm, size, freshness, obscurity) + your scene and tag names + lyric themes; optional validated LLM reading; deterministic scoring with reasons, ≤ 3 per artist; dynamic rule `words`.
+
+### Phase 9k — roadmap: weather, dynamic playlists, tempo dial, session arcs, mix-into
+Verified: tsc, 39 vitest (+3 weather), 26 fixtures, 15 smoke scripts (`smoke-9k.ts`), `vite build`, guard scan. **Rust uncompiled** (handoff §1).
+- **Weather** (`weather.ts` fetch + parse + gap planning; `weatherQueries.ts`; `weather_daily`; `weather_store` command; `WeatherCards.tsx`; CSP `connect-src` for Open-Meteo). History from the archive API for the record's span, last week + 7 days from the forecast API; forecast rows never overwrite observed ones.
+- **Dynamic playlists** (`dynamicPlaylists.ts`, `DynamicPlaylists.tsx`, app_meta `dynamic_playlists`; Rust `SpotifyClient::put`, `playlists::replace_items`, `replace_playlist_items`): seven rules, daily/weekly, rebuilt when due on launch, linked playlists replaced in place.
+- **Sound** (`tempoStations`, `sessionArc`, `mixInto`; `TempoDial`, `SessionArc`, `MixInto`, `KeepFresh`).
+- **Fix**: CSP `img-src` gained upload.wikimedia.org (9j's Wikipedia pictures were blocked).
+
+### Phase 9j — owner feedback on 9i.1: inferred skips, tag/scene editing, Wikipedia, audio-feature tools, roasts, achievements
+Verified: tsc, 36 vitest (+3 harmonic), 26 fixtures (+1 inferred skips keep sessions attended), 14 smoke scripts (`smoke-9j.ts` found and fixed a list-parameter bug), `vite build`. **Rust uncompiled** (see handoff §1).
+- **Skips from polls** (`plays_normalized`): polled ms_played = time until the next polled start (capped at duration); skip = moved on > 15 s early and < 85 % heard → end_reason 'fwdbtn', which also counts as an interaction for attention.
+- **Tags & scene** (`tag_blocks`, `artist_tag_edit`, `artist_scene_auto`, `Db::apply_tag_blocks` after Last.fm / MusicBrainz tag writes and at the start of compute_scenes.sql; `TagSceneEditor` on Artist + Song pages).
+- **Wikipedia** (`connectors/wikipedia.rs`, `artist_wiki`, `ArtistAbout`): MusicBrainz url-rels → Wikidata → sitelink (`wiki_lang`, English fallback) → REST summary; only verified matches.
+- **Audio features** (`harmonic.ts`, `soundAlike`, `artistSound`, `flowFeatures`, `SoundTools.tsx`).
+- **Roast Me** +11 receipts, openers, closers; **achievements** +16 (`moreAchievements`).
+
 ### Phase 9i — owner feedback on 9h.1: correctable metadata, trustworthy matching, FreqBlog, Eras, dedupe, demo
 Verified: tsc, 33 vitest, 25 fixtures (+3: export-after-polling dedupe, owner overrides survive rebuild, full demo build), 13 smoke scripts (`smoke-9i.ts`), `vite build`, guard scan. **Rust uncompiled** — `docs/HANDOFF-PHASE-9I.md` §1.
 - **Metadata** (`metaQueries.ts`, `MetadataPanel.tsx`; tables `artist_mb_match`, `metadata_overrides`, re-applied at the end of `entity_resolution.sql`; commands `meta_set`, `artist_set_origin`, `artist_mb_candidates`, `artist_set_mbid`).
@@ -153,7 +179,7 @@ SQL/TS verified (tsc, 29 vitest, 18 fixtures incl. four new, 10 smoke scripts in
 
 ## 3. What's next
 
-**Read `docs/HANDOFF-PHASE-9I.md`** first, then `docs/HANDOFF-PHASE-9H.md`, `docs/HANDOFF-PHASE-9G.md`, `docs/HANDOFF-PHASE-9F.md`, `docs/HANDOFF-PHASE-9E.md`, `docs/HANDOFF-PHASE-9D.md`, then `docs/HANDOFF-PHASE-9C.md` for what 9b/9c shipped, what must be compiled first, and what remains. `docs/HANDOFF-PHASE-9B.md` still carries the un-started 9b menu items (audio-features connector, dynamic playlists, world map, weekly review + Liner Notes redesign, remaining owner items) and the longer menu after that. Nothing is duplicated here so the two files can't drift.
+**Read `docs/HANDOFF-PHASE-9M.md`** first, then `docs/HANDOFF-PHASE-9L.md`, `docs/HANDOFF-PHASE-9K.md`, `docs/HANDOFF-PHASE-9J.md`, `docs/HANDOFF-PHASE-9I.md`, `docs/HANDOFF-PHASE-9H.md`, `docs/HANDOFF-PHASE-9G.md`, `docs/HANDOFF-PHASE-9F.md`, `docs/HANDOFF-PHASE-9E.md`, `docs/HANDOFF-PHASE-9D.md`, then `docs/HANDOFF-PHASE-9C.md` for what 9b/9c shipped, what must be compiled first, and what remains. `docs/HANDOFF-PHASE-9B.md` still carries the un-started 9b menu items (audio-features connector, dynamic playlists, world map, weekly review + Liner Notes redesign, remaining owner items) and the longer menu after that. Nothing is duplicated here so the two files can't drift.
 
 ---
 

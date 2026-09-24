@@ -175,7 +175,7 @@ pub fn set_setting(state: State<'_, AppState>, key: String, value: String) -> Cm
         // Phase 9f: lyrics v2 — let the local model name themes from the transient text
         "lyrics_llm_enabled",
         // Phase 9g: Settings → Tuning → threads / Not for me
-        "thread_min_weeks", "thread_share_floor", "thread_max", "thread_per_year", "thread_max_coverage", "thread_scenes", "skiphall_min_shown", "skiphall_min_rate",
+        "dynamic_playlists", "wiki_lang", "weather_lat", "weather_lon", "weather_place", "thread_min_weeks", "thread_share_floor", "thread_max", "thread_per_year", "thread_max_scene", "thread_max_decade", "thread_max_coverage", "thread_scenes", "skiphall_min_shown", "skiphall_min_rate",
         // Phase 9h: Atlas → Listening abroad
         "home_country"];
     if !ALLOWED.contains(&key.as_str()) {
@@ -519,6 +519,57 @@ pub async fn create_playlist(state: State<'_, AppState>, playlist: crate::playli
     tauri::async_runtime::spawn_blocking(move || crate::playlists::create(&client, &real, &playlist)).await.map_err(err)?.map_err(err)
 }
 
+// ---- Phase 9m: Stylus (src-tauri/src/stylus.rs; docs/STYLUS-SPEC.md)
+#[tauri::command]
+pub fn stylus_status() -> CmdResult<serde_json::Value> {
+    Ok(serde_json::json!({ "running": crate::stylus::running(), "defaultPort": crate::stylus::DEFAULT_PORT }))
+}
+
+/// Save enabled / port / LAN and (re)start or stop the receiver right away.
+#[tauri::command]
+pub fn stylus_configure(state: State<'_, AppState>, enabled: bool, port: Option<u16>, lan: bool) -> CmdResult<Option<String>> {
+    let db = &state.real;
+    for (k, v) in [("stylus_enabled", enabled.to_string()), ("stylus_port", port.unwrap_or(crate::stylus::DEFAULT_PORT).to_string()), ("stylus_lan", lan.to_string())] {
+        db.exec("INSERT INTO app_meta (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value", &[serde_json::json!(k), serde_json::json!(v)]).map_err(err)?;
+    }
+    if enabled { crate::stylus::start(state.real.clone()).map(Some).map_err(err) } else { crate::stylus::stop(); Ok(None) }
+}
+
+/// New device → its token, shown once (only the SHA-256 is stored).
+#[tauri::command]
+pub fn stylus_add_device(state: State<'_, AppState>, name: String) -> CmdResult<serde_json::Value> {
+    let name = name.trim().chars().take(60).collect::<String>();
+    if name.is_empty() { return Err("Give the device a name".into()); }
+    let token = crate::stylus::new_token();
+    let id = format!("dev_{}", &crate::stylus::new_token()[..12]);
+    state.real.exec("INSERT INTO stylus_devices (device_id, name, token_hash) VALUES (?, ?, ?)", &[serde_json::json!(id), serde_json::json!(name), serde_json::json!(crate::stylus::hash_token(&token))]).map_err(err)?;
+    state.real.log_activity("stylus", "info", &format!("Added device “{name}”"), None);
+    Ok(serde_json::json!({ "deviceId": id, "token": token }))
+}
+
+#[tauri::command]
+pub fn stylus_update_device(state: State<'_, AppState>, device_id: String, ts_precision: String, keep_player: bool, keep_service: bool, keep_device: bool, paused: bool) -> CmdResult<()> {
+    let p = if ["exact", "minute", "hour"].contains(&ts_precision.as_str()) { ts_precision } else { "exact".into() };
+    state.real.exec("UPDATE stylus_devices SET ts_precision = ?, keep_player = ?, keep_service = ?, keep_device = ?, paused = ? WHERE device_id = ?",
+        &[serde_json::json!(p), serde_json::json!(keep_player), serde_json::json!(keep_service), serde_json::json!(keep_device), serde_json::json!(paused), serde_json::json!(device_id)]).map_err(err)?;
+    Ok(())
+}
+
+/// Revoke a device's token. Its plays stay in the record.
+#[tauri::command]
+pub fn stylus_remove_device(state: State<'_, AppState>, device_id: String) -> CmdResult<()> {
+    state.real.exec("DELETE FROM stylus_devices WHERE device_id = ?", &[serde_json::json!(device_id)]).map_err(err)?;
+    state.real.exec("DELETE FROM stylus_now_playing WHERE device_id = ?", &[serde_json::json!(device_id)]).map_err(err)?;
+    Ok(())
+}
+
+/// Phase 9k — keep a Spotify playlist in sync with a dynamic playlist (replace its tracks in place).
+#[tauri::command]
+pub async fn replace_playlist_items(state: State<'_, AppState>, playlist_id: String, track_ids: Vec<String>) -> CmdResult<usize> {
+    let real = state.real.clone(); let client = state.spotify_ref();
+    tauri::async_runtime::spawn_blocking(move || crate::playlists::replace_items(&client, &real, &playlist_id, &track_ids)).await.map_err(err)?.map_err(err)
+}
+
 /// Phase 9e: is Ollama reachable, and which models does it have?
 #[tauri::command]
 pub async fn llm_status(state: State<'_, AppState>) -> CmdResult<crate::llm::LlmStatus> {
@@ -540,6 +591,63 @@ pub fn set_artist_scene(state: State<'_, AppState>, artist_id: String, scene: Op
     db.exec("INSERT INTO scene_overrides (artist_id, scene, decided_at) VALUES (?, ?, now()) ON CONFLICT (artist_id) DO UPDATE SET scene = excluded.scene, decided_at = now()", &[serde_json::json!(artist_id), serde_json::json!(scene)]).map_err(err)?;
     db.exec("DELETE FROM artist_scene WHERE artist_id = ?", &[serde_json::json!(artist_id)]).map_err(err)?;
     if let Some(sc) = scene { db.exec("INSERT INTO artist_scene VALUES (?, ?, 9.0)", &[serde_json::json!(artist_id), serde_json::json!(sc)]).map_err(err)?; }
+    Ok(())
+}
+
+/// Phase 9k — store weather days fetched by the frontend from Open-Meteo. Observed rows replace anything; forecast
+/// rows never overwrite an observed day.
+#[tauri::command]
+pub fn weather_store(state: State<'_, AppState>, rows: Vec<serde_json::Value>) -> CmdResult<usize> {
+    let db = &state.real;
+    let mut n = 0;
+    for r in rows {
+        let Some(date) = r.get("date").and_then(|v| v.as_str()) else { continue };
+        if chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").is_err() { continue; }   // skip malformed days, keep the rest
+        let kind = r.get("kind").and_then(|v| v.as_str()).unwrap_or("observed");
+        let vals = [serde_json::json!(date), r.get("code").cloned().unwrap_or_default(), r.get("bucket").cloned().unwrap_or_default(), r.get("tmax").cloned().unwrap_or_default(),
+                    r.get("tmin").cloned().unwrap_or_default(), r.get("precip").cloned().unwrap_or_default(), r.get("sunshine").cloned().unwrap_or_default(), serde_json::json!(kind)];
+        let sql = if kind == "forecast" {
+            "INSERT INTO weather_daily (date, code, bucket, tmax, tmin, precip_mm, sunshine_h, kind) VALUES (CAST(? AS DATE), ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (date) DO UPDATE SET code = excluded.code, bucket = excluded.bucket, tmax = excluded.tmax, tmin = excluded.tmin, precip_mm = excluded.precip_mm, sunshine_h = excluded.sunshine_h, kind = excluded.kind, fetched_at = now() WHERE weather_daily.kind = 'forecast'"
+        } else {
+            "INSERT INTO weather_daily (date, code, bucket, tmax, tmin, precip_mm, sunshine_h, kind) VALUES (CAST(? AS DATE), ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (date) DO UPDATE SET code = excluded.code, bucket = excluded.bucket, tmax = excluded.tmax, tmin = excluded.tmin, precip_mm = excluded.precip_mm, sunshine_h = excluded.sunshine_h, kind = excluded.kind, fetched_at = now()"
+        };
+        db.exec(sql, &vals).map_err(err)?;
+        n += 1;
+    }
+    Ok(n)
+}
+
+/// Phase 9j: undo a manual filing — the artist goes back to being filed by its tags / origin.
+#[tauri::command]
+pub fn artist_scene_auto(state: State<'_, AppState>, artist_id: String) -> CmdResult<()> {
+    let db = &state.real;
+    db.exec("DELETE FROM scene_overrides WHERE artist_id = ?", &[serde_json::json!(artist_id)]).map_err(err)?;
+    db.exec_batch(crate::db::COMPUTE_SCENES_SQL).map_err(err)?;
+    Ok(())
+}
+
+/// Phase 9j: add a tag to an artist (source 'owner'), or remove one — removal blocks it so enrichment can't re-add it.
+/// Scenes are re-filed straight away so the Crate / Eras / Atlas follow.
+#[tauri::command]
+pub fn artist_tag_edit(state: State<'_, AppState>, artist_id: String, tag: String, action: String) -> CmdResult<()> {
+    let db = &state.real;
+    let tag = tag.trim().to_lowercase();
+    if tag.is_empty() || tag.len() > 60 { return Err("Tags are 1–60 characters".into()); }
+    let (a, t) = (serde_json::json!(artist_id), serde_json::json!(tag));
+    match action.as_str() {
+        "add" => {
+            db.exec("DELETE FROM tag_blocks WHERE artist_id = ? AND tag = ?", &[a.clone(), t.clone()]).map_err(err)?;
+            db.exec("INSERT INTO artist_tags (artist_id, tag, weight, source) VALUES (?, ?, 1.0, 'owner') ON CONFLICT (artist_id, tag, source) DO UPDATE SET weight = 1.0, fetched_at = now()", &[a.clone(), t.clone()]).map_err(err)?;
+        }
+        "remove" => {
+            db.exec("INSERT INTO tag_blocks (artist_id, tag) VALUES (?, ?) ON CONFLICT DO NOTHING", &[a.clone(), t.clone()]).map_err(err)?;
+            db.exec("DELETE FROM artist_tags WHERE artist_id = ? AND lower(tag) = ?", &[a.clone(), t.clone()]).map_err(err)?;
+        }
+        "unblock" => { db.exec("DELETE FROM tag_blocks WHERE artist_id = ? AND tag = ?", &[a.clone(), t.clone()]).map_err(err)?; }
+        _ => return Err("action must be add, remove or unblock".into()),
+    }
+    db.exec_batch(crate::db::COMPUTE_SCENES_SQL).map_err(err)?;
+    db.log_activity("metadata", "info", &format!("You {action}ed the tag “{tag}”"), Some(&artist_id));
     Ok(())
 }
 

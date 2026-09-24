@@ -75,3 +75,92 @@ export async function featureExtremes(minPlays = 3): Promise<{ fastest: FeatureT
     .map((r) => ({ trackId: String(r.track_id), track: String(r.track), artistId: str(r.aid), artist: String(r.artist ?? ''), plays: num(r.n), bpm: r.bpm == null ? null : num(r.bpm), key: str(r.k), energy: r.e == null ? null : num(r.e) }));
   return { fastest: await pick('MAX(f.bpm) DESC'), slowest: await pick('MAX(f.bpm) ASC'), loudest: await pick('MAX(f.loudness_db) DESC'), quietest: await pick('MAX(f.loudness_db) ASC') };
 }
+
+// ============================================================================ Phase 9j — using the features
+export type SoundAlike = { trackId: string; track: string; artistId: string | null; artist: string; plays: number; bpm: number | null; key: string | null; camelot: string | null; energy: number | null; distance: number; sameArtist: boolean };
+/**
+ * "Sounds like this": your own tracks nearest in tempo (half/double time folded), energy, loudness and key (Camelot
+ * neighbours count as close). Other artists first — the same artist's songs are shown after, marked.
+ */
+export async function soundAlike(trackId: string, n = 12): Promise<{ seed: { bpm: number | null; key: string | null; camelot: string | null; energy: number | null } | null; tracks: SoundAlike[] }> {
+  const [s] = await query(`SELECT f.bpm, f.key_name, f.camelot, f.energy, f.loudness_db, t.artist_id FROM track_features f JOIN tracks t USING (track_id) WHERE f.track_id = $1 AND f.found`, [trackId]);
+  if (!s) return { seed: null, tracks: [] };
+  const rows = await query(`
+    WITH me AS (SELECT track_id, COUNT(*) AS n, arg_max(track_name, ms_played) AS t, arg_max(artist_id, ms_played) AS aid, arg_max(artist_name, ms_played) AS a FROM plays_resolved p WHERE p.attended AND track_id IS NOT NULL ${playsWhere('p')} GROUP BY 1)
+    SELECT f.track_id, me.t, me.aid, me.a, me.n, f.bpm, f.key_name, f.camelot, f.energy,
+           LEAST(ABS(LN(f.bpm / $2)), ABS(LN(f.bpm / ($2 * 2))) + 0.1, ABS(LN(f.bpm * 2 / $2)) + 0.1) * 6
+           + ABS(COALESCE(f.energy, 0.5) - $3) * 4 + ABS(COALESCE(f.loudness_db, -9) - $4) / 6 AS d0
+    FROM track_features f JOIN me USING (track_id) WHERE f.found AND f.bpm IS NOT NULL AND f.track_id <> $1
+    ORDER BY d0 LIMIT 80`, [trackId, num(s.bpm) || 120, s.energy == null ? 0.5 : num(s.energy), s.loudness_db == null ? -9 : num(s.loudness_db)]);
+  const { keyDistance } = await import('./harmonic');
+  const tracks = rows.map((r) => ({ trackId: String(r.track_id), track: String(r.t), artistId: str(r.aid), artist: String(r.a ?? ''), plays: num(r.n), bpm: r.bpm == null ? null : num(r.bpm), key: str(r.key_name), camelot: str(r.camelot), energy: r.energy == null ? null : num(r.energy),
+    distance: num(r.d0) + keyDistance(str(s.camelot), str(r.camelot)) * 0.6, sameArtist: str(r.aid) === str(s.artist_id) }))
+    .sort((a, b) => Number(a.sameArtist) - Number(b.sameArtist) || a.distance - b.distance).slice(0, n);
+  return { seed: { bpm: s.bpm == null ? null : num(s.bpm), key: str(s.key_name), camelot: str(s.camelot), energy: s.energy == null ? null : num(s.energy) }, tracks };
+}
+
+export type ArtistSound = { tracks: number; bpm: number; energy: number; minorShare: number; loudness: number; you: { bpm: number; energy: number; minorShare: number; loudness: number }; topKey: string | null };
+/** One artist's sound (play-weighted over the songs of theirs you play) against your whole record. */
+export async function artistSound(artistId: string): Promise<ArtistSound | null> {
+  const q = (w: string) => `SELECT COUNT(DISTINCT p.track_id) AS t, AVG(f.bpm) AS bpm, AVG(f.energy) AS e, AVG(CASE WHEN f.mode = 0 THEN 1.0 ELSE 0 END) FILTER (WHERE f.mode IS NOT NULL) AS m, AVG(f.loudness_db) AS l, mode(f.key_name) AS k
+    FROM plays_resolved p JOIN track_features f USING (track_id) WHERE f.found AND p.attended ${w} ${playsWhere('p')}`;
+  const [a] = await query(q('AND p.artist_id = $1'), [artistId]); const [y] = await query(q(''));
+  if (!a || num(a.t) < 2) return null;
+  return { tracks: num(a.t), bpm: num(a.bpm), energy: num(a.e), minorShare: num(a.m), loudness: num(a.l), topKey: str(a.k), you: { bpm: num(y?.bpm), energy: num(y?.e), minorShare: num(y?.m), loudness: num(y?.l) } };
+}
+
+/** Features for a list of tracks (for smooth ordering). Tracks without features keep their place at the end. */
+export async function flowFeatures(trackIds: string[]): Promise<Map<string, { camelot: string | null; bpm: number | null; energy: number | null }>> {
+  if (!trackIds.length) return new Map();
+  // the bridge sends parameters as text, so pass the ids as one comma-joined string (track ids never contain commas)
+  const rows = await query(`SELECT track_id, camelot, bpm, energy FROM track_features WHERE found AND list_contains(string_split($1, ','), track_id)`, [trackIds.join(',')]);
+  return new Map(rows.map((r) => [String(r.track_id), { camelot: str(r.camelot), bpm: r.bpm == null ? null : num(r.bpm), energy: r.energy == null ? null : num(r.energy) }]));
+}
+
+// ============================================================================ Phase 9k — tempo dial, session arcs, mixing
+export const TEMPO_BANDS: { id: string; label: string; lo: number; hi: number; blurb: string }[] = [
+  { id: 'slow', label: 'Slow burn', lo: 0, hi: 90, blurb: 'under 90 bpm — ballads, ambient, late nights' },
+  { id: 'walk', label: 'Walking pace', lo: 90, hi: 110, blurb: '90–110 — strolling, cooking, head-nod' },
+  { id: 'groove', label: 'Groove', lo: 110, hi: 125, blurb: '110–125 — house, disco, a steady run' },
+  { id: 'drive', label: 'Drive', lo: 125, hi: 140, blurb: '125–140 — cycling, driving, getting things done' },
+  { id: 'sprint', label: 'Sprint', lo: 140, hi: 400, blurb: '140+ — running, drum & bass, punk' },
+];
+export type TempoStation = { id: string; label: string; blurb: string; tracks: { trackId: string; track: string; artistId: string | null; artist: string; plays: number; bpm: number; energy: number | null }[]; total: number };
+/** Your most-played, rarely skipped tracks per tempo band, optionally filtered to high or low energy. */
+export async function tempoStations(energy: 'any' | 'high' | 'low' = 'any', perBand = 25): Promise<TempoStation[]> {
+  const ef = energy === 'high' ? 'AND f.energy >= 0.6' : energy === 'low' ? 'AND f.energy <= 0.4' : '';
+  const rows = await query(`
+    WITH me AS (SELECT track_id, COUNT(*) AS n, arg_max(track_name, ms_played) AS t, arg_max(artist_id, ms_played) AS aid, arg_max(artist_name, ms_played) AS a, AVG(CASE WHEN was_skipped THEN 1.0 ELSE 0 END) AS sr
+                FROM plays_resolved p WHERE p.attended AND track_id IS NOT NULL ${playsWhere('p')} GROUP BY 1)
+    SELECT f.track_id, me.t, me.aid, me.a, me.n, f.bpm, f.energy FROM track_features f JOIN me USING (track_id) WHERE f.found AND f.bpm IS NOT NULL AND me.sr < 0.4 ${ef} ORDER BY me.n DESC`);
+  return TEMPO_BANDS.map((b) => {
+    const inBand = rows.filter((r) => num(r.bpm) >= b.lo && num(r.bpm) < b.hi);
+    return { ...b, total: inBand.length, tracks: inBand.slice(0, perBand).map((r) => ({ trackId: String(r.track_id), track: String(r.t), artistId: str(r.aid), artist: String(r.a ?? ''), plays: num(r.n), bpm: num(r.bpm), energy: r.energy == null ? null : num(r.energy) })) };
+  });
+}
+
+export type ArcPoint = { i: number; track: string; artist: string; bpm: number | null; energy: number | null; skipped: boolean; at: string };
+/** The energy and tempo of each play in one session, in order — the session's shape as sound. */
+export async function sessionArc(sessionId: string): Promise<ArcPoint[]> {
+  return (await query(`
+    SELECT p.track_name, p.artist_name, f.bpm, f.energy, p.was_skipped, CAST(p.played_at AS VARCHAR) AS at
+    FROM play_sessions ps JOIN plays_resolved p USING (play_id) LEFT JOIN track_features f ON f.track_id = p.track_id AND f.found
+    WHERE CAST(ps.session_id AS VARCHAR) = $1 ORDER BY p.played_at`, [sessionId])).map((r, i) => ({ i, track: String(r.track_name ?? ''), artist: String(r.artist_name ?? ''), bpm: r.bpm == null ? null : num(r.bpm), energy: r.energy == null ? null : num(r.energy), skipped: Boolean(r.was_skipped), at: String(r.at) }));
+}
+
+/** Songs from your record that mix well *after* this one: a compatible key (Camelot distance ≤ 1) and tempo within ±6 % (or half/double time). */
+export async function mixInto(trackId: string, n = 10) {
+  const [s] = await query(`SELECT f.bpm, f.camelot, f.energy FROM track_features f WHERE f.track_id = $1 AND f.found AND f.bpm IS NOT NULL`, [trackId]);
+  if (!s) return null;
+  const bpm = num(s.bpm);
+  const rows = await query(`
+    WITH me AS (SELECT track_id, COUNT(*) AS n, arg_max(track_name, ms_played) AS t, arg_max(artist_id, ms_played) AS aid, arg_max(artist_name, ms_played) AS a, AVG(CASE WHEN was_skipped THEN 1.0 ELSE 0 END) AS sr FROM plays_resolved p WHERE p.attended AND track_id IS NOT NULL ${playsWhere('p')} GROUP BY 1)
+    SELECT f.track_id, me.t, me.aid, me.a, me.n, f.bpm, f.camelot, f.energy FROM track_features f JOIN me USING (track_id)
+    WHERE f.found AND f.track_id <> $1 AND f.camelot IS NOT NULL AND me.sr < 0.5
+      AND (ABS(f.bpm / $2 - 1) <= 0.06 OR ABS(f.bpm / ($2 * 2) - 1) <= 0.06 OR ABS(f.bpm * 2 / $2 - 1) <= 0.06)
+    ORDER BY me.n DESC LIMIT 200`, [trackId, bpm]);
+  const { keyDistance } = await import('./harmonic');
+  const out = rows.map((r) => ({ trackId: String(r.track_id), track: String(r.t), artistId: str(r.aid), artist: String(r.a ?? ''), plays: num(r.n), bpm: num(r.bpm), camelot: str(r.camelot), energy: r.energy == null ? null : num(r.energy), keyStep: keyDistance(str(s.camelot), str(r.camelot)) }))
+    .filter((t) => t.keyStep <= 1).sort((a, b) => a.keyStep - b.keyStep || b.plays - a.plays).slice(0, n);
+  return { bpm, camelot: str(s.camelot), tracks: out };
+}

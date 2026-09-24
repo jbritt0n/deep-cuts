@@ -1,5 +1,7 @@
 import { clamp, useViewport } from '@/lib/display';
 import { PALETTES, useEraStyle, type EraStyle } from '@/lib/eraStyle';
+import { useAsync } from '@/lib/hooks';
+import { rangeWeather } from '@/lib/weatherQueries';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { C } from '@/lib/theme';
 import type { Era, EraWeek } from '@/lib/insightQueries';
@@ -224,8 +226,16 @@ function HoverCard({ span: s, x, y, wrapW }: { span: Span; x: number; y: number;
       <p className="num mt-1 text-xs text-dust">{d(s.start)} → {d(e?.end ?? t?.end ?? s.start)} · {e?.weeks ?? t?.weeks} weeks · {fmtHours(s.hours)}</p>
       {e && <p className="num mt-1 text-xs text-dust">{Math.round(e.noveltyRate * 100)}% new to you · skip rate {Math.round(e.skipRate * 100)}%{e.lateShare >= 0.25 ? ` · ${Math.round(e.lateShare * 100)}% after 10 pm` : ''}{e.topTag ? ` · ${e.topTag}` : ''}</p>}
       {t && <p className="num mt-1 text-xs text-dust">peak {Math.round(t.peakShare * 100)}% of a week · average {Math.round(t.meanShare * 100)}%</p>}
+      <EraWeather from={s.start} to={s.endExclusive} />
       {(e?.topArtists ?? t?.topArtists ?? []).length > 0 && <p className="mt-2 text-xs"><span className="text-dust">Defined by </span>{(e?.topArtists ?? t?.topArtists ?? []).slice(0, 5).map((a) => a.artist).join(' · ')}</p>}
       <p className="mt-2 text-[10px] text-dust/70">click to open</p>
     </div>
   );
+}
+
+/** Phase 9m: the weather this stretch was listened in, when it stands out (needs Settings → Record → Weather). */
+function EraWeather({ from, to }: { from: string; to: string }) {
+  const w = useAsync(() => rangeWeather(from, to), [from, to]);
+  if (!w.data) return null;
+  return <p className="mt-1 text-xs">{w.data.glyph} listened most on {w.data.label.toLowerCase()} days — {Math.round(w.data.share * 100)}% of its hours vs {Math.round(w.data.baseShare * 100)}% overall</p>;
 }

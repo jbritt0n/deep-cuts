@@ -82,6 +82,16 @@ function Nav() {
 export function Shell({ status }: { status: AppStatus }) {
   const loc = useLocation();
   const mainRef = useRef<HTMLElement>(null);
+  // Phase 9l: after an upgrade the rebuild runs in the background — say so while it does
+  const [rebuilding, setRebuilding] = useState(false);
+  useEffect(() => {
+    let stop = false;
+    const check = async () => { try { const { query } = await import('@/lib/db'); const [r] = await query(`SELECT value FROM app_meta WHERE key = 'rebuilding'`); const on = String(r?.value ?? '0') === '1'; if (!stop) setRebuilding(on); return on; } catch { return false; } };
+    void check().then((on) => { if (!on) return; const t = window.setInterval(async () => { if (!(await check())) { window.clearInterval(t); window.dispatchEvent(new Event('deepcuts:refresh')); } }, 3000); });
+    return () => { stop = true; };
+  }, []);
+  // Phase 9k: rebuild dynamic playlists that are due, once per launch, quietly
+  useEffect(() => { const t = window.setTimeout(() => { void import('@/lib/dynamicPlaylists').then((m) => m.refreshDue()).catch(() => {}); }, 8000); return () => window.clearTimeout(t); }, []);
   // a new page starts at its top (the single scroller keeps its offset across routes otherwise); hash links keep theirs
   useEffect(() => { if (!loc.hash) mainRef.current?.scrollTo({ top: 0 }); }, [loc.pathname]);
   return (
@@ -112,6 +122,7 @@ export function Shell({ status }: { status: AppStatus }) {
           <SearchBox />
           <div className="ml-auto"><FilterLens /></div>
         </header>
+        {rebuilding && <div role="status" className="shrink-0 border-b border-amber/40 bg-amber/10 px-6 py-2 text-sm text-amber">Rebuilding your record after the update — everything works, pages may be slow for a few minutes. This happens once per upgrade.</div>}
         <main id="main" ref={mainRef} tabIndex={-1} className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-[clamp(1rem,2.2vw,2rem)] pb-16 pt-[clamp(1rem,2vh,1.5rem)]">
           <ErrorBoundary resetKey={loc.pathname + loc.search}><Outlet /></ErrorBoundary>
         </main>

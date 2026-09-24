@@ -83,3 +83,25 @@ pub fn search_track_ids(client: &SpotifyClient, db: &Db, q: &str, n: usize) -> R
     let v: Value = client.get(db, &url, true).map_err(|e| anyhow!("{e}"))?;
     Ok(v["tracks"][f::ITEMS].as_array().map(|a| a.iter().filter_map(|t| t[f::ID].as_str().map(str::to_string)).take(n).collect()).unwrap_or_default())
 }
+
+/// Phase 9k — dynamic playlists: replace a playlist's contents in place (first 100 by PUT, the rest appended by POST,
+/// the same chunking as `create`). The playlist keeps its id, link, followers and cover. Returns tracks written.
+pub fn replace_items(client: &SpotifyClient, db: &Db, playlist_id: &str, ids: &[String]) -> Result<usize> {
+    let mut seen = std::collections::HashSet::new();
+    let unique: Vec<&String> = ids.iter().filter(|id| seen.insert(id.as_str())).collect();
+    let items_url = ep::playlist_items(playlist_id, 100, 0).split('?').next().unwrap().to_string();
+    let mut written = 0;
+    if unique.is_empty() {
+        client.put(db, &items_url, json!({ "uris": Vec::<String>::new() })).map_err(|e| anyhow!("{e}"))?;
+        return Ok(0);
+    }
+    for (ci, chunk) in unique.chunks(100).enumerate() {
+        if ci > 0 { std::thread::sleep(std::time::Duration::from_millis(400)); }
+        let uris: Vec<String> = chunk.iter().map(|id| format!("spotify:track:{id}")).collect();
+        if ci == 0 { client.put(db, &items_url, json!({ "uris": uris })).map_err(|e| anyhow!("replacing the first 100 tracks failed: {e}"))?; }
+        else { client.post(db, &items_url, json!({ "uris": uris })).map_err(|e| anyhow!("adding tracks {}–{} failed after {written} written: {e}", ci * 100 + 1, ci * 100 + chunk.len()))?; }
+        written += chunk.len();
+    }
+    db.log_activity("playlists", "info", &format!("Dynamic playlist refreshed: {written} tracks"), Some(playlist_id));
+    Ok(written)
+}

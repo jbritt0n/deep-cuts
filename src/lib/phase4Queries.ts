@@ -53,6 +53,7 @@ export async function achievements(): Promise<Achievement[]> {
 
   const comp = await albumCompleteness(1.0, 1);
   out.push({ id: 'completist', title: 'Completist', blurb: 'Every track of an album in one day.', earned: comp.length > 0, value: comp[0] ? `${comp[0].album} · ${comp[0].times}×` : '—', date: comp[0]?.lastDay ?? null, href: comp[0] ? `/album/${encodeURIComponent(comp[0].albumId)}` : null, tier: comp[0] && comp[0].times >= 10 ? 'gold' : comp[0] && comp[0].times >= 3 ? 'silver' : 'bronze' });
+  out.push(...await moreAchievements(tier));
   return out;
 }
 
@@ -286,4 +287,52 @@ export async function likedFacets(): Promise<{ years: number[]; tags: { tag: str
   const tags = (await query(`SELECT tg.tag, COUNT(DISTINCT l.track_id) AS n FROM liked_songs l JOIN tracks t USING (track_id) JOIN artist_tags tg ON tg.artist_id = t.artist_id GROUP BY 1 ORDER BY n DESC LIMIT 30`)).map((r) => ({ tag: String(r.tag), n: num(r.n) }));
   const decades = (await query(`SELECT DISTINCT (EXTRACT(year FROM t.release_date)::INT / 10) * 10 AS d FROM liked_songs l JOIN tracks t USING (track_id) WHERE t.release_date IS NOT NULL ORDER BY 1`)).map((r) => num(r.d));
   return { years, tags, decades };
+}
+
+// ---------------------------------------------------------------- Phase 9j: sixteen more
+/**
+ * Achievements that use what the record learned in 9d–9j: origins, scenes, trips, audio and lyric features, listener
+ * counts, catalogues. Each check is isolated — a table that's still empty (no FreqBlog yet, say) just leaves that badge
+ * locked with a hint instead of breaking the page.
+ */
+async function moreAchievements(tier: (v: number, b: number, s: number, g: number) => Achievement['tier']): Promise<Achievement[]> {
+  const out: Achievement[] = [];
+  const one = async (sql: string) => { try { return (await query(sql))[0] ?? {}; } catch { return {}; } };
+  const add = (a: Omit<Achievement, 'tier'> & { v: number; b: number; s: number; g: number }) => { const { v, b, s, g, ...rest } = a; out.push({ ...rest, tier: tier(v, b, s, g) }); };
+
+  const w = await one(`SELECT COUNT(DISTINCT o.country) AS n FROM plays_resolved p JOIN artist_origin o USING (artist_id) WHERE o.country IS NOT NULL ${playsWhere('p')}`);
+  add({ id: 'passport', title: 'Musical passport', blurb: 'Artists from 25 countries.', earned: num(w.n) >= 25, value: `${num(w.n)} countries`, date: null, href: '/atlas', v: num(w.n), b: 25, s: 50, g: 80 });
+  const tr = await one(`SELECT COUNT(DISTINCT country) AS n FROM plays_resolved WHERE country IS NOT NULL ${PW()}`);
+  add({ id: 'globetrotter', title: 'Globetrotter', blurb: 'Listened from 3 different countries.', earned: num(tr.n) >= 3, value: `${num(tr.n)} countries`, date: null, href: '/atlas#abroad', v: num(tr.n), b: 3, s: 8, g: 15 });
+  const sc = await one(`WITH s AS (SELECT artist_id, arg_max(scene, weight) AS scene FROM artist_scene GROUP BY 1) SELECT COUNT(*) AS n FROM (SELECT s.scene FROM plays_resolved p JOIN s USING (artist_id) WHERE 1=1 ${playsWhere('p')} GROUP BY 1 HAVING SUM(p.ms_played) >= 3600000)`);
+  add({ id: 'scenehopper', title: 'Scene hopper', blurb: 'An hour or more in 20 different scenes.', earned: num(sc.n) >= 20, value: `${num(sc.n)} scenes`, date: null, href: '/eras', v: num(sc.n), b: 20, s: 35, g: 50 });
+  const dig = await one(`SELECT COUNT(*) AS n FROM (SELECT p.artist_id FROM plays_resolved p JOIN artist_popularity ap USING (artist_id) WHERE ap.listeners < 10000 ${playsWhere('p')} GROUP BY 1 HAVING COUNT(*) >= 5)`);
+  add({ id: 'digger', title: 'Crate digger', blurb: '50 artists with under 10,000 Last.fm listeners, played 5+ times.', earned: num(dig.n) >= 50, value: `${num(dig.n)} tiny-audience artists`, date: null, href: '/crate', v: num(dig.n), b: 50, s: 150, g: 400 });
+  const eb = await one(`SELECT COUNT(*) AS n FROM plays_resolved WHERE EXTRACT(hour FROM played_at) BETWEEN 5 AND 7 ${PW()}`);
+  add({ id: 'earlybird', title: 'Early bird', blurb: '500 plays between 5 and 8 AM.', earned: num(eb.n) >= 500, value: `${num(eb.n).toLocaleString()} dawn plays`, date: null, href: '/moods', v: num(eb.n), b: 500, s: 2000, g: 5000 });
+  const dec = await one(`SELECT COUNT(DISTINCT FLOOR(EXTRACT(year FROM COALESCE(al.release_date, t.release_date)) / 10)) AS n FROM plays_resolved p LEFT JOIN albums al USING (album_id) LEFT JOIN tracks t USING (track_id) WHERE COALESCE(al.release_date, t.release_date) IS NOT NULL ${playsWhere('p')}`);
+  add({ id: 'timetraveller', title: 'Time traveller', blurb: 'Music released in 6 different decades.', earned: num(dec.n) >= 6, value: `${num(dec.n)} decades`, date: null, href: null, v: num(dec.n), b: 6, s: 8, g: 10 });
+  const lang = await one(`SELECT COUNT(*) AS n FROM (SELECT lf.lang FROM track_lyric_features lf JOIN (SELECT DISTINCT track_id FROM plays_resolved WHERE 1=1 ${PW()}) p USING (track_id) WHERE lf.found AND lf.lang NOT IN ('und') GROUP BY 1 HAVING COUNT(*) >= 5)`);
+  add({ id: 'polyglot', title: 'Polyglot ear', blurb: 'Songs sung in 3 languages (5+ songs each).', earned: num(lang.n) >= 3, value: `${num(lang.n)} languages`, date: null, href: '/insights', v: num(lang.n), b: 3, s: 5, g: 8 });
+  const keys = await one(`SELECT COUNT(DISTINCT f.key_name) AS n FROM track_features f JOIN (SELECT DISTINCT track_id FROM plays_resolved WHERE 1=1 ${PW()}) p USING (track_id) WHERE f.found AND f.key_name IS NOT NULL`);
+  add({ id: 'keys', title: 'All twenty-four', blurb: 'Songs in every major and minor key.', earned: num(keys.n) >= 24, value: `${num(keys.n)} of 24 keys`, date: null, href: '/insights', v: num(keys.n), b: 24, s: 24, g: 24 });
+  const tempo = await one(`SELECT MIN(f.bpm) AS lo, MAX(f.bpm) AS hi FROM track_features f JOIN (SELECT DISTINCT track_id FROM plays_resolved WHERE 1=1 ${PW()}) p USING (track_id) WHERE f.found AND f.bpm IS NOT NULL`);
+  const span = num(tempo.hi) - num(tempo.lo);
+  add({ id: 'tempo', title: 'Full tempo range', blurb: 'Something under 70 bpm and something over 170.', earned: num(tempo.lo) > 0 && num(tempo.lo) < 70 && num(tempo.hi) > 170, value: tempo.lo ? `${Math.round(num(tempo.lo))}–${Math.round(num(tempo.hi))} bpm` : 'needs FreqBlog', date: null, href: '/insights', v: span, b: 100, s: 120, g: 140 });
+  const cat = await one(`SELECT a.name, COUNT(DISTINCT p.track_id) * 1.0 / NULLIF(a.catalogue_tracks, 0) AS share, COUNT(DISTINCT p.track_id) AS heard FROM plays_resolved p JOIN artists a USING (artist_id) WHERE a.catalogue_tracks >= 20 ${playsWhere('p')} GROUP BY a.artist_id, a.name, a.catalogue_tracks ORDER BY share DESC LIMIT 1`);
+  add({ id: 'deepdive', title: 'Deep diver', blurb: 'Heard 80% of an artist’s catalogue (20+ songs).', earned: num(cat.share) >= 0.8, value: cat.name ? `${String(cat.name)} · ${Math.round(Math.min(1, num(cat.share)) * 100)}%` : '—', date: null, href: null, v: num(cat.share), b: 0.8, s: 0.9, g: 1 });
+  const liked = await one(`SELECT COUNT(*) AS n FROM liked_songs`);
+  add({ id: 'hearts', title: 'Big heart', blurb: '1,000 Liked Songs.', earned: num(liked.n) >= 1000, value: `${num(liked.n).toLocaleString()} liked`, date: null, href: '/library', v: num(liked.n), b: 1000, s: 3000, g: 8000 });
+  const pl = await one(`SELECT COUNT(*) AS n FROM playlists WHERE owner_is_me`);
+  add({ id: 'architect', title: 'Playlist architect', blurb: '25 playlists of your own.', earned: num(pl.n) >= 25, value: `${num(pl.n)} playlists`, date: null, href: '/library', v: num(pl.n), b: 25, s: 75, g: 200 });
+  const wild = await one(`SELECT COUNT(*) AS n FROM wild_plays`);
+  add({ id: 'wild', title: 'Heard it in the wild', blurb: '50 captures from outside your own listening.', earned: num(wild.n) >= 50, value: `${num(wild.n)} captures`, date: null, href: '/wild', v: num(wild.n), b: 50, s: 250, g: 1000 });
+  const re = await one(`WITH a AS (SELECT album_id, arg_max(album_name, ms_played) AS name, played_at, LAG(played_at) OVER (PARTITION BY album_id ORDER BY played_at) AS prev FROM plays_resolved WHERE album_id IS NOT NULL ${PW()}) SELECT name, MAX(EXTRACT(epoch FROM played_at - prev)) / 86400 AS gap FROM a GROUP BY album_id, name ORDER BY gap DESC NULLS LAST LIMIT 1`);
+  add({ id: 'reunion', title: 'Reunion', blurb: 'Came back to an album after two years away.', earned: num(re.gap) >= 730, value: re.name ? `${String(re.name)} · ${(num(re.gap) / 365).toFixed(1)} years` : '—', date: null, href: '/crate?shelf=rediscover', v: num(re.gap), b: 730, s: 1825, g: 3650 });
+  const ny = await one(`SELECT COUNT(DISTINCT EXTRACT(year FROM played_at)) AS n FROM plays_resolved WHERE EXTRACT(month FROM played_at) = 1 AND EXTRACT(day FROM played_at) = 1 AND EXTRACT(hour FROM played_at) = 0 ${PW()}`);
+  add({ id: 'newyear', title: 'First song of the year', blurb: 'Music playing in the first hour of January 1st.', earned: num(ny.n) >= 1, value: `${num(ny.n)} New Year${num(ny.n) === 1 ? '' : 's'}`, date: null, href: null, v: num(ny.n), b: 1, s: 3, g: 5 });
+  const early = await one(`WITH h AS (SELECT artist_id, arg_min(listeners, snapshot_at) AS l0, arg_max(listeners, snapshot_at) AS l1 FROM artist_popularity_history GROUP BY 1 HAVING COUNT(*) >= 2), f AS (SELECT artist_id, MIN(played_at) AS f FROM plays_resolved GROUP BY 1)
+     SELECT COUNT(*) AS n, arg_max(a.name, h.l1 * 1.0 / h.l0) AS best FROM h JOIN f USING (artist_id) JOIN artists a USING (artist_id) WHERE h.l1 >= h.l0 * 1.5 AND f.f < (SELECT MIN(snapshot_at) FROM artist_popularity_history)`);
+  add({ id: 'early', title: 'Ahead of the curve', blurb: 'Played an artist before their audience grew by half.', earned: num(early.n) >= 1, value: early.best ? `${String(early.best)}${num(early.n) > 1 ? ` + ${num(early.n) - 1} more` : ''}` : 'needs a month of listener history', date: null, href: '/insights', v: num(early.n), b: 1, s: 5, g: 15 });
+  return out;
 }

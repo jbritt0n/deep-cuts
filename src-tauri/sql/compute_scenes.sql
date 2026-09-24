@@ -8,6 +8,9 @@
 --   3. overrides: the owner's own filing decisions win (weight 9 marks "filed by you").
 -- Runs standalone (Settings → Scenes → "Re-file now"), inside rebuild_all, and before compute_insights.
 -- ============================================================
+-- Phase 9j: tags the owner removed never file anyone
+DELETE FROM artist_tags WHERE EXISTS (SELECT 1 FROM tag_blocks b WHERE b.artist_id = artist_tags.artist_id AND b.tag = lower(artist_tags.tag));
+
 DELETE FROM artist_scene;
 
 INSERT INTO artist_scene

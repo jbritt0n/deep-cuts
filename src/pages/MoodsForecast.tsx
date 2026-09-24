@@ -5,6 +5,10 @@ import { MakePlaylistButton } from '@/components/PlaylistMaker';
 import { QueueButton } from '@/components/QueueButton';
 import { ForecastAccuracyCard } from '@/components/ForecastCard';
 import { MoodStations } from '@/pages/Moods';
+import { WeatherMoodsCard } from '@/components/WeatherCards';
+import { TempoDial } from '@/components/SoundTools';
+import { weatherOutlook, weatherSummary } from '@/lib/weatherQueries';
+import { localToday } from '@/lib/queries';
 import { backtest, dayForecast, fronts, logForecast, weekOutlook, CALL_MIN_N, CALL_MIN_P } from '@/lib/forecastQueries';
 import { artistHref, fmtInt, fmtPct, trackHref } from '@/lib/format';
 import { useAsync, useFilter } from '@/lib/hooks';
@@ -27,6 +31,8 @@ export function MoodsForecastPage() {
   const week = useAsync(() => weekOutlook(), [filter]);
   const fr = useAsync(() => fronts(), [filter]);
   const bt = useAsync(() => backtest(28), [filter]);
+  const wx = useAsync(() => weatherOutlook(localToday()), [filter]);
+  const wsum = useAsync(weatherSummary, [filter]);
   useEffect(() => { if (today.data && !today.data.logged && !filter.fromYear && !filter.toYear) void logForecast(today.data); }, [today.data, filter]);
   useEffect(() => { if (loc.hash && today.data) document.getElementById(loc.hash.slice(1))?.scrollIntoView({ block: 'start' }); }, [loc.hash, today.data]);
 
@@ -36,7 +42,7 @@ export function MoodsForecastPage() {
 
       {/* ---------- Today's broadcast */}
       <section id="forecast" className="scroll-mt-4">
-        {today.error ? <ErrorBox message={today.error} /> : !today.data ? <Loading label="Reading the barometer…" /> : <Broadcast d={today.data} />}
+        {today.error ? <ErrorBox message={today.error} /> : !today.data ? <Loading label="Reading the barometer…" /> : <Broadcast d={today.data} weather={wx.data?.get(localToday()) ?? null} moods={wsum.data?.moods ?? []} />}
       </section>
 
       {/* ---------- 7-day outlook */}
@@ -47,9 +53,12 @@ export function MoodsForecastPage() {
               {week.data.days.map((d, i) => (
                 <li key={d.date} className={`rounded-xl border p-3 ${i === 0 ? 'border-amber/60 bg-amber/5' : 'border-line bg-ink/30'}`}>
                   <p className="text-xs text-dust">{i === 0 ? 'Today' : d.weekdayName.slice(0, 3)} <span className="num">{d.date.slice(5)}</span></p>
-                  <p className="mt-1 text-3xl leading-none" aria-hidden>{d.condition.glyph}</p>
+                  {(() => { const w = wx.data?.get(d.date); return w?.glyph ? (
+                    <p className="mt-1 flex items-baseline gap-1.5" title={`${w.label}${w.precip ? ` · ${w.precip} mm` : ''} (${w.kind})`}><span className="text-2xl leading-none" aria-hidden>{w.glyph}</span><span className="num text-[11px] text-dust">{w.tmax != null ? `${Math.round(w.tmax)}°/${Math.round(w.tmin ?? 0)}°` : ''}</span></p>
+                  ) : null; })()}
+                  <p className="mt-1 text-3xl leading-none" aria-hidden title="listening weather">{d.condition.glyph}</p>
                   <p className="mt-1 text-xs">{d.condition.label}</p>
-                  <p className="num mt-1 text-[11px] text-dust">{fmtPct(d.pAny)} · ~{fmtInt(d.minutes)} min</p>
+                  <p className="num mt-1 text-[11px] text-dust">{fmtPct(d.pAny)} · ~{fmtInt(d.minutes * (wx.data?.get(d.date)?.minutesFactor ?? 1))} min{(wx.data?.get(d.date)?.minutesFactor ?? 1) !== 1 ? ' (weather-adjusted)' : ''}</p>
                   {d.scenes[0] && <p className="mt-1 truncate text-[11px]" title={d.scenes.map((s) => `${s.label} ${fmtPct(s.p)}`).join(' · ')}><span className="mr-1 inline-block h-2 w-2 rounded-full align-middle" style={{ background: sceneColor(d.scenes[0].scene) }} />{d.scenes[0].label}</p>}
                   {d.topArtist && <p className="truncate text-[11px] text-dust" title={`most-played artist on ${d.weekdayName}s`}>{d.topArtist}</p>}
                 </li>
@@ -68,6 +77,10 @@ export function MoodsForecastPage() {
           {fr.error ? <ErrorBox message={fr.error} /> : !fr.data ? <Loading /> : <FrontList list={fr.data.cold} />}
         </Card>
       </section>
+
+      {/* ---------- Weather and tempo */}
+      <section className="mt-6"><WeatherMoodsCard /></section>
+      <section className="mt-6"><TempoDial /></section>
 
       {/* ---------- Verification */}
       <section id="verification" className="mt-6 grid scroll-mt-4 gap-6 lg:grid-cols-[1.4fr_1fr]">
@@ -109,7 +122,8 @@ export function MoodsForecastPage() {
   );
 }
 
-function Broadcast({ d }: { d: Awaited<ReturnType<typeof dayForecast>> }) {
+function Broadcast({ d, weather, moods }: { d: Awaited<ReturnType<typeof dayForecast>>; weather: Awaited<ReturnType<typeof weatherOutlook>> extends Map<string, infer W> ? W | null : never; moods: Awaited<ReturnType<typeof weatherSummary>>['moods'] }) {
+  const wm = weather?.bucket ? moods.find((m) => m.bucket === weather.bucket) : undefined;
   const maxP = Math.max(0.01, ...d.hourly.map((h) => h.p));
   const scenesInRadar = [...new Map(d.hourly.filter((h) => h.scene && h.p > 0.1).map((h) => [h.scene!, h.label!])).entries()].slice(0, 6);
   return (
@@ -120,6 +134,7 @@ function Broadcast({ d }: { d: Awaited<ReturnType<typeof dayForecast>> }) {
           <div className="min-w-0">
             <p className="font-display text-2xl leading-tight">{d.headline}</p>
             <p className="num mt-2 text-sm text-dust">{fmtPct(d.pAny)} chance of listening · about {fmtInt(d.expectedMinutes)} min on a typical {d.weekdayName}</p>
+            {weather?.glyph && <p className="mt-2 text-sm">Outside: {weather.glyph} {weather.label?.toLowerCase()}{weather.tmax != null ? `, ${Math.round(weather.tmax)}°` : ''}.{wm && wm.days >= 10 ? <> On {wm.label.toLowerCase()} days you listen <span className={wm.vsAverage >= 0 ? 'text-moss' : 'text-coral'}>{wm.vsAverage >= 0 ? '+' : ''}{Math.round(wm.vsAverage * 100)}%</span> vs usual{wm.scenes[0] ? <> and lean {wm.scenes[0].label} ({wm.scenes[0].lift.toFixed(1)}×)</> : null}.</> : null}</p>}
           </div>
         </div>
         <div className="mt-5">

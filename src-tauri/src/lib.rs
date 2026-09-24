@@ -15,6 +15,7 @@ mod tray;
 
 mod llm; // Phase 9e — Ollama provider (spec §9.1)
 mod migrate; // Phase 9f — move the whole record to another computer
+mod stylus; // Phase 9m — ListenBrainz-compatible scrobble receiver
 
 use anyhow::Context as _;
 use db::Db;
@@ -79,7 +80,8 @@ fn detect_zone() -> String {
     iana_time_zone::get_timezone().unwrap_or_else(|_| "UTC".to_string())
 }
 
-fn open_databases(paths: &paths::DataPaths) -> anyhow::Result<(Arc<Db>, Arc<Db>, String)> {
+/// Returns (real, demo, zone, rebuild_needed). A needed rebuild runs in the background once the window is up (Phase 9l).
+fn open_databases(paths: &paths::DataPaths) -> anyhow::Result<(Arc<Db>, Arc<Db>, String, bool)> {
     let real = Db::open(&paths.db_path, &detect_zone())?;
     // A zone saved earlier wins over the OS zone.
     let saved = real
@@ -122,16 +124,19 @@ fn open_databases(paths: &paths::DataPaths) -> anyhow::Result<(Arc<Db>, Arc<Db>,
     // (e.g. schema upgraded, or a rebuild was interrupted).
     let events_n = real.scalar_i64("SELECT COUNT(*) FROM events")?;
     let resolved_n = real.scalar_i64("SELECT COUNT(*) FROM plays_resolved")?;
+    // events that arrived after the last resolution (watermark written at the end of entity_resolution.sql)
+    let unresolved = real.scalar_i64("SELECT COUNT(*) FROM events WHERE ingested_at > COALESCE(TRY_CAST((SELECT value FROM app_meta WHERE key = 'resolved_through') AS TIMESTAMPTZ), TIMESTAMPTZ '1900-01-01 00:00:00+00')")?;
     let built_with = real.query("SELECT value FROM app_meta WHERE key = 'built_with'", &[])?.first().and_then(|r| r.get("value")).and_then(|v| v.as_str().map(str::to_string)).unwrap_or_default();
     let version = env!("CARGO_PKG_VERSION").to_string() + "+" + PIPELINE_REV;
-    if events_n > 0 && (events_n != resolved_n || built_with != version) {
-        log::info!("rebuilding derived tables ({events_n} events, {resolved_n} resolved, pipeline {built_with} → {version})");
+    let rebuild = events_n > 0 && (resolved_n == 0 || unresolved > 0 || built_with != version);
+    if rebuild {
+        log::info!("rebuild needed ({events_n} events, {resolved_n} resolved, {unresolved} since the last resolution, pipeline {built_with} → {version}) — running in the background");
         real.load_tz_offsets(&zone)?;
-        real.rebuild_all()?;
-        real.log_activity("upgrade", "info", &format!("Rebuilt the record for pipeline {version}"), None);
+        real.exec("INSERT INTO app_meta (key, value) VALUES ('rebuilding', '1') ON CONFLICT (key) DO UPDATE SET value = excluded.value", &[])?;
+    } else {
+        real.exec("INSERT INTO app_meta (key, value) VALUES ('built_with', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value", &[serde_json::json!(version)])?;
     }
-    real.exec("INSERT INTO app_meta (key, value) VALUES ('built_with', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value", &[serde_json::json!(version)])?;
-    Ok((Arc::new(real), Arc::new(demo), zone))
+    Ok((Arc::new(real), Arc::new(demo), zone, rebuild))
 }
 
 /// Phase 9h.1: logs go to the terminal *and* `<data dir>/logs/deep-cuts.log` (previous run kept as deep-cuts.1.log),
@@ -173,7 +178,7 @@ pub fn run() {
         .setup(|app| {
             let paths = paths::resolve()?;
             log::info!("data dir: {} (portable: {})", paths.data_dir.display(), paths.portable);
-            let (real, demo, zone) = open_databases(&paths).map_err(|e| {
+            let (real, demo, zone, rebuild) = open_databases(&paths).map_err(|e| {
                 // `{:#}` prints the whole chain ("opening …: IO Error: …"), not just the outermost context
                 log::error!("could not open the record: {e:#}");
                 anyhow::anyhow!("{e:#}\n\nYour data folder is {} — nothing in it has been changed.", paths.data_dir.display())
@@ -187,6 +192,33 @@ pub fn run() {
                 spotify: SpotifyHandle(Arc::new(Mutex::new(None))),
             });
             tray::setup(app.handle())?;
+            // Phase 9l: the first launch after an upgrade used to rebuild before any window existed (owner's "freezes").
+            // Now the window opens at once and the rebuild runs here; the frontend shows a banner while app_meta
+            // 'rebuilding' = '1' and refreshes when it's done. built_with is only written after success.
+            if rebuild {
+                let st = app.state::<AppState>();
+                let db = st.real.clone();
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    let version = env!("CARGO_PKG_VERSION").to_string() + "+" + PIPELINE_REV;
+                    let started = std::time::Instant::now();
+                    match db.rebuild_all() {
+                        Ok(()) => {
+                            let _ = db.exec("INSERT INTO app_meta (key, value) VALUES ('built_with', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value", &[serde_json::json!(version)]);
+                            db.log_activity("upgrade", "info", &format!("Rebuilt the record for pipeline {version} in {} s", started.elapsed().as_secs()), None);
+                        }
+                        Err(e) => { log::error!("background rebuild failed: {e:#}"); db.log_activity("upgrade", "error", &format!("Rebuild failed: {e:#}"), None); }
+                    }
+                    let _ = db.exec("INSERT INTO app_meta (key, value) VALUES ('rebuilding', '0') ON CONFLICT (key) DO UPDATE SET value = excluded.value", &[]);
+                    events::emit(&handle, events::DATA_CHANGED, serde_json::json!({ "reason": "rebuild" }));
+                });
+            }
+            // Phase 9m: Stylus starts with the app when the owner has turned it on (Services → Stylus)
+            {
+                let st = app.state::<AppState>();
+                let on = st.real.query("SELECT value FROM app_meta WHERE key = 'stylus_enabled'", &[]).ok().and_then(|r| r.first().and_then(|m| m.get("value")).and_then(|v| v.as_str().map(|s| s == "true"))).unwrap_or(false);
+                if on { if let Err(e) = stylus::start(st.real.clone()) { log::warn!("{e:#}"); st.real.log_activity("stylus", "error", &format!("{e:#}"), None); } }
+            }
             scheduler::start(app.handle().clone());
             Ok(())
         })
@@ -245,6 +277,15 @@ pub fn run() {
             commands::lyrics_status,
             commands::forecast_log_write,
             commands::meta_set,
+            commands::artist_tag_edit,
+            commands::weather_store,
+            commands::replace_playlist_items,
+            commands::stylus_status,
+            commands::stylus_configure,
+            commands::stylus_add_device,
+            commands::stylus_update_device,
+            commands::stylus_remove_device,
+            commands::artist_scene_auto,
             commands::export_record,
             commands::artist_set_origin,
             commands::artist_mb_candidates,

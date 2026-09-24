@@ -13,6 +13,7 @@ export type ArtistMeta = {
   country: Sourced<string>; city: string | null; formedYear: number | null;
   tags: { tag: string; weight: number; source: string }[]; scene: string | null; sceneLabel: string | null; sceneByYou: boolean;
   listeners: number | null; listenersAt: string | null;
+  blocked: string[];   // Phase 9j: tags you removed (kept off by every enrichment pass)
 };
 
 export async function artistMeta(id: string): Promise<ArtistMeta | null> {
@@ -28,6 +29,7 @@ export async function artistMeta(id: string): Promise<ArtistMeta | null> {
   if (!a) return null;
   const tags = (await query(`SELECT tag, weight, source FROM artist_tags WHERE artist_id = $1 ORDER BY weight DESC LIMIT 16`, [id])).map((r) => ({ tag: String(r.tag), weight: num(r.weight), source: String(r.source) }));
   const [lab] = a.scene ? await query(`SELECT label FROM scene_families WHERE scene = $1`, [a.scene]) : [];
+  const blocked = (await query(`SELECT tag FROM tag_blocks WHERE artist_id = $1 ORDER BY tag`, [id])).map((r) => String(r.tag));
   const ownerOrigin = a.origin_source === 'owner';
   return {
     artistId: String(a.artist_id), name: String(a.name), spotifyId: /^[A-Za-z0-9]{22}$/.test(String(a.artist_id)) ? String(a.artist_id) : null,
@@ -35,7 +37,7 @@ export async function artistMeta(id: string): Promise<ArtistMeta | null> {
     mbid: str(a.mbid), matchMethod: str(a.method) ?? (a.mbid ? 'name (before 9i)' : null), matchEvidence: str(a.evidence), namesakes: a.candidates == null ? null : num(a.candidates), matchCheckedAt: str(a.checked),
     country: { value: str(a.country), source: ownerOrigin ? 'you' : a.origin_source ? 'MusicBrainz' : null, owner: ownerOrigin }, city: str(a.city), formedYear: a.formed_year == null ? null : num(a.formed_year),
     tags, scene: str(a.scene), sceneLabel: lab ? String(lab.label) : str(a.scene), sceneByYou: num(a.scene_w) >= 9,
-    listeners: a.listeners == null ? null : num(a.listeners), listenersAt: str(a.lat),
+    listeners: a.listeners == null ? null : num(a.listeners), listenersAt: str(a.lat), blocked,
   };
 }
 
@@ -90,3 +92,14 @@ export const metaSet = (entityType: 'artist' | 'album' | 'track', entityId: stri
 export const setArtistOrigin = (artistId: string, country: string | null, city: string | null, formedYear: number | null) => invoke<void>('artist_set_origin', { artistId, country, city, formedYear });
 export const mbCandidates = (artistId: string) => invoke<MbCandidate[]>('artist_mb_candidates', { artistId });
 export const setArtistMbid = (artistId: string, mbid: string) => invoke<void>('artist_set_mbid', { artistId, mbid });
+
+export const tagEdit = (artistId: string, tag: string, action: 'add' | 'remove' | 'unblock') => invoke<void>('artist_tag_edit', { artistId, tag, action });
+export const setArtistScene = (artistId: string, scene: string | null) => invoke<void>('set_artist_scene', { artistId, scene });
+export const artistSceneAuto = (artistId: string) => invoke<void>('artist_scene_auto', { artistId });
+
+export type ArtistWiki = { title: string; lang: string; extract: string | null; description: string | null; imageUrl: string | null; pageUrl: string | null; fetchedAt: string | null };
+/** Phase 9j — the Wikipedia summary found through the artist's verified MusicBrainz → Wikidata link, if any. */
+export async function artistWiki(id: string): Promise<ArtistWiki | null> {
+  const [w] = await query(`SELECT title, lang, extract, description, image_url, page_url, CAST(fetched_at AS VARCHAR) AS f FROM artist_wiki WHERE artist_id = $1 AND found`, [id]);
+  return w ? { title: String(w.title), lang: String(w.lang ?? 'en'), extract: str(w.extract), description: str(w.description), imageUrl: str(w.image_url), pageUrl: str(w.page_url), fetchedAt: str(w.f) } : null;
+}

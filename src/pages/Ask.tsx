@@ -8,6 +8,7 @@ import { Card, Sleeve } from '@/components/Card';
 import { MakePlaylistButton } from '@/components/PlaylistMaker';
 import { QueueButton } from '@/components/QueueButton';
 import { ExploreSearch } from '@/pages/Explore';
+import { WordsPlaylist } from '@/components/WordsPlaylist';
 
 /**
  * Phase 9e — Ask the Archive. A conversation with your own record, answered by a local model (Ollama) that writes
@@ -52,6 +53,7 @@ export function AskPage() {
         <div className="mb-2 flex items-baseline justify-between"><h2 className="font-display text-2xl">Search</h2><Link to="/explore/lists" className="text-xs text-dust hover:text-cream">full-page search →</Link></div>
         <ExploreSearch big={false} autoFocus={!!status && !status.reachable} />
       </section>
+      <section className="mb-8"><WordsPlaylist /></section>
       <h2 className="mb-3 font-display text-2xl">Ask {status && !status.reachable && <span className="align-middle text-xs font-sans text-dust">— needs a local model (Ollama)</span>}</h2>
 
       {turns.length === 0 && !busy && (

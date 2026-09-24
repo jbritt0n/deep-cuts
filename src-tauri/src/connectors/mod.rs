@@ -11,6 +11,7 @@ pub mod listenbrainz;
 pub mod wikidata;
 pub mod lastfm_wild;   // Phase 8 — Heard in the Wild
 pub mod freqblog;      // Phase 9g — audio features
+pub mod wikipedia;     // Phase 9j — artist pictures and descriptions
 
 use crate::db::Db;
 use serde_json::json;

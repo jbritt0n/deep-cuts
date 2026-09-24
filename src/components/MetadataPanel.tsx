@@ -4,7 +4,8 @@ import { Card, ErrorBox, Loading } from '@/components/Card';
 import { inTauri } from '@/lib/bridge';
 import { fmtInt } from '@/lib/format';
 import { useAsync } from '@/lib/hooks';
-import { albumMeta, artistMeta, mbCandidates, metaSet, setArtistMbid, setArtistOrigin, trackMeta, type MbCandidate } from '@/lib/metaQueries';
+import { albumMeta, artistMeta, artistWiki, artistSceneAuto, mbCandidates, metaSet, setArtistMbid, setArtistOrigin, setArtistScene, tagEdit, trackMeta, type MbCandidate } from '@/lib/metaQueries';
+import { sceneOptions } from '@/lib/sceneQueries';
 import { flag } from '@/lib/originQueries';
 
 /**
@@ -95,8 +96,9 @@ export function ArtistMetadata({ artistId }: { artistId: string }) {
               <button disabled={busy || url.trim().length < 36} onClick={() => save(() => setArtistMbid(artistId, url), 'MusicBrainz match set. Origin and tags re-fetched.')} className="rounded-full border border-line px-3 text-xs text-dust hover:text-cream disabled:opacity-40">Use</button>
             </div>
           </div>
+          <TagSceneEditor artistId={artistId} tags={a.tags} blocked={a.blocked} scene={a.scene} sceneByYou={a.sceneByYou} busy={busy} save={save} />
           <FieldEdit label="Artist image URL" initial={a.imageUrl.owner ? a.imageUrl.value ?? '' : ''} placeholder={a.imageUrl.value ?? 'https://…'} busy={busy} onSave={(v) => save(() => metaSet('artist', artistId, 'image_url', v), 'Image saved.')} onClear={a.imageUrl.owner ? () => save(() => metaSet('artist', artistId, 'image_url', null), 'Image reset.') : undefined} />
-          <p className="text-[11px] text-dust/70">Scene filing is on the record card in <Link to="/crate" className="underline hover:text-cream">The Crate</Link>; tags come from Last.fm and MusicBrainz and follow the match above.</p>
+          <p className="text-[11px] text-dust/70">Scenes can also be changed from a record card in <Link to="/crate" className="underline hover:text-cream">The Crate</Link>; new scene families are added in Settings → Tuning → Scenes.</p>
         </div>
       )}
     </Card>
@@ -168,10 +170,79 @@ export function TrackMetadata({ trackId }: { trackId: string }) {
       <Row label="Spotify">{t.spotifyId ? <a href={`https://open.spotify.com/track/${t.spotifyId}`} target="_blank" rel="noreferrer" className="num text-xs underline hover:text-amber">{t.spotifyId}</a> : null}</Row>
       {editing && (
         <div className="mt-4 space-y-3 rounded-xl border border-line bg-ink/30 p-4">
+          {t.artistId && <TrackArtistTags artistId={t.artistId} artist={t.artist ?? ''} />}
           <FieldEdit label="ISRC" initial={t.isrc.owner ? t.isrc.value ?? '' : ''} placeholder={t.isrc.value ?? 'USUM71900001'} busy={busy} hint="Changing it discards the audio features and credits looked up through the old one; they're fetched again." onSave={(v) => save(() => metaSet('track', trackId, 'isrc', v), 'ISRC saved.')} onClear={t.isrc.owner ? () => save(() => metaSet('track', trackId, 'isrc', null), 'ISRC reset.') : undefined} />
           <FieldEdit label="Original release date" initial={t.releaseDate.owner ? t.releaseDate.value ?? '' : ''} placeholder={t.releaseDate.value ?? '1972'} busy={busy} onSave={(v) => save(() => metaSet('track', trackId, 'release_date', v), 'Release date saved.')} onClear={t.releaseDate.owner ? () => save(() => metaSet('track', trackId, 'release_date', null), 'Release date reset.') : undefined} />
         </div>
       )}
+    </Card>
+  );
+}
+
+/** Phase 9j — tags and scene for one artist. Removing a tag blocks it, so Last.fm / MusicBrainz can't add it back. */
+function TagSceneEditor({ artistId, tags, blocked, scene, sceneByYou, busy, save }: { artistId: string; tags: { tag: string; weight: number; source: string }[]; blocked: string[]; scene: string | null; sceneByYou: boolean; busy: boolean; save: (fn: () => Promise<unknown>, ok: string) => Promise<void> }) {
+  const opts = useAsync(sceneOptions, []);
+  const [t, setT] = useState('');
+  const uniq = [...new Map(tags.map((x) => [x.tag, x])).values()];
+  return (
+    <div className="space-y-3">
+      <div>
+        <p className="text-xs text-dust">Tags — ✕ removes a tag for good (enrichment won't re-add it); scenes re-file straight away.</p>
+        <div className="mt-1 flex flex-wrap gap-1">
+          {uniq.map((x) => <span key={x.tag} className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs ${x.source === 'owner' ? 'border-amber/60' : 'border-line'}`} title={`${x.source} · weight ${x.weight.toFixed(2)}`}>{x.tag}<button disabled={busy} onClick={() => save(() => tagEdit(artistId, x.tag, 'remove'), `Removed “${x.tag}” — it won't come back.`)} aria-label={`Remove ${x.tag}`} className="text-dust hover:text-coral">✕</button></span>)}
+          {!uniq.length && <span className="text-xs text-dust">no tags</span>}
+        </div>
+        <div className="mt-2 flex gap-2">
+          <input value={t} onChange={(e) => setT(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && t.trim()) { void save(() => tagEdit(artistId, t, 'add'), `Added “${t.trim().toLowerCase()}”.`); setT(''); } }} placeholder="add a tag (e.g. yugoslav, balkan, macedonian)" className="min-w-0 flex-1 rounded-lg border border-line bg-ink px-2 py-1.5 text-sm" />
+          <button disabled={busy || !t.trim()} onClick={() => { void save(() => tagEdit(artistId, t, 'add'), `Added “${t.trim().toLowerCase()}”.`); setT(''); }} className="rounded-full border border-line px-3 text-xs text-dust hover:text-cream disabled:opacity-40">Add</button>
+        </div>
+        {blocked.length > 0 && <p className="mt-1 text-[11px] text-dust">Removed: {blocked.map((b, i) => <span key={b}>{i > 0 && ', '}<button disabled={busy} onClick={() => save(() => tagEdit(artistId, b, 'unblock'), `“${b}” can come back from enrichment again.`)} className="underline hover:text-cream" title="Allow again">{b}</button></span>)}</p>}
+      </div>
+      <label className="block text-xs text-dust">Scene {sceneByYou && <span className="text-amber">· filed by you</span>}
+        <span className="mt-1 flex gap-2">
+          <select disabled={busy} value={sceneByYou ? scene ?? '__unsorted' : '__auto'} onChange={(e) => { const v = e.target.value; void save(() => (v === '__auto' ? artistSceneAuto(artistId) : setArtistScene(artistId, v === '__unsorted' ? null : v)), v === '__auto' ? 'Scene back to automatic (from tags and origin).' : 'Scene set.'); }} className="min-w-0 flex-1 rounded-lg border border-line bg-ink px-2 py-1.5 text-sm text-cream">
+            <option value="__auto">Automatic — from tags and origin{!sceneByYou && scene ? ` (now: ${(opts.data ?? []).find((o) => o.scene === scene)?.label ?? scene})` : ''}</option>
+            <option value="__unsorted">Unsorted — file under nothing</option>
+            {(['region', 'style'] as const).map((k) => <optgroup key={k} label={k === 'region' ? 'Regions' : 'Styles'}>{(opts.data ?? []).filter((o) => o.kind === k).map((o) => <option key={o.scene} value={o.scene}>{o.label}</option>)}</optgroup>)}
+          </select>
+        </span>
+      </label>
+    </div>
+  );
+}
+
+/** On a song page: its artist's tags and scene (tags live on the artist). */
+function TrackArtistTags({ artistId, artist }: { artistId: string; artist: string }) {
+  const [tick, setTick] = useState(0);
+  const m = useAsync(() => artistMeta(artistId), [artistId, tick]);
+  const { busy, msg, err, save } = useSaver(() => setTick((x) => x + 1));
+  if (!m.data) return null;
+  return (
+    <div className="rounded-lg border border-line/60 p-3">
+      <p className="mb-2 text-xs text-dust">Tags and scene belong to the artist — changes apply to every <Link to={`/artist/${encodeURIComponent(artistId)}`} className="underline hover:text-cream">{artist}</Link> song.</p>
+      {msg && <p className="mb-1 text-xs text-moss">{msg}</p>}{err && <ErrorBox message={err} />}
+      <TagSceneEditor artistId={artistId} tags={m.data.tags} blocked={m.data.blocked} scene={m.data.scene} sceneByYou={m.data.sceneByYou} busy={busy} save={save} />
+    </div>
+  );
+}
+
+/** Phase 9j — Artist page "About": Wikipedia picture + intro, credited and linked (CC BY-SA text, Wikimedia Commons image). */
+export function ArtistAbout({ artistId, artist }: { artistId: string; artist: string }) {
+  const w = useAsync(() => artistWiki(artistId), [artistId]);
+  const [open, setOpen] = useState(false);
+  if (!w.data) return null;   // nothing yet: the card appears once the Wikipedia pass reaches this artist
+  const d = w.data;
+  const long = (d.extract ?? '').length > 420;
+  return (
+    <Card title={`About ${artist}`} subtitle={d.description ?? undefined}>
+      <div className="flex gap-4">
+        {d.imageUrl && <img src={d.imageUrl} alt={artist} loading="lazy" className="h-32 w-32 shrink-0 rounded-xl border border-line object-cover sm:h-40 sm:w-40" />}
+        <div className="min-w-0 text-sm leading-relaxed">
+          <p className={open || !long ? '' : 'line-clamp-6'}>{d.extract}</p>
+          {long && <button onClick={() => setOpen(!open)} className="mt-1 text-xs text-dust hover:text-cream">{open ? 'less' : 'more'}</button>}
+          <p className="mt-2 text-[11px] text-dust/70">From <a href={d.pageUrl ?? '#'} target="_blank" rel="noreferrer" className="underline hover:text-cream">Wikipedia · {d.title}</a> ({d.lang}), CC BY-SA 4.0{d.imageUrl ? ' · image via Wikimedia Commons' : ''}. Found through this artist's MusicBrainz match — if it's the wrong person, fix the match below.</p>
+        </div>
+      </div>
     </Card>
   );
 }

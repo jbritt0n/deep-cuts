@@ -16,6 +16,7 @@ pub const ENTITY_RESOLUTION_SQL: &str = include_str!("../sql/entity_resolution.s
 pub const COMPUTE_SESSIONS_SQL: &str = include_str!("../sql/compute_sessions.sql");
 pub const DEMO_SEED_SQL: &str = include_str!("../sql/demo_seed.sql");
 pub const DEMO_EVENTS_SQL: &str = include_str!("../sql/demo_events.sql");   // Phase 9i
+pub const STYLUS_PROCESS_SQL: &str = include_str!("../sql/stylus_process.sql");   // Phase 9m
 pub const DEMO_ENRICH_SQL: &str = include_str!("../sql/demo_enrich.sql");   // Phase 9i
 /// Bump when the demo gains features: installs with an older demo get a fresh one on next launch (it is disposable).
 pub const DEMO_REV: &str = "9i";
@@ -92,6 +93,11 @@ impl Db {
     }
 
     /// Run a multi-statement script (no parameters).
+    /// Phase 9j: strip tags the owner blocked (called after every tag-writing enrichment pass).
+    pub fn apply_tag_blocks(&self) -> Result<()> {
+        self.exec_batch("DELETE FROM artist_tags WHERE EXISTS (SELECT 1 FROM tag_blocks b WHERE b.artist_id = artist_tags.artist_id AND b.tag = lower(artist_tags.tag))")
+    }
+
     pub fn exec_batch(&self, sql: &str) -> Result<()> {
         self.lock().execute_batch(sql)?;
         Ok(())

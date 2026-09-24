@@ -35,10 +35,23 @@ FROM plays_normalized p
 -- (it has the real ms_played, skip, platform and country; the poll only knows the track started). Matched on the
 -- same track and START of play within 10 s: export start = ts − ms_played, poll start = the API's played_at.
 -- Before 9i, an export imported after polling counted every overlapping listen twice.
+-- Phase 9l: Spotify documents the poll's played_at only as "when the track was played" — so it may be the start OR
+-- the end of play. Match either reading, within 15 s of clock drift, so an export always supersedes its polled copy.
 WHERE NOT (p.source = 'recently_played_poll' AND EXISTS (
     SELECT 1 FROM plays_normalized x
     WHERE x.source = 'extended_export' AND x.spotify_track_id = p.spotify_track_id
-      AND abs(epoch(x.played_at_utc - x.ms_played * INTERVAL 1 MILLISECOND) - epoch(p.raw_at)) <= 10));
+      AND (abs(epoch(x.played_at_utc - x.ms_played * INTERVAL 1 MILLISECOND) - epoch(p.raw_at)) <= 15      -- poll = start
+           OR abs(epoch(x.played_at_utc) - epoch(p.raw_at)) <= 15)))                                           -- poll = end
+-- Phase 9m: a Stylus scrobble that Spotify also recorded (it can arrive first — before the poll) gives way to the
+-- Spotify row, which carries the id, real duration and skip. Same id, or same artist + title when the scrobble has none,
+-- with starts within 30 s (or the poll stamped within 30 s of the scrobble's end).
+  AND NOT (p.source = 'stylus' AND EXISTS (
+    SELECT 1 FROM plays_normalized x
+    WHERE x.source IN ('recently_played_poll', 'extended_export')
+      AND ((p.spotify_track_id IS NOT NULL AND x.spotify_track_id = p.spotify_track_id)
+           OR (p.spotify_track_id IS NULL AND lower(x.track_name) = lower(p.track_name) AND lower(x.artist_name) = lower(p.artist_name)))
+      AND (abs(epoch(CASE WHEN x.source = 'extended_export' THEN x.played_at_utc - x.ms_played * INTERVAL 1 MILLISECOND ELSE x.raw_at END) - epoch(p.raw_at)) <= 30
+           OR abs(epoch(x.raw_at) - epoch(p.raw_at + COALESCE(p.ms_played, 0) * INTERVAL 1 MILLISECOND)) <= 30)));
 
 CREATE OR REPLACE TEMP TABLE _p AS
 SELECT
@@ -151,3 +164,9 @@ UPDATE albums  SET release_date = TRY_CAST(o.value AS DATE) FROM metadata_overri
 UPDATE albums  SET image_url = o.value FROM metadata_overrides o WHERE o.entity_type = 'album' AND o.field = 'image_url' AND o.entity_id = albums.album_id;
 UPDATE tracks  SET isrc = NULLIF(o.value, '') FROM metadata_overrides o WHERE o.entity_type = 'track' AND o.field = 'isrc' AND o.entity_id = tracks.track_id;
 UPDATE tracks  SET release_date = TRY_CAST(o.value AS DATE) FROM metadata_overrides o WHERE o.entity_type = 'track' AND o.field = 'release_date' AND o.entity_id = tracks.track_id;
+
+-- ---- Phase 9l: resolution watermark. Startup rebuilds only if events arrived after this (or the pipeline changed).
+-- 9k compared COUNT(events) with COUNT(plays_resolved), which can never match once an export supersedes polled plays
+-- (both stay in the append-only log) — so every launch after the first export import rebuilt the whole record.
+INSERT INTO app_meta (key, value) VALUES ('resolved_through', CAST((SELECT MAX(ingested_at) FROM events) AS VARCHAR))
+ON CONFLICT (key) DO UPDATE SET value = excluded.value;

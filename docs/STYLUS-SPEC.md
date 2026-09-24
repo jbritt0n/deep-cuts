@@ -1,4 +1,4 @@
-# Stylus — Deep Cuts' own scrobbler (design, Phase 9i)
+# Stylus — Deep Cuts' own scrobbler (design Phase 9i · **S1 shipped Phase 9m**)
 
 **Owner request (9h.1 feedback):** a home-built scrobbler integrated into Services; what it records is optional for privacy;
 an *enrichment* mode that adds what Spotify polling can't see, and a *replacement* mode for people who don't want to connect
@@ -75,3 +75,18 @@ events.payload for source 'stylus': track_name, artist_name, album_name, listene
 - Which devices first? (Android phone via Pano is the quickest win.)
 - Is a home server / NAS available for the relay, or should S3 wait?
 - Keep country for Stylus plays? It powers Atlas → Listening abroad, but it's the most sensitive field.
+
+## 7. S1 as built (Phase 9m)
+- Receiver: `src-tauri/src/stylus.rs` (tiny_http), default `127.0.0.1:4749`, optional LAN bind. Routes `GET /1/validate-token`, `POST /1/submit-listens`, also under `/apis/listenbrainz`. Body ≤ 2 MB.
+- Processing: `stylus_process.sql` over `stylus_inbox` — listen types `single`, `import`, `playing_now`; `duration_ms` or `duration` (s); Spotify id from `spotify_id` / `origin_url`; privacy masks applied before storing; duplicates = resends, or Spotify already has the listen (same id, or same artist + title without one, starts within 30 s).
+- Resolution: batched once a minute (`entity_resolution.sql`), which also lets a Spotify row replace a Stylus play of the same listen that arrived first.
+- Not in S1: country (ListenBrainz has no field for it), relay (S3), replacement-mode polish (S4), per-device retention (S2).
+
+### Setting up clients
+| Client | Where | Values |
+|---|---|---|
+| Web Scrobbler (browser) | Options → Accounts → ListenBrainz → custom | API URL `http://127.0.0.1:4749/1/submit-listens`, User token |
+| Pano Scrobbler (Android) | Settings → Accounts → add ListenBrainz (custom instance) | `http://<computer's LAN address>:4749`, token (turn on "allow other devices on my network") |
+| multi-scrobbler (Docker) | a `listenbrainz` client in its config | `url: http://<host>:4749`, `token` |
+| Navidrome / Jellyfin | ListenBrainz scrobbling with a custom base URL (plugin-dependent) | base URL + token |
+Exact menu names vary by client version.

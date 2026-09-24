@@ -114,3 +114,27 @@ INSERT INTO track_credits (track_id, artist_id, artist_name, credit_order)
 SELECT x.track_id, o.artist_id, o.name, 1
 FROM (SELECT t.track_id, t.artist_id, ROW_NUMBER() OVER (ORDER BY t.track_id) AS k FROM tracks t WHERE t.track_id NOT LIKE 'local:%' ORDER BY t.track_id LIMIT 6) x
 JOIN (SELECT artist_id, name, ROW_NUMBER() OVER (ORDER BY name) AS k FROM artists) o ON o.k = x.k AND o.artist_id <> x.artist_id ON CONFLICT DO NOTHING;
+
+-- a Wikipedia "About" card for two demo artists (invented text, no image — the real connector fills these from Wikipedia)
+INSERT INTO artist_wiki (artist_id, qid, lang, title, extract, description, image_url, page_url, found) VALUES
+ ('name:duman', 'Q0', 'en', 'Duman (demo)', 'Demo text: a rock band from Istanbul, formed in the late 1990s. With the Wikipedia connector on, this card shows the real article intro and lead image, found through the artist''s verified MusicBrainz match.', 'Turkish rock band (demo)', NULL, 'https://en.wikipedia.org/wiki/Special:Search', TRUE),
+ ('name:raffaella carrà', 'Q0', 'en', 'Raffaella Carrà (demo)', 'Demo text: an Italian singer, dancer and television presenter. With the Wikipedia connector on, this card shows the real intro and lead image.', 'Italian singer (demo)', NULL, 'https://en.wikipedia.org/wiki/Special:Search', TRUE)
+ON CONFLICT DO NOTHING;
+
+-- Phase 9k: invented, seasonal weather for every day of the demo record + a 7-day forecast (a real place in
+-- Settings → Record → Weather replaces it with Open-Meteo history). Temperatures follow a northern-hemisphere year.
+INSERT INTO weather_daily (date, code, bucket, tmax, tmin, precip_mm, sunshine_h, kind)
+SELECT d, code,
+       CASE WHEN code <= 1 THEN 'sunny' WHEN code <= 3 THEN 'cloudy' WHEN code = 45 THEN 'fog' WHEN code IN (61, 63, 80) THEN 'rain' WHEN code IN (71, 73) THEN 'snow' ELSE 'storm' END,
+       round(t + 5, 1), round(t - 5, 1),
+       CASE WHEN code IN (61, 63, 80, 95) THEN round(2 + (h % 90) / 10.0, 1) WHEN code IN (71, 73) THEN round(1 + (h % 40) / 10.0, 1) ELSE 0 END,
+       CASE WHEN code <= 1 THEN 10 WHEN code <= 3 THEN 5 ELSE 1.5 END,
+       CASE WHEN d > current_date THEN 'forecast' ELSE 'observed' END
+FROM (
+  SELECT d, h, 10 - 14 * cos(2 * pi() * (EXTRACT(doy FROM d) - 15) / 365.0) + ((h % 70) / 10.0 - 3.5) AS t,
+         CASE WHEN h % 100 < 34 THEN 0 WHEN h % 100 < 58 THEN 2 WHEN h % 100 < 62 THEN 45
+              WHEN h % 100 < 86 THEN (CASE WHEN EXTRACT(month FROM d) IN (12, 1, 2) AND h % 3 = 0 THEN 71 ELSE 61 END)
+              WHEN h % 100 < 94 THEN (CASE WHEN EXTRACT(month FROM d) IN (12, 1, 2) THEN 73 ELSE 80 END) ELSE 95 END AS code
+  FROM (SELECT CAST(g AS DATE) AS d, CAST((hash(md5(CAST(g AS VARCHAR) || 'weather')) % 1000) AS INTEGER) AS h
+        FROM generate_series((SELECT CAST(MIN(played_at) AS DATE) FROM plays_resolved), current_date + INTERVAL 6 DAY, INTERVAL 1 DAY) s(g))
+) ON CONFLICT DO NOTHING;

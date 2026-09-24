@@ -124,6 +124,7 @@ fn fetch_tags(mb: &Mb, db: &Db, artist_id: &str, mbid: &str) -> Result<()> {
         let w = (t["count"].as_f64().unwrap_or(1.0) / 10.0).min(1.0).max(0.1);
         db.exec("INSERT INTO artist_tags (artist_id, tag, weight, source) VALUES (?, ?, ?, 'musicbrainz') ON CONFLICT (artist_id, tag, source) DO UPDATE SET weight = GREATEST(artist_tags.weight, excluded.weight), fetched_at = now()", &[json!(artist_id), json!(tag), json!(w)])?;
     }
+    db.apply_tag_blocks()?;
     Ok(())
 }
 

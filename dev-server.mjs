@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
+import { createHash, randomBytes } from 'node:crypto';
 import { DuckDBInstance } from '@duckdb/node-api';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -313,6 +314,46 @@ const commands = {
                    ON CONFLICT (artist_id) DO UPDATE SET country = excluded.country, country_name = NULL, city = excluded.city, formed_year = excluded.formed_year, source = 'owner', fetched_at = now()`);
     return null;
   },
+  // Phase 9m — Stylus (mirror of commands.rs; the harness serves the ListenBrainz routes on its own port)
+  async stylus_status() { return { running: `127.0.0.1:${PORT} (harness)`, defaultPort: 4749 }; },
+  async stylus_configure({ enabled, port, lan }) {
+    for (const [k, v] of [['stylus_enabled', String(!!enabled)], ['stylus_port', String(port ?? 4749)], ['stylus_lan', String(!!lan)]]) await con.run(`INSERT INTO app_meta (key, value) VALUES (${q(k)}, ${q(v)}) ON CONFLICT (key) DO UPDATE SET value = excluded.value`);
+    return enabled ? `127.0.0.1:${PORT} (harness)` : null;
+  },
+  async stylus_add_device({ name }) {
+    const n = String(name ?? '').trim().slice(0, 60); if (!n) throw new Error('Give the device a name');
+    const token = randomBytes(32).toString('hex'), id = `dev_${randomBytes(6).toString('hex')}`;
+    await con.run(`INSERT INTO stylus_devices (device_id, name, token_hash) VALUES (${q(id)}, ${q(n)}, ${q(createHash('sha256').update(token).digest('hex'))})`);
+    return { deviceId: id, token };
+  },
+  async stylus_update_device({ deviceId, tsPrecision, keepPlayer, keepService, keepDevice, paused }) {
+    const p = ['exact', 'minute', 'hour'].includes(tsPrecision) ? tsPrecision : 'exact';
+    await con.run(`UPDATE stylus_devices SET ts_precision = ${q(p)}, keep_player = ${!!keepPlayer}, keep_service = ${!!keepService}, keep_device = ${!!keepDevice}, paused = ${!!paused} WHERE device_id = ${q(deviceId)}`);
+    return null;
+  },
+  async stylus_remove_device({ deviceId }) { await con.run(`DELETE FROM stylus_devices WHERE device_id = ${q(deviceId)}`); await con.run(`DELETE FROM stylus_now_playing WHERE device_id = ${q(deviceId)}`); return null; },
+  async replace_playlist_items({ trackIds }) { return (trackIds ?? []).length; },   // harness: Spotify writes are simulated
+  async weather_store({ rows }) {
+    let n = 0;
+    for (const r of rows ?? []) {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(String(r?.date ?? ''))) continue;   // skip malformed days, keep the rest
+      const v = (x) => (x == null || Number.isNaN(x) ? 'NULL' : typeof x === 'number' ? String(x) : q(x));
+      const kind = r.kind === 'forecast' ? 'forecast' : 'observed';
+      await con.run(`INSERT INTO weather_daily (date, code, bucket, tmax, tmin, precip_mm, sunshine_h, kind) VALUES (CAST(${q(r.date)} AS DATE), ${v(r.code)}, ${v(r.bucket)}, ${v(r.tmax)}, ${v(r.tmin)}, ${v(r.precip)}, ${v(r.sunshine)}, ${q(kind)})
+        ON CONFLICT (date) DO UPDATE SET code = excluded.code, bucket = excluded.bucket, tmax = excluded.tmax, tmin = excluded.tmin, precip_mm = excluded.precip_mm, sunshine_h = excluded.sunshine_h, kind = excluded.kind, fetched_at = now()${kind === 'forecast' ? " WHERE weather_daily.kind = 'forecast'" : ''}`);
+      n++;
+    }
+    return n;
+  },
+  async artist_tag_edit({ artistId, tag, action }) {
+    const t = String(tag ?? '').trim().toLowerCase(); if (!t || t.length > 60) throw new Error('Tags are 1–60 characters');
+    if (action === 'add') { await con.run(`DELETE FROM tag_blocks WHERE artist_id = ${q(artistId)} AND tag = ${q(t)}`); await con.run(`INSERT INTO artist_tags (artist_id, tag, weight, source) VALUES (${q(artistId)}, ${q(t)}, 1.0, 'owner') ON CONFLICT (artist_id, tag, source) DO UPDATE SET weight = 1.0, fetched_at = now()`); }
+    else if (action === 'remove') { await con.run(`INSERT INTO tag_blocks (artist_id, tag) VALUES (${q(artistId)}, ${q(t)}) ON CONFLICT DO NOTHING`); await con.run(`DELETE FROM artist_tags WHERE artist_id = ${q(artistId)} AND lower(tag) = ${q(t)}`); }
+    else if (action === 'unblock') await con.run(`DELETE FROM tag_blocks WHERE artist_id = ${q(artistId)} AND tag = ${q(t)}`);
+    else throw new Error('action must be add, remove or unblock');
+    await con.run(rd('compute_scenes.sql')); return null;
+  },
+  async artist_scene_auto({ artistId }) { await con.run(`DELETE FROM scene_overrides WHERE artist_id = ${q(artistId)}`); await con.run(rd('compute_scenes.sql')); return null; },
   async artist_mb_candidates() { throw new Error('MusicBrainz lookups need the desktop app.'); },
   async artist_set_mbid({ artistId, mbid }) {
     const id = String(mbid).trim().replace(/\/$/, '').split('/').pop();
@@ -336,7 +377,7 @@ const commands = {
 
 const STATIC = process.env.DEEPCUTS_STATIC ? path.resolve(process.env.DEEPCUTS_STATIC) : (fs.existsSync(path.join(here, 'dist', 'index.html')) && process.env.DEEPCUTS_SERVE_DIST ? path.join(here, 'dist') : null);
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2', '.woff': 'font/woff', '.json': 'application/json', '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json' };
-const WRITE_CMDS = new Set(['set_setting', 'set_timezone', 'rebuild', 'rec_feedback', 'set_artist_scene', 'scene_family_upsert', 'scene_family_delete', 'scene_tag_set', 'scene_origin_set', 'recompute_scenes', 'restore_move_bundle', 'forecast_log_write', 'meta_set', 'artist_set_origin', 'artist_set_mbid', 'set_session_attention', 'merge_artists', 'import_files', 'start_import', 'set_tz_override', 'delete_tz_override']);
+const WRITE_CMDS = new Set(['set_setting', 'set_timezone', 'rebuild', 'rec_feedback', 'set_artist_scene', 'scene_family_upsert', 'scene_family_delete', 'scene_tag_set', 'scene_origin_set', 'recompute_scenes', 'restore_move_bundle', 'forecast_log_write', 'meta_set', 'artist_set_origin', 'artist_set_mbid', 'artist_tag_edit', 'artist_scene_auto', 'weather_store', 'stylus_configure', 'stylus_add_device', 'stylus_update_device', 'stylus_remove_device', 'set_session_attention', 'merge_artists', 'import_files', 'start_import', 'set_tz_override', 'delete_tz_override']);
 function serveStatic(url, res) {
   if (!STATIC) return false;
   let rel = decodeURIComponent(url.pathname); if (rel === '/' || rel === '') rel = '/index.html';
@@ -358,6 +399,23 @@ http.createServer(async (req, res) => {
     const mine = events.filter((e) => e.name === name);
     for (const e of mine) events.splice(events.indexOf(e), 1);
     res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify(mine.map((e) => e.payload)));
+  }
+  // Phase 9m — Stylus ListenBrainz routes (the desktop app serves these from stylus.rs on port 4749)
+  const lb = url.pathname.replace(/^\/apis\/listenbrainz/, '').replace(/\/$/, '');
+  if (lb === '/1/validate-token' || lb === '/1/submit-listens') {
+    res.setHeader('content-type', 'application/json'); res.setHeader('access-control-allow-origin', '*');
+    const auth = String(req.headers.authorization ?? '').replace(/^token\s+/i, '').trim() || url.searchParams.get('token') || '';
+    const [dev] = auth ? await rowsOf(`SELECT device_id, name FROM stylus_devices WHERE token_hash = ${q(createHash('sha256').update(auth).digest('hex'))}`) : [];
+    if (lb === '/1/validate-token') return res.end(JSON.stringify(dev ? { code: 200, message: 'Token valid.', valid: true, user_name: `deepcuts-${dev.name}` } : { code: 200, message: 'Token invalid.', valid: false }));
+    if (req.method !== 'POST') { res.statusCode = 405; return res.end('{}'); }
+    if (!dev) { res.statusCode = 401; return res.end(JSON.stringify({ code: 401, error: 'Invalid authorization token.' })); }
+    let body = ''; for await (const c of req) { body += c; if (body.length > 2e6) break; }
+    let j; try { j = JSON.parse(body); } catch { /* bad json */ }
+    if (!j || !Array.isArray(j.payload) || typeof j.listen_type !== 'string') { res.statusCode = 400; return res.end(JSON.stringify({ code: 400, error: 'Expected {"listen_type": …, "payload": [ … ]}.' })); }
+    await con.run(`INSERT INTO stylus_inbox (device_id, body) VALUES (${q(dev.device_id)}, ${q(body)})`);
+    await con.run(rd('stylus_process.sql'));
+    await con.run(rd('entity_resolution.sql'));   // the app batches this once a minute; the harness does it at once
+    return res.end(JSON.stringify({ status: 'ok' }));
   }
   if (url.pathname === '/_health') { res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify({ ok: true, db: dbPath, readonly: READONLY, static: !!STATIC })); }
   const cmd = url.pathname.replace(/^\/api\//, '/').slice(1);

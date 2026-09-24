@@ -13,6 +13,8 @@ import { Card, ErrorBox, Sleeve } from '@/components/Card';
 import { Importer } from '@/components/Importer';
 import { SceneEditor } from '@/components/SceneEditor';
 import { MoveCard } from '@/components/MoveCard';
+import { WeatherSettingsCard } from '@/components/WeatherCards';
+import { SourceCoverageCard } from '@/components/SourceCoverageCard';
 import { search } from '@/lib/queries';
 import type { ArtistRow } from '@/lib/types';
 import { sessionOverrides, travel } from '@/lib/phase7Queries';
@@ -116,6 +118,8 @@ export function SettingsPage({ status, onChanged }: { status: AppStatus; onChang
             </div>
             <p className="mt-3 text-xs text-dust">Portable mode: put an empty file named <span className="num">portable.flag</span> next to the app and it keeps its data in a <span className="num">data</span> folder beside it.</p>
           </Card>
+          <div className="md:col-span-2"><SourceCoverageCard /></div>
+          <div className="md:col-span-2"><WeatherSettingsCard /></div>
           <div className="md:col-span-2"><MoveCard onChanged={onChanged} /></div>
         </div>
       )}

@@ -1,4 +1,6 @@
 import { useState } from 'react';
+import { SmoothOrderButton } from '@/components/SoundTools';
+import { DynamicTab } from '@/components/DynamicPlaylists';
 import { revisit, revisitVerdict, type RevisitTrack } from '@/lib/revisitQueries';
 import { Link, useSearchParams } from 'react-router-dom';
 import { likedAlbums, likedArtists, likedFacets, likedSongs, pruneLists, type LikedFilters } from '@/lib/phase4Queries';
@@ -16,13 +18,14 @@ import { Histogram } from '@/components/charts/Bars';
 export function LibraryPage() {
   const [params, setParams] = useSearchParams();
   const tab = params.get('tab') ?? 'songs';
-  const tabs = [['songs', 'Liked songs'], ['albums', 'Liked albums'], ['artists', 'Liked artists'], ['playlists', 'My playlists'], ['followed', 'Followed'], ['made', 'Made by Deep Cuts'], ['earworms', 'Earworms'], ['revisit', 'To revisit'], ['prune', 'Prune']];
+  const tabs = [['songs', 'Liked songs'], ['albums', 'Liked albums'], ['artists', 'Liked artists'], ['playlists', 'My playlists'], ['followed', 'Followed'], ['made', 'Made by Deep Cuts'], ['earworms', 'Earworms'], ['revisit', 'To revisit'], ['dynamic', 'Dynamic'], ['prune', 'Prune']];
   return (
     <div className="mx-auto max-w-6xl">
       <Sleeve kicker="Library" title="Liked songs and playlists, with your numbers" meta="Everything Spotify knows you saved, joined to everything you actually played. Syncs daily once Spotify is connected." />
       <div className="mb-6 flex flex-wrap gap-2 text-xs">{tabs.map(([k, l]) => <button key={k} onClick={() => setParams({ tab: k })} className={`rounded-full px-3 py-1.5 ${tab === k ? 'bg-amber text-ink' : 'border border-line text-dust hover:text-cream'}`}>{l}</button>)}</div>
       {tab === 'songs' && <LikedSongs />}{tab === 'albums' && <LikedAlbums />}{tab === 'artists' && <LikedArtists />}{tab === 'playlists' && <Playlists />}{tab === 'followed' && <Followed />}{tab === 'made' && <MadeBy />}{tab === 'earworms' && <Earworms />}{tab === 'prune' && <Prune />}
       {tab === 'revisit' && <RevisitTab />}
+      {tab === 'dynamic' && <DynamicTab />}
     </div>
   );
 }
@@ -140,6 +143,7 @@ function Playlists() {
           aside={tracks.data ? <MakePlaylistButton small label="Refresh as new playlist" name={`${cur?.name} · refreshed`} tracks={tracks.data.filter((t) => t.kind !== 'dead').map((t) => ({ trackId: t.trackId, track: t.track, artistId: t.artistId, artist: t.artist, plays: t.playsIn, hours: 0, skipRate: t.skipIn }))} note={`playlist:${open}`} /> : undefined}>
           {!open ? <p className="text-sm text-dust">Every song classified: <span className="text-amber">gems</span> you love but never reach here, <span className="text-coral">dead weight</span> you skip or ignore, <span className="text-moss">core</span> songs the playlist is really for, and what's still <span className="text-cream">unheard</span>.</p> : !tracks.data ? <Loading label="Reading…" /> : (
             <div>
+              <div className="mb-2"><SmoothOrderButton name={cur?.name ?? 'Playlist'} tracks={tracks.data.map((t) => ({ trackId: t.trackId, track: t.track, artistId: t.artistId ?? null, artist: t.artist, plays: t.playsAll, hours: 0, skipRate: t.skipIn }))} /></div>
               <div className="mb-3 flex flex-wrap gap-2 text-xs">
                 {([['all', 'All', tracks.data.length], ['gem', 'Gems', cur?.gems ?? 0], ['dead', 'Dead weight', cur?.deadWeight ?? 0], ['unheard', 'Unheard', cur?.unheard ?? 0], ['core', 'Core', tracks.data.filter((t) => t.kind === 'core').length]] as const).map(([k, l, n]) => <button key={k} onClick={() => setKindFilter(k)} className={`rounded-full px-3 py-1 ${kindFilter === k ? 'bg-raised text-cream' : 'border border-line text-dust hover:text-cream'}`}>{l} · {n}</button>)}
               </div>

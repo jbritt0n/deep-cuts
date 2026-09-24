@@ -9,7 +9,8 @@ import { ClockFace } from '@/components/charts/ClockFace';
 import { MonthlySparkline } from '@/components/charts/MonthlySparkline';
 import { digDeeper } from '@/lib/digQueries';
 import { TrajectoryCard } from '@/components/DailyDig';
-import { ArtistMetadata } from '@/components/MetadataPanel';
+import { ArtistAbout, ArtistMetadata } from '@/components/MetadataPanel';
+import { ArtistSoundCard } from '@/components/SoundTools';
 import { QueueButton, useQueue } from '@/components/QueueButton';
 import { trackHref, albumHref } from '@/lib/format';
 import { useState } from 'react';
@@ -30,6 +31,7 @@ export function ArtistPage() {
         meta={<>{fmtInt(a.plays)} plays · {fmtHours(a.hours)} · {fmtInt(a.uniqueTracks)} tracks · first played {fmtDate(a.firstPlayed)} · last {fmtDate(a.lastPlayed)}</>}>
         {loyal && <p className="mt-4 max-w-xl text-sm text-dust">You're a <span className="text-cream">{a.albumLoyalty!.album}</span> person more than an {a.artist} person: {fmtPct(a.albumLoyalty!.share)} of your hours with them come from that one album.</p>}
       </Sleeve>
+      <div className="mb-6"><ArtistAbout artistId={a.artistId} artist={a.artist} /></div>
 
       <section className="grid gap-4 sm:grid-cols-2 md:grid-cols-4">
         <StatCard label="Hours" value={fmtHours(a.hours)} accent />
@@ -43,6 +45,7 @@ export function ArtistPage() {
         <Card title="When in the day" subtitle="Hours by hour of day."><div className="mx-auto max-w-[300px]"><ClockFace data={a.clock} size={300} /></div></Card>
       </section>
       <div className="mt-6 grid gap-6 lg:grid-cols-2"><TrajectoryCard artistId={a.artistId} artist={a.artist} /><ArtistMetadata artistId={a.artistId} /></div>
+      <div className="mt-6 max-w-2xl"><ArtistSoundCard artistId={a.artistId} artist={a.artist} /></div>
 
       <section className="mt-6 grid gap-6 lg:grid-cols-2">
         <Card title="Most played" subtitle="Top tracks by plays." aside={<MakePlaylistButton small name={`${a.artist} · Deep Cuts`} tracks={a.topTracks} note={`artist:${a.artistId}`} />}><TrackList data={a.topTracks} showArtist={false} /></Card>

@@ -89,6 +89,11 @@ impl SpotifyClient {
         self.request(db, reqwest::Method::POST, url, Some(body))
     }
 
+    /// Phase 9k: PUT (replace a playlist's items) through the same retry / refresh / quota path.
+    pub fn put(&self, db: &Db, url: &str, body: Value) -> Result<Value, ApiError> {
+        self.request(db, reqwest::Method::PUT, url, Some(body))
+    }
+
     fn request(&self, db: &Db, method: reqwest::Method, url: &str, body: Option<Value>) -> Result<Value, ApiError> {
         let mut delay = 2u64;
         let mut refreshed = false;

@@ -11,4 +11,6 @@ WHERE NOT EXISTS (
     SELECT 1 FROM plays_normalized p
     WHERE p.spotify_track_id = ?2
       AND (abs(epoch(p.played_at_utc) - ?4) <= 2.0
-           OR abs(epoch(CASE WHEN p.source = 'extended_export' THEN p.played_at_utc - p.ms_played * INTERVAL 1 MILLISECOND ELSE p.raw_at END) - epoch(CAST(?1 AS TIMESTAMPTZ))) <= 10));
+           OR abs(epoch(CASE WHEN p.source = 'extended_export' THEN p.played_at_utc - p.ms_played * INTERVAL 1 MILLISECOND ELSE p.raw_at END) - epoch(CAST(?1 AS TIMESTAMPTZ))) <= 15
+           -- Phase 9l: the poll's played_at may be the END of play — match the export's end too
+           OR (p.source = 'extended_export' AND abs(epoch(p.played_at_utc) - epoch(CAST(?1 AS TIMESTAMPTZ))) <= 15)));

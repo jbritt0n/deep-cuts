@@ -325,6 +325,124 @@ def test_demo_record_builds_with_every_feature():
     assert set(r[0] for r in con.execute("SELECT DISTINCT lang FROM track_lyric_keywords").fetchall()) >= {'en', 'tr'}
     assert con.execute("SELECT COUNT(DISTINCT country) FROM plays_resolved WHERE country IS NOT NULL").fetchone()[0] >= 3
 
+# ---------------------------------------------------------------- Phase 9j
+def test_polled_skips_are_inferred_and_keep_sessions_attended():
+    # Owner: "skips show 0% everywhere and long sessions flag as inattentive". Polls only know a track started; the next
+    # start tells us how long it really played. A 3-hour polled evening with a skip every ~40 minutes must show skips
+    # and stay attended; the same evening with no skips at all still goes unattended after the idle gap (that part is right).
+    import json, datetime as dt
+    def evening(con, skips):
+        t = dt.datetime(2026, 3, 1, 19, 0, tzinfo=dt.timezone.utc)
+        for i in range(60):
+            dur = 200000
+            con.execute("INSERT INTO events (event_type, occurred_at, payload, source_file) VALUES ('play', ?, ?::JSON, 'poll')",
+                        [t, json.dumps({"spotify_track_id": f"t{i}", "track_name": f"T{i}", "artist_name": "Band", "album_name": "LP", "ms_played": dur, "source": "recently_played_poll"})])
+            t += dt.timedelta(milliseconds=(20000 if skips and i % 12 == 5 else dur))
+    con = fresh(); evening(con, True); rebuild(con)
+    sr, att = con.execute("SELECT AVG(CASE WHEN was_skipped THEN 1.0 ELSE 0 END), AVG(CASE WHEN attended THEN 1.0 ELSE 0 END) FROM plays_resolved").fetchone()
+    assert sr > 0.05, sr
+    assert att > 0.95, att
+    assert con.execute("SELECT MIN(ms_played) FROM plays_resolved").fetchone()[0] == 20000
+    con = fresh(); evening(con, False); rebuild(con)
+    assert con.execute("SELECT AVG(CASE WHEN was_skipped THEN 1.0 ELSE 0 END) FROM plays_resolved").fetchone()[0] == 0
+
+# ---------------------------------------------------------------- Phase 9l
+def test_export_supersedes_polls_whether_poll_time_is_start_or_end():
+    # Spotify's recently-played played_at may be the start or the end of play. Either way the export row must replace the
+    # polled copy (keeping its real 45 s and skip), and a song played twice back to back must stay two plays.
+    import json
+    def one(poll_times, exports):
+        con = fresh()
+        for t in poll_times:
+            con.execute("INSERT INTO events (event_type, occurred_at, payload, source_file) VALUES ('play', ?::TIMESTAMPTZ, ?::JSON, 'poll')",
+                        [t, json.dumps({"spotify_track_id": "abc", "track_name": "Song", "artist_name": "Band", "album_name": "LP", "ms_played": 200000, "source": "recently_played_poll"})])
+        con.execute(rd('import_existing_keys.sql'))
+        vals = ", ".join(f"(TIMESTAMP '{end}', 'spotify:track:abc', 'Song', 'Band', 'LP', {ms}::BIGINT, 'linux', '{er}', 'clickrow', false, {str(er == 'fwdbtn').lower()}, false, false, 'US')" for end, ms, er in exports)
+        con.execute(f"CREATE TEMP TABLE _stage AS SELECT * FROM (VALUES {vals}) t(ts, spotify_track_uri, track_name, artist_name, album_name, ms_played, platform, end_reason, start_reason, shuffle, export_skipped, offline, incognito, country)")
+        con.execute(rd('import_insert.sql').replace('?1', "'export.json'")); rebuild(con)
+        return con.execute("SELECT COUNT(*), list(ms_played ORDER BY played_at), list(was_skipped ORDER BY played_at) FROM plays_resolved").fetchone()
+    # poll stamped at START / at END, each with a few seconds of drift → one play with the export's truth
+    for poll in ('2026-03-01 12:00:03+00', '2026-03-01 12:00:48+00'):
+        n, ms, sk = one([poll], [('2026-03-01 12:00:45', 45000, 'fwdbtn')])
+        assert (n, ms, sk) == (1, [45000], [True]), (poll, n, ms, sk)
+    # the same song twice in a row (3:20 each): both polls, both export rows → exactly two plays
+    n, ms, _ = one(['2026-03-01 12:00:00+00', '2026-03-01 12:03:20+00'], [('2026-03-01 12:03:20', 200000, 'trackdone'), ('2026-03-01 12:06:40', 200000, 'trackdone')])
+    assert n == 2, (n, ms)
+
+def test_resolution_watermark_stops_rebuild_every_launch():
+    # After an export supersedes polled plays, events (5) ≠ plays_resolved (3) forever — the 9k startup check read that
+    # as "stale" and rebuilt the whole record on every launch. The watermark sees nothing new.
+    import json
+    con = fresh()
+    for t in ('2026-03-01 12:00:00+00', '2026-03-01 12:10:00+00'):
+        con.execute("INSERT INTO events (event_type, occurred_at, payload, source_file) VALUES ('play', ?::TIMESTAMPTZ, ?::JSON, 'poll')", [t, json.dumps({"spotify_track_id": "abc" if t.endswith('00:00+00') else "def", "track_name": "S", "artist_name": "B", "album_name": "L", "ms_played": 200000, "source": "recently_played_poll"})])
+    con.execute(rd('import_existing_keys.sql'))
+    con.execute("""CREATE TEMP TABLE _stage AS SELECT * FROM (VALUES
+        (TIMESTAMP '2026-03-01 12:03:21', 'spotify:track:abc', 'S', 'B', 'L', 200000::BIGINT, 'linux', 'trackdone', 'clickrow', false, false, false, false, 'US'),
+        (TIMESTAMP '2026-03-01 12:10:32', 'spotify:track:def', 'S2', 'B', 'L', 31000::BIGINT, 'linux', 'fwdbtn', 'clickrow', false, true, false, false, 'US'))
+        t(ts, spotify_track_uri, track_name, artist_name, album_name, ms_played, platform, end_reason, start_reason, shuffle, export_skipped, offline, incognito, country)""")
+    con.execute(rd('import_insert.sql').replace('?1', "'e.json'")); rebuild(con)
+    ev, res = con.execute("SELECT (SELECT COUNT(*) FROM events), (SELECT COUNT(*) FROM plays_resolved)").fetchone()
+    assert ev != res, (ev, res)   # the old check would rebuild on every launch
+    unresolved = con.execute("SELECT COUNT(*) FROM events WHERE ingested_at > COALESCE(TRY_CAST((SELECT value FROM app_meta WHERE key = 'resolved_through') AS TIMESTAMPTZ), TIMESTAMPTZ '1900-01-01 00:00:00+00')").fetchone()[0]
+    assert unresolved == 0, unresolved
+    con.execute("INSERT INTO events (event_type, occurred_at, payload, source_file) VALUES ('play', now(), '{\"spotify_track_id\": \"new\", \"source\": \"recently_played_poll\", \"ms_played\": 1000}'::JSON, 'poll')")
+    assert con.execute("SELECT COUNT(*) FROM events WHERE ingested_at > TRY_CAST((SELECT value FROM app_meta WHERE key = 'resolved_through') AS TIMESTAMPTZ)").fetchone()[0] == 1
+
+# ---------------------------------------------------------------- Phase 9m — Stylus
+def test_stylus_listenbrainz_submissions():
+    # Real client shapes: a Bandcamp scrobble from Web Scrobbler (no Spotify id), a Spotify-app scrobble from Pano (id in
+    # spotify_id URL) that the poll ALSO recorded, a batch import, a playing_now, a resend of the same listen, a paused
+    # device, and hour-rounded timestamps on a privacy-minded device.
+    import json
+    con = fresh()
+    con.execute("INSERT INTO stylus_devices (device_id, name, token_hash) VALUES ('phone', 'Pixel', 'x'), ('laptop', 'Work laptop', 'y')")
+    con.execute("UPDATE stylus_devices SET ts_precision = 'hour', keep_player = FALSE WHERE device_id = 'laptop'")
+    con.execute("INSERT INTO stylus_devices (device_id, name, token_hash, paused) VALUES ('car', 'Car', 'z', TRUE)")
+    # Spotify's poll already has the Pano track (poll stamped ~3:20 after the scrobble's start = end of play)
+    con.execute("INSERT INTO events (event_type, occurred_at, payload, source_file) VALUES ('play', TIMESTAMPTZ '2026-03-01 12:13:20+00', ?::JSON, 'poll')",
+                [json.dumps({"spotify_track_id": "4uLU6hMCjMI75M1A2tKUQC", "track_name": "Everlong", "artist_name": "Foo Fighters", "album_name": "The Colour", "ms_played": 200000, "source": "recently_played_poll"})])
+    def listen(t, artist, track, extra=None):
+        return {"listened_at": t, "track_metadata": {"artist_name": artist, "track_name": track, "release_name": "LP", "additional_info": dict({"duration_ms": 200000}, **(extra or {}))}}
+    t0 = 1772366400   # 2026-03-01 12:00:00 UTC
+    inbox = [
+        ('phone', {"listen_type": "single", "payload": [listen(t0, "Khruangbin", "Maria También", {"music_service": "bandcamp.com", "submission_client": "Web Scrobbler"})]}),
+        ('phone', {"listen_type": "single", "payload": [listen(t0 + 600, "Foo Fighters", "Everlong", {"spotify_id": "https://open.spotify.com/track/4uLU6hMCjMI75M1A2tKUQC", "media_player": "Spotify"})]}),
+        ('phone', {"listen_type": "import", "payload": [listen(t0 + 1200, "Altın Gün", "Goca Dünya"), listen(t0 + 1500, "Altın Gün", "Leylim Ley")]}),
+        ('phone', {"listen_type": "playing_now", "payload": [{"track_metadata": {"artist_name": "Mitski", "track_name": "Nobody"}}]}),
+        ('phone', {"listen_type": "single", "payload": [listen(t0, "Khruangbin", "Maria También")]}),       # resent
+        ('laptop', {"listen_type": "single", "payload": [listen(t0 + 1234, "Nils Frahm", "Says", {"media_player": "foobar2000"})]}),
+        ('car', {"listen_type": "single", "payload": [listen(t0 + 99, "Radio", "Song")]}),
+    ]
+    for dev, body in inbox:
+        con.execute("INSERT INTO stylus_inbox (device_id, body) VALUES (?, ?)", [dev, json.dumps(body)])
+    con.execute(rd('stylus_process.sql'))
+    assert con.execute("SELECT COUNT(*) FROM stylus_inbox").fetchone()[0] == 0
+    devs = {r[0]: r[1:] for r in con.execute("SELECT device_id, accepted, duplicates, discarded FROM stylus_devices").fetchall()}
+    assert devs['phone'] == (3, 2, 0), devs      # bandcamp + 2 imports accepted; Everlong (Spotify had it) + resend = duplicates
+    assert devs['laptop'] == (1, 0, 0) and devs['car'] == (0, 0, 1), devs
+    assert con.execute("SELECT track_name FROM stylus_now_playing WHERE device_id = 'phone'").fetchone()[0] == 'Nobody'
+    ev = con.execute("SELECT json_extract_string(payload, '$.track_name'), CAST(occurred_at AS VARCHAR), json_extract_string(payload, '$.media_player'), json_extract_string(payload, '$.platform') FROM events WHERE source_file LIKE 'stylus:%' ORDER BY 1").fetchall()
+    says = [e for e in ev if e[0] == 'Says'][0]
+    assert says[1].startswith('2026-03-01 12:00:00') and says[2] is None and says[3] == 'stylus:Work laptop', says   # hour-rounded, player dropped
+    rebuild(con)
+    names = sorted(r[0] for r in con.execute("SELECT track_name FROM plays_resolved").fetchall())
+    assert names == ['Everlong', 'Goca Dünya', 'Leylim Ley', 'Maria También', 'Says'], names
+    assert con.execute("SELECT track_id FROM plays_resolved WHERE track_name = 'Maria También'").fetchone()[0].startswith('local:')
+
+def test_stylus_scrobble_before_poll_gives_way():
+    # The scrobble lands first (no Spotify id, Pano on the Spotify app); the poll arrives later with the id → one play, Spotify's.
+    import json
+    con = fresh()
+    con.execute("INSERT INTO stylus_devices (device_id, name, token_hash) VALUES ('phone', 'Pixel', 'x')")
+    con.execute("INSERT INTO stylus_inbox (device_id, body) VALUES ('phone', ?)", [json.dumps({"listen_type": "single", "payload": [{"listened_at": 1772366400, "track_metadata": {"artist_name": "Foo Fighters", "track_name": "Everlong", "additional_info": {"duration_ms": 250000}}}]})])
+    con.execute(rd('stylus_process.sql'))
+    con.execute("INSERT INTO events (event_type, occurred_at, payload, source_file) VALUES ('play', TIMESTAMPTZ '2026-03-01 12:04:12+00', ?::JSON, 'poll')",
+                [json.dumps({"spotify_track_id": "4uLU6hMCjMI75M1A2tKUQC", "track_name": "Everlong", "artist_name": "Foo Fighters", "album_name": "The Colour", "ms_played": 250000, "source": "recently_played_poll"})])
+    rebuild(con)
+    rows = con.execute("SELECT track_id FROM plays_resolved").fetchall()
+    assert rows == [('4uLU6hMCjMI75M1A2tKUQC',)], rows
+
 if __name__ == '__main__':
     tests = [v for k, v in globals().items() if k.startswith('test_')]
     fails = 0

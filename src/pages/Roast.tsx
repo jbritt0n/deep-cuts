@@ -37,6 +37,8 @@ export function RoastPage() {
       {r.error ? <ErrorBox message={r.error} /> : !r.data ? <Loading label="Reviewing the evidence…" /> : r.data.receipts.length === 0 ? (
         <Card title="Nothing to roast"><p className="text-sm text-dust">Either your listening is flawless or there isn't enough of it yet. Import your history and come back.</p></Card>
       ) : (
+        <>
+        <p className="mb-4 font-display text-2xl italic text-dust">{r.data.opener}</p>
         <ol className="space-y-3">
           {r.data.receipts.map((x, i) => (
             <li key={x.id} className="rounded-2xl border border-line bg-surface p-4">
@@ -45,6 +47,8 @@ export function RoastPage() {
             </li>
           ))}
         </ol>
+        <p className="mt-5 rounded-2xl border border-moss/40 bg-moss/5 p-4 font-display text-xl leading-snug">{r.data.closer}</p>
+        </>
       )}
 
       <section className="mt-8">

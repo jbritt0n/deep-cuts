@@ -78,32 +78,49 @@ CREATE TABLE IF NOT EXISTS activity_log (
 -- Local wall-clock conversion happens in entity_resolution.sql (tz_offsets).
 -- Dedupe across sources happens at ingest on (track identity, played_at ±2 s).
 -- ------------------------------------------------------------
+-- Phase 9j: Spotify's recently-played API reports only that a track STARTED — no skip reason, no ms played — so 9i
+-- stored every polled play as heard in full, never skipped (owner: "skips show 0% everywhere, long sessions flag as
+-- inattentive"). For polled plays we now infer both from the next polled start: if the next track began before this
+-- one could have finished, you moved on; the time between the two starts is what you heard (capped at the track's
+-- length). A skip = moved on > 15 s before the end AND heard < 85 %. Inferred skips set end_reason 'fwdbtn', so they
+-- also count as interactions for attention. Exports keep their own real values.
 CREATE OR REPLACE VIEW plays_normalized AS
+WITH e AS (
+    SELECT event_id, occurred_at, payload,
+           json_extract_string(payload, '$.source') AS src,
+           CAST(json_extract(payload, '$.ms_played') AS BIGINT) AS ms_raw
+    FROM events WHERE event_type = 'play'),
+poll AS (
+    SELECT event_id,
+           epoch_ms(LEAD(occurred_at) OVER (ORDER BY occurred_at, event_id)) - epoch_ms(occurred_at) AS to_next_ms
+    FROM e WHERE src = 'recently_played_poll'),
+x AS (
+    SELECT e.*, poll.to_next_ms,
+           CASE WHEN e.src = 'recently_played_poll' AND poll.to_next_ms IS NOT NULL AND poll.to_next_ms >= 0 AND poll.to_next_ms < e.ms_raw
+                THEN poll.to_next_ms ELSE e.ms_raw END AS ms_eff,
+           (e.src = 'recently_played_poll' AND poll.to_next_ms IS NOT NULL AND poll.to_next_ms >= 0
+            AND poll.to_next_ms < e.ms_raw - 15000 AND poll.to_next_ms < 0.85 * e.ms_raw) AS skip_inferred
+    FROM e LEFT JOIN poll USING (event_id))
 SELECT
     event_id                                             AS play_id,
-    CASE
-        WHEN json_extract_string(payload, '$.source') IN ('extended_export')
-             THEN occurred_at
-        ELSE occurred_at + (COALESCE(CAST(json_extract(payload, '$.ms_played') AS BIGINT), 0) * INTERVAL 1 MILLISECOND)
-    END                                                  AS played_at_utc,
+    CASE WHEN src IN ('extended_export') THEN occurred_at
+         ELSE occurred_at + (COALESCE(ms_eff, 0) * INTERVAL 1 MILLISECOND) END AS played_at_utc,
     occurred_at                                          AS raw_at,
     json_extract_string(payload, '$.spotify_track_id')   AS spotify_track_id,
     json_extract_string(payload, '$.track_name')         AS track_name,
     json_extract_string(payload, '$.artist_name')        AS artist_name,
     json_extract_string(payload, '$.album_name')         AS album_name,
-    CAST(json_extract(payload, '$.ms_played') AS BIGINT) AS ms_played,
+    ms_eff                                               AS ms_played,
     json_extract_string(payload, '$.platform')           AS platform,
-    json_extract_string(payload, '$.end_reason')         AS end_reason,
+    CASE WHEN skip_inferred THEN 'fwdbtn' ELSE json_extract_string(payload, '$.end_reason') END AS end_reason,
     json_extract_string(payload, '$.start_reason')       AS start_reason,
     CAST(json_extract(payload, '$.shuffle') AS BOOLEAN)  AS shuffle,
-    json_extract_string(payload, '$.source')             AS source,
+    src                                                  AS source,
     json_extract_string(payload, '$.country')            AS country,
-    -- behavioural flags (replacing deprecated audio features) — v1 definition kept
-    (json_extract_string(payload, '$.end_reason') IN ('fwdbtn', 'backbtn')) AS was_skipped,
-    -- Phase 9c: the "short play" cutoff is owner-tunable (Settings → Tuning → app_meta short_play_seconds, default 30). Rebuild after changing.
-    (CAST(json_extract(payload, '$.ms_played') AS BIGINT) < 1000 * coalesce(TRY_CAST((SELECT value FROM app_meta WHERE key = 'short_play_seconds') AS BIGINT), 30)) AS under_30s
-FROM events
-WHERE event_type = 'play';
+    COALESCE(skip_inferred OR json_extract_string(payload, '$.end_reason') IN ('fwdbtn', 'backbtn'), FALSE) AS was_skipped,
+    -- Phase 9c: the "short play" cutoff is owner-tunable (app_meta short_play_seconds, default 30). Rebuild after changing.
+    (ms_eff < 1000 * coalesce(TRY_CAST((SELECT value FROM app_meta WHERE key = 'short_play_seconds') AS BIGINT), 30)) AS under_30s
+FROM x;
 
 -- ------------------------------------------------------------
 -- 4.2 Entity tables (canonical IDs). Populated by entity_resolution.sql.
@@ -1012,3 +1029,74 @@ LEFT JOIN artist_origin o ON o.artist_id = p.artist_id LEFT JOIN sc ON sc.artist
 LEFT JOIN tg ON tg.artist_id = p.artist_id LEFT JOIN artist_popularity ap ON ap.artist_id = p.artist_id LEFT JOIN album_popularity alp ON alp.album_id = p.album_id
 LEFT JOIN track_features tf ON tf.track_id = p.track_id AND tf.found LEFT JOIN track_lyric_features lf ON lf.track_id = p.track_id AND lf.found
 LEFT JOIN liked_songs l ON l.track_id = p.track_id;
+
+-- ------------------------------------------------------------
+-- Phase 9j — owner tag edits. A tag you remove is BLOCKED for that artist: it's deleted now, stripped again after every
+-- Last.fm / MusicBrainz pass and at the start of compute_scenes.sql, so enrichment can't bring it back (owner: Ljupka
+-- Dimitrovska kept a "german" tag). Tags you add are artist_tags rows with source = 'owner', weight 1.
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS tag_blocks (
+    artist_id  VARCHAR,
+    tag        VARCHAR,
+    blocked_at TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (artist_id, tag)
+);
+
+-- ------------------------------------------------------------
+-- Phase 9j — Wikipedia: a picture and a short description per artist (owner: "Connect Wiki for pictures/descriptions?").
+-- Resolved by chain, never by name: MusicBrainz artist → its Wikidata link → the Wikipedia article in your language
+-- (English fallback) → the REST summary (extract + lead image). So a namesake can't sneak in, as happened with origins.
+-- Text is Wikipedia's (CC BY-SA) and the image is from Wikimedia Commons; both are shown with a link and credit.
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS artist_wiki (
+    artist_id   VARCHAR PRIMARY KEY,
+    qid         VARCHAR,          -- Wikidata id, e.g. Q1234
+    lang        VARCHAR,
+    title       VARCHAR,
+    extract     VARCHAR,          -- the summary's plain-text intro
+    description VARCHAR,          -- one-line Wikidata description ("Macedonian singer")
+    image_url   VARCHAR,          -- lead image (thumbnail ~ 640 px)
+    page_url    VARCHAR,
+    found       BOOLEAN DEFAULT TRUE,
+    fetched_at  TIMESTAMPTZ DEFAULT now()
+);
+
+-- ------------------------------------------------------------
+-- Phase 9k — weather (Open-Meteo, free, no key) for the place you set in Settings → Record → Weather.
+-- One row per local date: observed history (archive API) for the span of your record, plus the 7-day forecast.
+-- `bucket` folds WMO weather codes into six moods: sunny · cloudy · fog · rain · snow · storm.
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS weather_daily (
+    date        DATE PRIMARY KEY,
+    code        INTEGER,         -- WMO weather code
+    bucket      VARCHAR,
+    tmax        DOUBLE,          -- °C
+    tmin        DOUBLE,
+    precip_mm   DOUBLE,
+    sunshine_h  DOUBLE,
+    kind        VARCHAR,         -- observed | forecast
+    fetched_at  TIMESTAMPTZ DEFAULT now()
+);
+
+-- ------------------------------------------------------------
+-- Phase 9m — Stylus S1: Deep Cuts' own scrobble receiver (docs/STYLUS-SPEC.md). It speaks the ListenBrainz API, so
+-- Pano Scrobbler, Web Scrobbler, multi-scrobbler, Navidrome, Jellyfin… can point at it. Rust only authenticates and
+-- drops the raw request into stylus_inbox; stylus_process.sql does the rest (testable without the network).
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS stylus_devices (
+    device_id     VARCHAR PRIMARY KEY,
+    name          VARCHAR,
+    token_hash    VARCHAR,           -- sha-256 hex of the token; the token itself is shown once and never stored
+    ts_precision  VARCHAR DEFAULT 'exact',   -- exact | minute | hour — what's kept of each listen's time
+    keep_player   BOOLEAN DEFAULT TRUE,      -- "Poweramp", "Web Scrobbler"
+    keep_service  BOOLEAN DEFAULT TRUE,      -- "bandcamp.com", "youtube"
+    keep_device   BOOLEAN DEFAULT TRUE,      -- this device's name on each play (the platform field)
+    paused        BOOLEAN DEFAULT FALSE,     -- accept and discard, so clients don't queue up
+    created_at    TIMESTAMPTZ DEFAULT now(),
+    last_seen_at  TIMESTAMPTZ,
+    accepted      BIGINT DEFAULT 0,
+    duplicates    BIGINT DEFAULT 0,          -- already recorded by Spotify (or resent by the client)
+    discarded     BIGINT DEFAULT 0           -- arrived while paused
+);
+CREATE TABLE IF NOT EXISTS stylus_inbox (device_id VARCHAR, body VARCHAR, received_at TIMESTAMPTZ DEFAULT now());
+CREATE TABLE IF NOT EXISTS stylus_now_playing (device_id VARCHAR PRIMARY KEY, artist_name VARCHAR, track_name VARCHAR, release_name VARCHAR, since TIMESTAMPTZ DEFAULT now());
