@@ -196,9 +196,18 @@ function FrontCover({ r }: { r: CrateRecord }) {
 }
 
 function ObscurityStamp({ r }: { r: CrateRecord }) {
-  if (r.obscurity == null) return <span className="text-dust">obscurity unknown</span>;
-  const label = r.obscurity >= 0.45 ? 'ultra rare' : r.obscurity >= 0.3 ? 'rare' : r.obscurity >= 0.18 ? 'cult' : r.obscurity >= 0.1 ? 'known' : 'everyone knows';
-  return <span className={r.obscurity >= 0.3 ? 'text-amber' : r.obscurity >= 0.18 ? 'text-cream' : 'text-dust'}>{label} · {r.listeners != null ? `${compact(r.listeners)} listeners` : ''}</span>;
+  // Phase 9i: the record and the artist, separately — a famous band's forgotten album reads "album rare · artist known"
+  const tier = (o: number) => (o >= 0.45 ? 'ultra rare' : o >= 0.3 ? 'rare' : o >= 0.18 ? 'cult' : o >= 0.1 ? 'known' : 'everyone knows');
+  const tone = (o: number) => (o >= 0.3 ? 'text-amber' : o >= 0.18 ? 'text-cream' : 'text-dust');
+  const one = (label: string, o: number | null | undefined, l: number | null | undefined) => (o == null ? <span className="text-dust">{label}: unknown</span> : <span className={tone(o)}><span className="text-dust">{label}</span> {tier(o)}{l != null ? ` · ${compact(l)}` : ''}</span>);
+  const deeper = r.albumListeners != null && r.listeners ? r.albumListeners / r.listeners : null;
+  return (
+    <span className="inline-flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+      {one('album', r.albumObscurity, r.albumListeners)}
+      {one('artist', r.obscurity, r.listeners)}
+      {deeper != null && deeper < 0.15 && <span className="text-[11px] text-dust" title="Share of the artist's Last.fm listeners who have played this album">a deep cut in their catalogue · {Math.round(deeper * 100)}% of their listeners</span>}
+    </span>
+  );
 }
 const compact = (n: number) => (n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n));
 

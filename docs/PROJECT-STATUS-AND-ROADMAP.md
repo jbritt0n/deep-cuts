@@ -1,7 +1,7 @@
 # Deep Cuts v3 — Project Summary & Roadmap
-**Handoff document — September 22, 2026 (current through Phase 9h)**
+**Handoff document — September 22, 2026 (current through Phase 9i)**
 
-> For what to build next, read **`docs/HANDOFF-PHASE-9H.md`** — it is the working handoff. This file is the durable project summary.
+> For what to build next, read **`docs/HANDOFF-PHASE-9I.md`** — it is the working handoff. This file is the durable project summary.
 
 This file is written for whoever picks up this project next (human or AI agent). It summarizes what exists, how it's built, what's been tested, what's broken, and what's planned. Read this before touching code.
 
@@ -94,6 +94,18 @@ SQL/TS verified (tsc, 29 vitest, 14 fixtures, 9 smoke scripts incl. the Ask pipe
 - **Docker** (`docker/`, `docs/DOCKER.md`): `dev-server.mjs` grew into the headless server — serves `dist/`, `HOST`/`PORT`, `/_health`, `DEEPCUTS_READONLY` (opens the file read-only and refuses writes politely), `OLLAMA_URL` proxy. The container is the *analyst*; the desktop app stays the *collector* (connectors, tokens, the single DuckDB writer). `bridge.ts` uses same-origin when the UI is served by that server.
 - **9d feedback:** Settings → Record → **Stored data** (exact file size, estimated bytes per group, rows per table, sources). Crate sections: wrapped strip (no scrollbar), one-click jump vs ⊙ filter, highlight follows the front card, an explanation of how sections are derived, and **re-filing** an artist from the record card (`scene_overrides`, honoured by `compute_insights.sql`, applied immediately by `set_artist_scene`). Obscurity **tier word** beside the number. **Playlists**: ids deduped, 400 ms between 100-URI chunks, and the count Spotify reports is verified and shown when short; **queueMany** paces 250 ms and continues past one-off refusals. **Threads** exclude umbrella/meta tags and any tag on > 20 % of your artists, and gain **decade threads** from `tracks.release_date`. All background timestamps render in the record's zone (`fmtStamp`). **Lyric keyword cloud** on Insights (own SVG spiral layout; click a word → tracks → playlist).
 
+### Phase 9i — owner feedback on 9h.1: correctable metadata, trustworthy matching, FreqBlog, Eras, dedupe, demo
+Verified: tsc, 33 vitest, 25 fixtures (+3: export-after-polling dedupe, owner overrides survive rebuild, full demo build), 13 smoke scripts (`smoke-9i.ts`), `vite build`, guard scan. **Rust uncompiled** — `docs/HANDOFF-PHASE-9I.md` §1.
+- **Metadata** (`metaQueries.ts`, `MetadataPanel.tsx`; tables `artist_mb_match`, `metadata_overrides`, re-applied at the end of `entity_resolution.sql`; commands `meta_set`, `artist_set_origin`, `artist_mb_candidates`, `artist_set_mbid`).
+- **MusicBrainz matching** (`musicbrainz.rs`): ISRC credit → album-title overlap among namesakes → single exact-name hit → else "ambiguous" (no guess). `verify_batch` re-checks older matches and, on a wrong one, discards origin/tags/relations fetched through it. `wikidata.rs::origin_for`: city = area when it's a city, begin-area marked "(born/formed)"; owner rows never overwritten.
+- **FreqBlog** (`freqblog.rs`): bare-array `/bulk` body (the 422), per-item billing, `RateLimit-Remaining`, queued items collected later, first reply saved to logs.
+- **Eras** (`EraChart.tsx`, `eraStyle.ts`): two bands, gap/palette/fill/height/zoom prefs, hover card, scroll reset only on width change; threads: recent + per-year slots + scene cap, 24 by default (`thread_max`, `thread_per_year`).
+- **Crate**: `album_popularity` (Last.fm album.getInfo) + `album_obscurity`; card shows both and "a deep cut in their catalogue".
+- **Library → To revisit** (`revisitQueries.ts`), **Roast Me** (`roastQueries.ts`, `Roast.tsx`), **Export everything** (`plays_enriched` view, `migrate::export_record`).
+- **Dedupe**: polled plays superseded by extended-export rows on track + start ±10 s in `entity_resolution.sql`; `poll_insert.sql` compares starts too. Before 9i an export imported after polling double-counted every overlap.
+- **Demo record**: `demo_events.sql` + `demo_enrich.sql` shared by the app and the dev seed; the app now runs the full pipeline for the demo and rebuilds an out-of-date demo (`DEMO_REV`).
+- **Stylus** designed (`docs/STYLUS-SPEC.md`): ListenBrainz-compatible receiver, per-device privacy masks, Docker relay with a pull model.
+
 ### Phase 9h — owner feedback on 9g: navigation, one scroller, display size, search, Moods & Forecast, listening abroad
 Verified: tsc, 33 vitest (display), 22 fixtures (per-language IDF), 12 smoke scripts (`smoke-9h.ts`), `vite build`, and a Python port of the new Rust SQL guard against its unit-test cases plus every app query. **Rust uncompiled**: `db.rs` guard + `#[cfg(test)] guard_tests`, `lastfm.rs` 30-day refresh, `set_setting` +`home_country`.
 - **Nav** (`Shell.tsx`): `PINNED` + `NAV_GROUPS` (Understand, Stories, Act, App), collapsible, persisted in localStorage `deepcuts.nav`, auto-open on the current page. Not for me → Settings tab (`SkipHallPage embedded`); `/notforme` and `/forecast` redirect. Settings tabs follow `?tab=`.
@@ -141,7 +153,7 @@ SQL/TS verified (tsc, 29 vitest, 18 fixtures incl. four new, 10 smoke scripts in
 
 ## 3. What's next
 
-**Read `docs/HANDOFF-PHASE-9H.md`** first, then `docs/HANDOFF-PHASE-9G.md`, `docs/HANDOFF-PHASE-9F.md`, `docs/HANDOFF-PHASE-9E.md`, `docs/HANDOFF-PHASE-9D.md`, then `docs/HANDOFF-PHASE-9C.md` for what 9b/9c shipped, what must be compiled first, and what remains. `docs/HANDOFF-PHASE-9B.md` still carries the un-started 9b menu items (audio-features connector, dynamic playlists, world map, weekly review + Liner Notes redesign, remaining owner items) and the longer menu after that. Nothing is duplicated here so the two files can't drift.
+**Read `docs/HANDOFF-PHASE-9I.md`** first, then `docs/HANDOFF-PHASE-9H.md`, `docs/HANDOFF-PHASE-9G.md`, `docs/HANDOFF-PHASE-9F.md`, `docs/HANDOFF-PHASE-9E.md`, `docs/HANDOFF-PHASE-9D.md`, then `docs/HANDOFF-PHASE-9C.md` for what 9b/9c shipped, what must be compiled first, and what remains. `docs/HANDOFF-PHASE-9B.md` still carries the un-started 9b menu items (audio-features connector, dynamic playlists, world map, weekly review + Liner Notes redesign, remaining owner items) and the longer menu after that. Nothing is duplicated here so the two files can't drift.
 
 ---
 

@@ -1,4 +1,5 @@
 import { clamp, useViewport } from '@/lib/display';
+import { PALETTES, useEraStyle, type EraStyle } from '@/lib/eraStyle';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { C } from '@/lib/theme';
 import type { Era, EraWeek } from '@/lib/insightQueries';
@@ -17,21 +18,29 @@ import { fmtDate, fmtHours } from '@/lib/format';
  * data does.
  */
 export type EraView = 'areas' | 'lanes';
-type Span = { key: string; kind: 'era' | 'thread'; label: string; sub: string; start: string; endExclusive: string; color: string; series: { week: string; hours: number }[]; hours: number };
+type Span = { key: string; kind: 'era' | 'thread'; label: string; sub: string; start: string; endExclusive: string; color: string; series: { week: string; hours: number }[]; hours: number; era?: Era; thread?: GenreThread };
 
-const THREAD_COLORS = ['#7FC8A9', '#8A6FB0', '#E4655F', '#6F8FB0', '#F2C27B', '#B9A6D6', '#E4A5A0', '#5FD0A8', '#D98E2B', '#8FB8FF'];
 const hash = (s: string) => { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h; };
 
 export function EraChart({ weeks, eras, threads, view, onView, onPick }: { weeks: EraWeek[]; eras: Era[]; threads: GenreThread[]; view: EraView; onView: (v: EraView) => void; onPick?: (s: { kind: 'era' | 'thread'; key: string }) => void }) {
   const vp = useViewport();
   const [hover, setHover] = useState<string | null>(null);
-  const model = useMemo(() => build(weeks, eras, threads), [weeks, eras, threads]);
+  const st = useEraStyle();
+  const [tip, setTip] = useState<{ key: string; x: number; y: number } | null>(null);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const model = useMemo(() => build(weeks, eras, threads, st), [weeks, eras, threads, st]);
   if (!model) return <p className="text-sm text-dust">Nothing to chart yet.</p>;
-  const { idx, spans, first, nWeeks, maxH } = model;
-  const colW = 14, padL = 8, padR = 24;
+  const { idx, spans, first, nWeeks } = model;
+  const colW = st.weekWidth, padL = 8, padR = 24;
   const width = padL + nWeeks * colW + padR;
   const x = (week: string) => padL + (idx.get(week) ?? weekIndex(first, week)) * colW;
-  const dim = (k: string) => (hover && hover !== k ? 0.18 : 1);
+  const dim = (k: string) => (hover && hover !== k ? 0.22 : 1);
+  // hover card position is relative to the chart wrapper, so it stays put while the chart scrolls horizontally
+  const onMove = (k: string) => (e: React.MouseEvent) => { const r = wrapRef.current?.getBoundingClientRect(); if (r) setTip({ key: k, x: e.clientX - r.left, y: e.clientY - r.top }); };
+  const enter = (k: string) => (e: React.MouseEvent) => { setHover(k); onMove(k)(e); };
+  const leave = () => { setHover(null); setTip(null); };
+  const tipSpan = tip ? spans.find((x) => x.key === tip.key) : null;
+  const Tip = tipSpan && tip ? <HoverCard span={tipSpan} x={tip.x} y={tip.y} wrapW={wrapRef.current?.clientWidth ?? 800} /> : null;
   const eraSpans = spans.filter((s) => s.kind === 'era'), threadSpans = spans.filter((s) => s.kind === 'thread');
   const ticks = yearTicks(first, nWeeks);
 
@@ -42,48 +51,62 @@ export function EraChart({ weeks, eras, threads, view, onView, onPick }: { weeks
   );
 
   if (view === 'areas') {
-    const h = Math.round(clamp(200, vp.h * 0.34, 340)), top = 30, base = h - 28;   // Phase 9h: fits a 768-px screen with the page header
-    const y = (v: number) => base - (v / maxH) * (base - top);
-    const area = (s: Span) => {
+    // Phase 9i: two bands — eras (the artist backbone) on top, genre threads underneath — instead of everything on one
+    // baseline, so a thread never hides an era. A gap separates consecutive eras and the two bands (Settings → Appearance).
+    const h = Math.round(clamp(260, vp.h * 0.5, 520) * st.height), top = 34, axis = 22;
+    const bands = h - top - axis - st.bandGap;
+    const eraH = threadSpans.length ? Math.round(bands * 0.58) : bands;
+    const eraBase = top + eraH, thTop = eraBase + st.bandGap, thBase = h - axis;
+    const maxEra = Math.max(1, ...eraSpans.flatMap((s) => s.series.map((w) => w.hours)));
+    const maxTh = Math.max(1, ...threadSpans.flatMap((s) => s.series.map((w) => w.hours)));
+    const yE = (v: number) => eraBase - (v / maxEra) * (eraH - 6);
+    const yT = (v: number) => thBase - (v / maxTh) * (thBase - thTop - 4);
+    const inset = (s: Span, i: number, last: number) => (s.kind === 'era' ? [i === 0 ? 0 : st.gap / 2, i === last ? 0 : st.gap / 2] : [0, 0]);
+    const area = (s: Span, y: (v: number) => number, base: number, [l, r]: number[]) => {
       if (!s.series.length) return '';
-      const pts = s.series.map((w) => `${x(w.week) + colW / 2},${y(w.hours)}`);
-      const x0 = x(s.series[0].week) + colW / 2, x1 = x(s.series[s.series.length - 1].week) + colW / 2;
-      return `M${x0},${base} L${pts.join(' L')} L${x1},${base} Z`;
+      const pts = s.series.map((w, i) => { const px = x(w.week) + colW / 2; const cx = i === 0 ? Math.max(px, x(s.start) + l) : i === s.series.length - 1 ? Math.min(px, x(s.start) + weeksIn(s) * colW - r) : px; return `${cx},${y(w.hours)}`; });
+      const x0 = x(s.start) + l, x1 = x(s.start) + weeksIn(s) * colW - r;
+      return `M${x0},${base} L${x0},${y(s.series[0].hours)} L${pts.join(' L')} L${x1},${y(s.series[s.series.length - 1].hours)} L${x1},${base} Z`;
     };
-    const line = (s: Span) => s.series.map((w, i) => `${i ? 'L' : 'M'}${x(w.week) + colW / 2},${y(w.hours)}`).join(' ');
+    const fillOf = (s: Span) => (st.fill === 'gradient' ? `url(#g-${cssId(s.key)})` : s.color);
+    const fillOp = (kind: Span['kind']) => ({ soft: kind === 'era' ? 0.3 : 0.32, solid: kind === 'era' ? 0.8 : 0.7, gradient: 1, outline: 0.08 }[st.fill]);
+    const strokeW = st.fill === 'outline' ? 2 : 1.4;
     return (
       <div>
         <div className="mb-2 flex flex-wrap items-center justify-between gap-2">{Toggle}<Legend hover={hover} setHover={setHover} threads={threadSpans} /></div>
-        <Scroller>
-          <svg width={width} height={h} className="block" role="img" aria-label="Eras and genre threads, weekly hours">
-            {ticks.map((t) => <g key={t.week}><line x1={x(t.week)} x2={x(t.week)} y1={top} y2={base} stroke={C.line} strokeDasharray="2 4" /><text x={x(t.week) + 4} y={h - 8} fontSize="12" fill={C.dust} className="num">{t.label}</text></g>)}
-            <line x1={padL} x2={width - padR} y1={base} y2={base} stroke={C.line} />
-            {eraSpans.map((s) => (
-              <g key={s.key} opacity={dim(s.key)} onMouseEnter={() => setHover(s.key)} onMouseLeave={() => setHover(null)} onClick={() => onPick?.({ kind: 'era', key: s.key })} className="cursor-pointer" style={{ transition: 'opacity 150ms' }}>
-                <title>{`${s.label}\n${s.sub}`}</title>
-                <path d={area(s)} fill={s.color} fillOpacity={0.25} />
-                <path d={line(s)} fill="none" stroke={s.color} strokeWidth={1.2} />
-              </g>
-            ))}
-            {threadSpans.map((s) => (
-              <g key={s.key} opacity={dim(s.key)} onMouseEnter={() => setHover(s.key)} onMouseLeave={() => setHover(null)} onClick={() => onPick?.({ kind: 'thread', key: s.key })} className="cursor-pointer" style={{ transition: 'opacity 150ms' }}>
-                <title>{`${s.label}\n${s.sub}`}</title>
-                <path d={area(s)} fill={s.color} fillOpacity={0.28} />
-                <path d={line(s)} fill="none" stroke={s.color} strokeWidth={1.4} strokeDasharray="3 2" />
-              </g>
-            ))}
-            {eraSpans.flatMap((s) => {
-              // label at the era's start, repeated every ~50 weeks inside long eras so one is always in view while scrolling
-              const n = weeksIn(s); const starts: number[] = []; for (let k = 0; k < n; k += 50) starts.push(k);
-              return starts.map((k, j) => { const room = Math.min(n - k, 50) * colW; const lines = wrap(s.label, Math.max(6, Math.floor(room / 7))); const lx = x(s.start) + k * colW + 6; return (
-                <text key={`l${s.key}-${k}`} x={lx} y={16} fontSize="12" fill={C.cream} opacity={dim(s.key) * (j ? 0.55 : 1)} className="pointer-events-none">
-                  {lines.map((l, i) => <tspan key={i} x={lx} dy={i ? 14 : 0}>{l}</tspan>)}
-                </text>
-              ); });
-            })}
-          </svg>
-        </Scroller>
-        <p className="mt-1 text-[11px] text-dust/70">Solid: the artist backbone, one era after another. Dashed: genre threads, which may run underneath several eras at once. Each shape sits on its own baseline — nothing is stacked.</p>
+        <div ref={wrapRef} className="relative">
+          <Scroller resetKey={`${nWeeks}:${colW}`}>
+            <svg width={width} height={h} className="block" role="img" aria-label="Eras above, genre threads below, weekly hours">
+              <defs>{st.fill === 'gradient' && spans.map((s) => <linearGradient key={s.key} id={`g-${cssId(s.key)}`} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={s.color} stopOpacity={s.kind === 'era' ? 0.85 : 0.75} /><stop offset="100%" stopColor={s.color} stopOpacity={0.12} /></linearGradient>)}</defs>
+              {ticks.map((t) => <g key={t.week}><line x1={x(t.week)} x2={x(t.week)} y1={top - 4} y2={thBase} stroke={C.line} strokeDasharray="2 4" /><text x={x(t.week) + 4} y={h - 6} fontSize="12" fill={C.dust} className="num">{t.label}</text></g>)}
+              <text x={padL} y={top - 20} fontSize="10" fill={C.dust} letterSpacing="0.08em">ERAS</text>
+              <line x1={padL} x2={width - padR} y1={eraBase} y2={eraBase} stroke={C.line} />
+              {threadSpans.length > 0 && <><text x={padL} y={thTop + 10} fontSize="10" fill={C.dust} letterSpacing="0.08em">THREADS</text><line x1={padL} x2={width - padR} y1={thBase} y2={thBase} stroke={C.line} /></>}
+              {eraSpans.map((s, i) => { const ins = inset(s, i, eraSpans.length - 1); return (
+                <g key={s.key} opacity={dim(s.key)} onMouseEnter={enter(s.key)} onMouseMove={onMove(s.key)} onMouseLeave={leave} onClick={() => onPick?.({ kind: 'era', key: s.key })} className="cursor-pointer" style={{ transition: 'opacity 150ms' }}>
+                  <path d={area(s, yE, eraBase, ins)} fill={fillOf(s)} fillOpacity={fillOp('era')} stroke={s.color} strokeWidth={hover === s.key ? strokeW + 1 : strokeW} strokeLinejoin="round" />
+                </g>
+              ); })}
+              {threadSpans.map((s) => (
+                <g key={s.key} opacity={dim(s.key)} onMouseEnter={enter(s.key)} onMouseMove={onMove(s.key)} onMouseLeave={leave} onClick={() => onPick?.({ kind: 'thread', key: s.key })} className="cursor-pointer" style={{ transition: 'opacity 150ms' }}>
+                  <path d={area(s, yT, thBase, [0, 0])} fill={fillOf(s)} fillOpacity={fillOp('thread')} stroke={s.color} strokeWidth={hover === s.key ? strokeW + 0.8 : strokeW - 0.2} strokeDasharray={st.fill === 'outline' ? undefined : '4 2'} strokeLinejoin="round" />
+                </g>
+              ))}
+              {eraSpans.flatMap((s) => {
+                // label at the era's start, repeated every ~50 weeks inside long eras so one is always in view while scrolling
+                const n = weeksIn(s); if (st.labels === 'long' && n < 10) return [];
+                const starts: number[] = []; for (let k = 0; k < n; k += 50) starts.push(k);
+                return starts.map((k, j) => { const room = Math.min(n - k, 50) * colW - st.gap; if (room < 34) return null; const lines = wrap(s.label, Math.max(5, Math.floor(room / 7.2))); const lx = x(s.start) + k * colW + st.gap / 2 + 6; return (
+                  <text key={`l${s.key}-${k}`} x={lx} y={top - 6 + (j ? 0 : 0)} fontSize="13" fontWeight={500} fill={C.cream} opacity={dim(s.key) * (j ? 0.6 : 1)} className="pointer-events-none" style={{ paintOrder: 'stroke', stroke: C.ink, strokeWidth: 3, strokeLinejoin: 'round' }}>
+                    {lines.slice(0, 1).map((l, i) => <tspan key={i} x={lx}>{l}</tspan>)}
+                  </text>
+                ); });
+              })}
+            </svg>
+          </Scroller>
+          {Tip}
+        </div>
+        <p className="mt-1 text-[11px] text-dust/70">Top band: the artist backbone, one era after another. Bottom band: genre threads, which can run underneath several eras at once. Hover for the details, click to open. Gap, colours, fill and height: Settings → Appearance → Eras chart.</p>
       </div>
     );
   }
@@ -95,19 +118,18 @@ export function EraChart({ weeks, eras, threads, view, onView, onPick }: { weeks
   return (
     <div>
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2">{Toggle}<Legend hover={hover} setHover={setHover} threads={threadSpans} /></div>
-      <div className="grid grid-cols-[110px_1fr]">
+      <div ref={wrapRef} className="relative grid grid-cols-[110px_1fr]">
         <div className="text-xs text-dust" style={{ paddingTop: top }}>
           {laneKeys.map((k) => <div key={k} className="truncate pr-2 text-sm" style={{ height: laneH, lineHeight: `${laneH}px` }} title={k === '__eras' ? 'Artist eras' : k}>{k === '__eras' ? 'Eras' : k}</div>)}
         </div>
-        <Scroller>
+        <Scroller resetKey={`${nWeeks}:${colW}`}>
           <svg width={width} height={h} className="block" role="img" aria-label="Eras and genre threads as lanes">
             {ticks.map((t) => <g key={t.week}><line x1={x(t.week)} x2={x(t.week)} y1={top} y2={h - 20} stroke={C.line} strokeDasharray="2 4" /><text x={x(t.week) + 4} y={h - 6} fontSize="12" fill={C.dust} className="num">{t.label}</text></g>)}
             {spans.map((s) => {
               const lane = s.kind === 'era' ? '__eras' : s.label;
               const x0 = x(s.start), w = Math.max(colW, weeksIn(s) * colW - 2);
               return (
-                <g key={s.key} opacity={dim(s.key)} onMouseEnter={() => setHover(s.key)} onMouseLeave={() => setHover(null)} onClick={() => onPick?.({ kind: s.kind, key: s.key })} className="cursor-pointer" style={{ transition: 'opacity 150ms' }}>
-                  <title>{`${s.label}\n${s.sub}`}</title>
+                <g key={s.key} opacity={dim(s.key)} onMouseEnter={enter(s.key)} onMouseMove={onMove(s.key)} onMouseLeave={leave} onClick={() => onPick?.({ kind: s.kind, key: s.key })} className="cursor-pointer" style={{ transition: 'opacity 150ms' }}>
                   <rect x={x0} y={laneY(lane) + 4} width={w} height={laneH - 8} rx={9} fill={s.color} fillOpacity={s.kind === 'era' ? 0.85 : 0.6} />
                   {w > 40 && <text x={x0 + 8} y={laneY(lane) + laneH / 2 + 4} fontSize="12" fill={C.ink} className="pointer-events-none">{truncate(s.kind === 'era' ? s.label : `${Math.round(s.hours)} h`, Math.floor(w / 7))}</text>}
                 </g>
@@ -115,15 +137,20 @@ export function EraChart({ weeks, eras, threads, view, onView, onPick }: { weeks
             })}
           </svg>
         </Scroller>
+        {Tip}
       </div>
     </div>
   );
 }
 
-/** Horizontal scroller that opens at the right-hand end, so the present is in view first. */
-function Scroller({ children }: { children: ReactNode }) {
+/**
+ * Horizontal scroller that opens at the right-hand end, so the present is in view first. Phase 9i: it jumps to the end
+ * only when the chart's width changes (`resetKey`) — 9h re-ran on every render, so hovering an era after scrolling
+ * left re-rendered the chart and snapped it back to today.
+ */
+function Scroller({ children, resetKey }: { children: ReactNode; resetKey: string }) {
   const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => { const el = ref.current; if (el) el.scrollLeft = el.scrollWidth; }, [children]);
+  useEffect(() => { const el = ref.current; if (el) el.scrollLeft = el.scrollWidth; }, [resetKey]);
   return <div ref={ref} className="overflow-x-auto">{children}</div>;
 }
 
@@ -137,7 +164,8 @@ function Legend({ threads, hover, setHover }: { threads: Span[]; hover: string |
   );
 }
 
-function build(weeks: EraWeek[], eras: Era[], threads: GenreThread[]) {
+function build(weeks: EraWeek[], eras: Era[], threads: GenreThread[], st: EraStyle) {
+  const pal = PALETTES[st.palette] ?? PALETTES.ember;
   if (!weeks.length && !eras.length) return null;
   const allStarts = [...weeks.map((w) => w.week), ...eras.map((e) => e.start), ...threads.map((t) => t.start)];
   const allEnds = [...weeks.map((w) => w.week), ...eras.map((e) => e.end), ...threads.map((t) => t.end)];
@@ -149,10 +177,10 @@ function build(weeks: EraWeek[], eras: Era[], threads: GenreThread[]) {
   eras.forEach((e, i) => {
     const series: { week: string; hours: number }[] = [];
     for (let w = e.start; w < e.endExclusive; w = addDays(w, 7)) series.push({ week: w, hours: hoursByWeek.get(w) ?? 0 });
-    spans.push({ key: `era:${e.start}`, kind: 'era', label: e.name, sub: `${fmtDate(e.start, { month: 'short', day: 'numeric', year: 'numeric' })} → ${fmtDate(e.end, { month: 'short', day: 'numeric', year: 'numeric' })} · ${e.weeks} weeks · ${fmtHours(e.hours)}\n${e.topArtists.map((a) => a.artist).join(', ')}`, start: e.start, endExclusive: e.endExclusive, color: i % 2 ? '#D98E2B' : C.amber, series, hours: e.hours });
+    spans.push({ key: `era:${e.start}`, kind: 'era', label: e.name, sub: `${fmtDate(e.start, { month: 'short', day: 'numeric', year: 'numeric' })} → ${fmtDate(e.end, { month: 'short', day: 'numeric', year: 'numeric' })} · ${e.weeks} weeks · ${fmtHours(e.hours)}\n${e.topArtists.map((a) => a.artist).join(', ')}`, start: e.start, endExclusive: e.endExclusive, color: pal.eras[i % pal.eras.length], series, hours: e.hours, era: e });
   });
   for (const t of threads) {
-    spans.push({ key: `thread:${t.tag}:${t.start}`, kind: 'thread', label: t.label, sub: `${fmtDate(t.start, { month: 'short', day: 'numeric', year: 'numeric' })} → ${fmtDate(t.end, { month: 'short', day: 'numeric', year: 'numeric' })} · ${t.weeks} weeks · ${fmtHours(t.hours)} · peak ${Math.round(t.peakShare * 100)}% of the week\n${t.topArtists.map((a) => a.artist).join(', ')}`, start: t.start, endExclusive: t.endExclusive, color: THREAD_COLORS[hash(t.tag) % THREAD_COLORS.length], series: t.series.map((w) => ({ week: w.week, hours: w.hours })), hours: t.hours });
+    spans.push({ key: `thread:${t.tag}:${t.start}`, kind: 'thread', label: t.label, sub: `${fmtDate(t.start, { month: 'short', day: 'numeric', year: 'numeric' })} → ${fmtDate(t.end, { month: 'short', day: 'numeric', year: 'numeric' })} · ${t.weeks} weeks · ${fmtHours(t.hours)} · peak ${Math.round(t.peakShare * 100)}% of the week\n${t.topArtists.map((a) => a.artist).join(', ')}`, start: t.start, endExclusive: t.endExclusive, color: pal.threads[hash(t.tag) % pal.threads.length], series: t.series.map((w) => ({ week: w.week, hours: w.hours })), hours: t.hours, thread: t });
   }
   const maxH = Math.max(1, ...weeks.map((w) => w.hours), ...spans.flatMap((s) => s.series.map((w) => w.hours)));
   return { idx, spans, first, nWeeks, maxH };
@@ -180,4 +208,24 @@ function yearTicks(first: string, n: number) {
   }
   // thin monthly ticks when many months
   return n > 60 && n <= 130 ? out.filter((_, i) => i % 3 === 0) : out;
+}
+
+const cssId = (k: string) => k.replace(/[^a-zA-Z0-9_-]/g, '_');
+
+/** Phase 9i: the expanded description on hover — full name, dates, size and who defined it, readable at any zoom. */
+function HoverCard({ span: s, x, y, wrapW }: { span: Span; x: number; y: number; wrapW: number }) {
+  const w = 300, left = Math.max(4, Math.min(x + 16, wrapW - w - 4));
+  const e = s.era, t = s.thread;
+  const d = (iso: string) => fmtDate(iso, { month: 'short', day: 'numeric', year: 'numeric' });
+  return (
+    <div className="pointer-events-none absolute z-20 rounded-xl border border-line bg-surface/95 p-3 text-sm shadow-xl backdrop-blur" style={{ left, top: Math.max(0, y - 12), width: w }} role="tooltip">
+      <p className="flex items-center gap-2"><span className="inline-block h-2.5 w-2.5 shrink-0 rounded-full" style={{ background: s.color }} /><span className="text-[10px] uppercase tracking-wider text-dust">{s.kind === 'era' ? 'Era' : t?.kind === 'scene' ? 'Scene thread' : t?.kind === 'decade' ? 'Decade thread' : 'Genre thread'}{(e?.inProgress || t?.inProgress) ? ' · still running' : ''}</span></p>
+      <p className="mt-1 font-display text-lg leading-snug">{s.label}</p>
+      <p className="num mt-1 text-xs text-dust">{d(s.start)} → {d(e?.end ?? t?.end ?? s.start)} · {e?.weeks ?? t?.weeks} weeks · {fmtHours(s.hours)}</p>
+      {e && <p className="num mt-1 text-xs text-dust">{Math.round(e.noveltyRate * 100)}% new to you · skip rate {Math.round(e.skipRate * 100)}%{e.lateShare >= 0.25 ? ` · ${Math.round(e.lateShare * 100)}% after 10 pm` : ''}{e.topTag ? ` · ${e.topTag}` : ''}</p>}
+      {t && <p className="num mt-1 text-xs text-dust">peak {Math.round(t.peakShare * 100)}% of a week · average {Math.round(t.meanShare * 100)}%</p>}
+      {(e?.topArtists ?? t?.topArtists ?? []).length > 0 && <p className="mt-2 text-xs"><span className="text-dust">Defined by </span>{(e?.topArtists ?? t?.topArtists ?? []).slice(0, 5).map((a) => a.artist).join(' · ')}</p>}
+      <p className="mt-2 text-[10px] text-dust/70">click to open</p>
+    </div>
+  );
 }

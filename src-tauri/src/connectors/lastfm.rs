@@ -144,3 +144,30 @@ pub fn enrich_popularity(db: &Db, max_artists: usize) -> Result<usize> {
     if n > 0 { db.log_activity("lastfm", "info", &format!("Listener counts for {n} artists"), None); }
     Ok(n)
 }
+
+/// Phase 9i — album listeners (album.getInfo), most-played albums first, 60-day refresh. Albums Last.fm doesn't know
+/// are recorded as found = FALSE so they don't block the queue.
+pub fn enrich_album_popularity(db: &Db, max_albums: usize) -> Result<usize> {
+    let Some(key) = secrets::get(secrets::LASTFM_KEY)? else { return Ok(0) };
+    let rows = db.query(&format!(
+        "SELECT p.album_id, arg_max(p.album_name, p.ms_played) AS album, arg_max(p.artist_name, p.ms_played) AS artist
+         FROM plays_resolved p LEFT JOIN album_popularity ap USING (album_id)
+         WHERE p.album_id IS NOT NULL AND p.album_name IS NOT NULL AND (ap.album_id IS NULL OR ap.fetched_at < now() - INTERVAL 60 DAY)
+         GROUP BY p.album_id, ap.album_id ORDER BY (ap.album_id IS NULL) DESC, COUNT(*) DESC LIMIT {max_albums}"), &[])?;
+    let mut n = 0;
+    for r in rows {
+        let g = |k: &str| r.get(k).and_then(|v| v.as_str()).map(str::to_string);
+        let (Some(id), Some(album), Some(artist)) = (g("album_id"), g("album"), g("artist")) else { continue };
+        let v = match call(db, &key, "album.getInfo", &[("artist", &artist), ("album", &album), ("autocorrect", "1")]) {
+            Ok(v) => v, Err(e) => { set_state(db, "lastfm", "connected", None, Some(&e.to_string())); break; }
+        };
+        let parse = |k: &str| v["album"][k].as_str().and_then(|x| x.parse::<i64>().ok()).or(v["album"][k].as_i64());
+        match parse("listeners") {
+            Some(l) => db.exec("INSERT INTO album_popularity (album_id, listeners, playcount, found, fetched_at) VALUES (?, ?, ?, TRUE, now()) ON CONFLICT (album_id) DO UPDATE SET listeners = excluded.listeners, playcount = excluded.playcount, found = TRUE, fetched_at = now()", &[json!(id), json!(l), json!(parse("playcount"))])?,
+            None => db.exec("INSERT INTO album_popularity (album_id, found, fetched_at) VALUES (?, FALSE, now()) ON CONFLICT (album_id) DO UPDATE SET found = FALSE, fetched_at = now()", &[json!(id)])?,
+        };
+        n += 1;
+    }
+    if n > 0 { db.log_activity("lastfm", "info", &format!("Album listener counts for {n} records"), None); }
+    Ok(n)
+}

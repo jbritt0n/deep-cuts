@@ -15,6 +15,10 @@ pub const SCHEMA_SQL: &str = include_str!("../sql/schema.sql");
 pub const ENTITY_RESOLUTION_SQL: &str = include_str!("../sql/entity_resolution.sql");
 pub const COMPUTE_SESSIONS_SQL: &str = include_str!("../sql/compute_sessions.sql");
 pub const DEMO_SEED_SQL: &str = include_str!("../sql/demo_seed.sql");
+pub const DEMO_EVENTS_SQL: &str = include_str!("../sql/demo_events.sql");   // Phase 9i
+pub const DEMO_ENRICH_SQL: &str = include_str!("../sql/demo_enrich.sql");   // Phase 9i
+/// Bump when the demo gains features: installs with an older demo get a fresh one on next launch (it is disposable).
+pub const DEMO_REV: &str = "9i";
 pub const IMPORT_EXISTING_KEYS_SQL: &str = include_str!("../sql/import_existing_keys.sql");
 pub const IMPORT_STAGE_SQL: &str = include_str!("../sql/import_stage.sql");
 pub const IMPORT_PREVIEW_SQL: &str = include_str!("../sql/import_preview.sql");

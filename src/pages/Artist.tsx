@@ -9,6 +9,7 @@ import { ClockFace } from '@/components/charts/ClockFace';
 import { MonthlySparkline } from '@/components/charts/MonthlySparkline';
 import { digDeeper } from '@/lib/digQueries';
 import { TrajectoryCard } from '@/components/DailyDig';
+import { ArtistMetadata } from '@/components/MetadataPanel';
 import { QueueButton, useQueue } from '@/components/QueueButton';
 import { trackHref, albumHref } from '@/lib/format';
 import { useState } from 'react';
@@ -41,7 +42,7 @@ export function ArtistPage() {
         <Card title="Two years, month by month"><MonthlySparkline data={a.monthly} /></Card>
         <Card title="When in the day" subtitle="Hours by hour of day."><div className="mx-auto max-w-[300px]"><ClockFace data={a.clock} size={300} /></div></Card>
       </section>
-      <div className="mt-6"><TrajectoryCard artistId={a.artistId} artist={a.artist} /></div>
+      <div className="mt-6 grid gap-6 lg:grid-cols-2"><TrajectoryCard artistId={a.artistId} artist={a.artist} /><ArtistMetadata artistId={a.artistId} /></div>
 
       <section className="mt-6 grid gap-6 lg:grid-cols-2">
         <Card title="Most played" subtitle="Top tracks by plays." aside={<MakePlaylistButton small name={`${a.artist} · Deep Cuts`} tracks={a.topTracks} note={`artist:${a.artistId}`} />}><TrackList data={a.topTracks} showArtist={false} /></Card>

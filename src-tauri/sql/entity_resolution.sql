@@ -30,7 +30,15 @@ SELECT p.*,
          (SELECT ov.zone FROM tz_overrides ov WHERE CAST(p.played_at_utc AS DATE) BETWEEN ov.from_date AND ov.to_date ORDER BY ov.from_date DESC LIMIT 1),
          (SELECT cz.zone FROM country_zones cz WHERE cz.country = p.country AND cz.zone IN (SELECT DISTINCT zone FROM tz_offsets)),
          (SELECT zone FROM _home)) AS zone
-FROM plays_normalized p;
+FROM plays_normalized p
+-- Phase 9i: a polled play that a later extended-history import also contains is dropped here — the export row wins
+-- (it has the real ms_played, skip, platform and country; the poll only knows the track started). Matched on the
+-- same track and START of play within 10 s: export start = ts − ms_played, poll start = the API's played_at.
+-- Before 9i, an export imported after polling counted every overlapping listen twice.
+WHERE NOT (p.source = 'recently_played_poll' AND EXISTS (
+    SELECT 1 FROM plays_normalized x
+    WHERE x.source = 'extended_export' AND x.spotify_track_id = p.spotify_track_id
+      AND abs(epoch(x.played_at_utc - x.ms_played * INTERVAL 1 MILLISECOND) - epoch(p.raw_at)) <= 10));
 
 CREATE OR REPLACE TEMP TABLE _p AS
 SELECT
@@ -135,3 +143,11 @@ DROP TABLE _keep_artists; DROP TABLE _keep_albums; DROP TABLE _keep_tracks;
 
 INSERT INTO app_meta (key, value) VALUES ('last_entity_resolution', CAST(now() AS VARCHAR))
 ON CONFLICT (key) DO UPDATE SET value = excluded.value;
+
+-- ---- Phase 9i: owner corrections and verified MusicBrainz matches survive every rebuild
+UPDATE artists SET mbid = m.mbid FROM artist_mb_match m WHERE m.artist_id = artists.artist_id AND m.method IN ('owner', 'isrc', 'albums') AND m.mbid IS NOT NULL;
+UPDATE artists SET image_url = o.value FROM metadata_overrides o WHERE o.entity_type = 'artist' AND o.field = 'image_url' AND o.entity_id = artists.artist_id;
+UPDATE albums  SET release_date = TRY_CAST(o.value AS DATE) FROM metadata_overrides o WHERE o.entity_type = 'album' AND o.field = 'release_date' AND o.entity_id = albums.album_id;
+UPDATE albums  SET image_url = o.value FROM metadata_overrides o WHERE o.entity_type = 'album' AND o.field = 'image_url' AND o.entity_id = albums.album_id;
+UPDATE tracks  SET isrc = NULLIF(o.value, '') FROM metadata_overrides o WHERE o.entity_type = 'track' AND o.field = 'isrc' AND o.entity_id = tracks.track_id;
+UPDATE tracks  SET release_date = TRY_CAST(o.value AS DATE) FROM metadata_overrides o WHERE o.entity_type = 'track' AND o.field = 'release_date' AND o.entity_id = tracks.track_id;

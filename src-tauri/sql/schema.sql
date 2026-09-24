@@ -948,3 +948,67 @@ CREATE TABLE IF NOT EXISTS track_features (
     fetched_at       TIMESTAMPTZ DEFAULT now()
 );
 INSERT INTO connector_state (service, status) VALUES ('freqblog', 'disconnected') ON CONFLICT (service) DO NOTHING;
+
+-- ------------------------------------------------------------
+-- Phase 9i — metadata you can trust and correct.
+-- artist_mb_match: HOW each artist's MusicBrainz id was chosen. 9h matched by name alone (first exact-name hit of 3),
+--   which is how Paul Banks got a Danish namesake and Rodriguez a Cuban one. Methods, strongest first:
+--   'owner' (you picked it) · 'isrc' (the MusicBrainz recording behind one of your tracks credits this artist) ·
+--   'albums' (several namesakes; this one has release groups matching your albums) · 'name' (one exact-name hit only).
+--   Kept outside `artists` because entity_resolution rebuilds that table; the rebuild re-applies these.
+-- metadata_overrides: owner corrections for rebuilt tables, re-applied at the end of entity_resolution.sql.
+--   Fields: album.release_date · album.image_url · track.isrc · track.release_date · artist.image_url.
+--   Artist origin corrections live in artist_origin with source = 'owner' (enrichment never overwrites those).
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS artist_mb_match (
+    artist_id   VARCHAR PRIMARY KEY,
+    mbid        VARCHAR,
+    method      VARCHAR,          -- owner | isrc | albums | name | ambiguous
+    evidence    VARCHAR,          -- e.g. the ISRC, or '3 of 5 albums'
+    candidates  INTEGER,          -- exact-name namesakes MusicBrainz returned
+    checked_at  TIMESTAMPTZ DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS metadata_overrides (
+    entity_type VARCHAR,          -- artist | album | track
+    entity_id   VARCHAR,
+    field       VARCHAR,
+    value       VARCHAR,
+    updated_at  TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (entity_type, entity_id, field)
+);
+
+-- Phase 9i — album-level listeners (Last.fm album.getInfo), so The Crate can show how rare the *record* is separately
+-- from how rare the *artist* is (a famous band's forgotten album; an unknown artist's one breakout). Same scale as artists.
+CREATE TABLE IF NOT EXISTS album_popularity (
+    album_id    VARCHAR PRIMARY KEY,
+    listeners   BIGINT,
+    playcount   BIGINT,
+    found       BOOLEAN DEFAULT TRUE,
+    fetched_at  TIMESTAMPTZ DEFAULT now()
+);
+CREATE OR REPLACE VIEW album_obscurity AS
+SELECT album_id, listeners, playcount, fetched_at,
+       CASE WHEN found THEN GREATEST(0.0, LEAST(1.0, 1.0 - LOG10(COALESCE(listeners, 0) + 1) / 7.0)) END AS obscurity
+FROM album_popularity;
+
+-- ------------------------------------------------------------
+-- Phase 9i — one row per play with everything the record knows about it, for "Export everything" (a spreadsheet-
+-- friendly flat file next to the per-table dumps). Read-only view; nothing depends on it inside the app.
+-- ------------------------------------------------------------
+CREATE OR REPLACE VIEW plays_enriched AS
+WITH sc AS (SELECT artist_id, arg_max(scene, weight) AS scene FROM artist_scene GROUP BY 1),
+     tg AS (SELECT artist_id, string_agg(tag, '; ' ORDER BY weight DESC) AS tags FROM (SELECT artist_id, tag, MAX(weight) AS weight FROM artist_tags GROUP BY 1, 2 QUALIFY ROW_NUMBER() OVER (PARTITION BY artist_id ORDER BY MAX(weight) DESC) <= 5) GROUP BY 1)
+SELECT p.played_at, p.track_id, p.track_name, p.artist_id, p.artist_name, p.album_id, p.album_name, p.ms_played, p.was_skipped, p.attended,
+       p.platform, p.country AS listened_in_country, p.zone AS listened_in_zone,
+       t.isrc, CAST(COALESCE(al.release_date, t.release_date) AS VARCHAR) AS release_date, al.image_url AS album_art_url,
+       o.country AS artist_country, o.city AS artist_city, f.label AS scene, tg.tags AS artist_tags,
+       ap.listeners AS artist_lastfm_listeners, alp.listeners AS album_lastfm_listeners,
+       tf.bpm, tf.key_name AS musical_key, tf.energy, tf.loudness_db,
+       lf.lang AS lyric_language, array_to_string(lf.themes, '; ') AS lyric_themes, lf.valence AS lyric_valence, lf.llm_mood AS lyric_mood,
+       (l.track_id IS NOT NULL) AS in_liked_songs
+FROM plays_resolved p
+LEFT JOIN tracks t ON t.track_id = p.track_id LEFT JOIN albums al ON al.album_id = p.album_id
+LEFT JOIN artist_origin o ON o.artist_id = p.artist_id LEFT JOIN sc ON sc.artist_id = p.artist_id LEFT JOIN scene_families f ON f.scene = sc.scene
+LEFT JOIN tg ON tg.artist_id = p.artist_id LEFT JOIN artist_popularity ap ON ap.artist_id = p.artist_id LEFT JOIN album_popularity alp ON alp.album_id = p.album_id
+LEFT JOIN track_features tf ON tf.track_id = p.track_id AND tf.found LEFT JOIN track_lyric_features lf ON lf.track_id = p.track_id AND lf.found
+LEFT JOIN liked_songs l ON l.track_id = p.track_id;

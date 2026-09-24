@@ -50,34 +50,178 @@ pub fn connect(db: &Db) -> Result<()> {
 }
 
 /// CON-06 + CON-07: resolve MBIDs for the most-played artists lacking one, and pull their tags.
+// ============================================================================ Phase 9i — matching you can trust
+// 9h resolved artists by name alone (first exact-name hit of three), so shared names picked the wrong entity:
+// Paul Banks (Interpol, New York) got a Danish namesake, Rodriguez (Detroit) a Cuban one — and every origin, tag and
+// relation fetched through that id inherited the mistake. Evidence now comes first:
+//   1. ISRC — the MusicBrainz recording behind one of your tracks credits exactly one artist id. Authoritative.
+//   2. several exact-name namesakes → the one whose release groups match your album titles.
+//   3. a single exact-name hit → accepted, marked 'name' (weakest; verify_batch re-checks it when ISRC evidence arrives).
+//   4. several namesakes and no evidence → left unresolved ('ambiguous'); the artist page offers the candidates.
+
+fn norm(s: &str) -> String { s.to_lowercase().chars().filter(|c| c.is_alphanumeric() || c.is_whitespace()).collect::<String>().split_whitespace().collect::<Vec<_>>().join(" ") }
+
+fn record_match(db: &Db, id: &str, mbid: Option<&str>, method: &str, evidence: &str, candidates: i64) -> Result<()> {
+    db.exec("INSERT INTO artist_mb_match (artist_id, mbid, method, evidence, candidates, checked_at) VALUES (?, ?, ?, ?, ?, now())
+             ON CONFLICT (artist_id) DO UPDATE SET mbid = excluded.mbid, method = excluded.method, evidence = excluded.evidence, candidates = excluded.candidates, checked_at = now()",
+        &[json!(id), json!(mbid), json!(method), json!(evidence), json!(candidates)])?;
+    Ok(())
+}
+
+/// The artist id MusicBrainz credits on the recording behind one of this artist's ISRCs (credit name must match).
+fn mbid_from_isrc(mb: &Mb, db: &Db, artist_id: &str, name: &str) -> Result<Option<(String, String)>> {
+    // already looked up by enrich_credits?
+    if let Some(r) = db.query("SELECT artist_mbid, COUNT(*) AS n FROM track_credits WHERE artist_id = ? AND artist_mbid IS NOT NULL GROUP BY 1 ORDER BY 2 DESC LIMIT 1", &[json!(artist_id)])?.first() {
+        if let Some(m) = r.get("artist_mbid").and_then(|v| v.as_str()) { return Ok(Some((m.to_string(), "track credits".into()))); }
+    }
+    let isrcs = db.query("SELECT t.isrc FROM tracks t JOIN (SELECT track_id, COUNT(*) c FROM plays_resolved WHERE artist_id = ? GROUP BY 1) p USING (track_id) WHERE t.isrc IS NOT NULL ORDER BY p.c DESC LIMIT 2", &[json!(artist_id)])?;
+    let want = norm(name);
+    for r in isrcs {
+        let Some(isrc) = r.get("isrc").and_then(|v| v.as_str()) else { continue };
+        let v = mb.get(db, &format!("recording?query=isrc:{isrc}&limit=3&fmt=json"))?;
+        for rec in v["recordings"].as_array().cloned().unwrap_or_default() {
+            for c in rec["artist-credit"].as_array().cloned().unwrap_or_default() {
+                let cname = c["name"].as_str().or(c["artist"]["name"].as_str()).unwrap_or("");
+                if norm(cname) == want || norm(c["artist"]["name"].as_str().unwrap_or("")) == want {
+                    if let Some(m) = c["artist"]["id"].as_str() { return Ok(Some((m.to_string(), format!("ISRC {isrc}")))); }
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// Exact-name namesakes from a name search (score ≥ 80), as returned by MusicBrainz.
+fn namesakes(mb: &Mb, db: &Db, name: &str) -> Result<Vec<Value>> {
+    let q = urlencoding::encode(&format!("artist:\"{}\"", name.replace('"', ""))).into_owned();
+    let v = mb.get(db, &format!("artist/?query={q}&limit=10&fmt=json"))?;
+    let want = norm(name);
+    Ok(v["artists"].as_array().cloned().unwrap_or_default().into_iter()
+        .filter(|x| x["score"].as_i64().unwrap_or(0) >= 80 && (norm(x["name"].as_str().unwrap_or("")) == want || x["aliases"].as_array().map(|a| a.iter().any(|al| norm(al["name"].as_str().unwrap_or("")) == want)).unwrap_or(false)))
+        .collect())
+}
+
+/// Among namesakes, the one whose release groups share the most titles with your albums by this artist.
+fn pick_by_albums(mb: &Mb, db: &Db, artist_id: &str, cands: &[Value]) -> Result<Option<(String, String)>> {
+    let mine: std::collections::HashSet<String> = db.query("SELECT DISTINCT album_name FROM plays_resolved WHERE artist_id = ? AND album_name IS NOT NULL", &[json!(artist_id)])?
+        .into_iter().filter_map(|r| r.get("album_name").and_then(|v| v.as_str()).map(norm)).collect();
+    if mine.is_empty() { return Ok(None); }
+    let mut best: Option<(String, usize)> = None;
+    for c in cands.iter().take(5) {
+        let Some(id) = c["id"].as_str() else { continue };
+        let v = mb.get(db, &format!("release-group?artist={id}&limit=100&fmt=json"))?;
+        let hits = v["release-groups"].as_array().map(|a| a.iter().filter(|rg| mine.contains(&norm(rg["title"].as_str().unwrap_or("")))).count()).unwrap_or(0);
+        if hits > 0 && best.as_ref().map(|b| hits > b.1).unwrap_or(true) { best = Some((id.to_string(), hits)); }
+    }
+    Ok(best.map(|(id, n)| (id, format!("{n} of your {} album titles", mine.len()))))
+}
+
+/// MusicBrainz tags for one artist id → artist_tags (source 'musicbrainz').
+fn fetch_tags(mb: &Mb, db: &Db, artist_id: &str, mbid: &str) -> Result<()> {
+    let v = mb.get(db, &format!("artist/{mbid}?inc=tags&fmt=json"))?;
+    for t in v["tags"].as_array().cloned().unwrap_or_default() {
+        let Some(tag) = t["name"].as_str().and_then(normalize_tag) else { continue };
+        let w = (t["count"].as_f64().unwrap_or(1.0) / 10.0).min(1.0).max(0.1);
+        db.exec("INSERT INTO artist_tags (artist_id, tag, weight, source) VALUES (?, ?, ?, 'musicbrainz') ON CONFLICT (artist_id, tag, source) DO UPDATE SET weight = GREATEST(artist_tags.weight, excluded.weight), fetched_at = now()", &[json!(artist_id), json!(tag), json!(w)])?;
+    }
+    Ok(())
+}
+
+/// Point an artist at a different MusicBrainz id and discard everything fetched through the old one
+/// (non-owner origin, MusicBrainz tags, relations, catalogue). Origin and tags are re-fetched right away.
+pub fn apply_mbid(mb: &Mb, db: &Db, artist_id: &str, mbid: &str) -> Result<()> {
+    db.exec("UPDATE artists SET mbid = ?, enriched_at = COALESCE(enriched_at, now()) WHERE artist_id = ?", &[json!(mbid), json!(artist_id)])?;
+    db.exec("DELETE FROM artist_origin WHERE artist_id = ? AND COALESCE(source, '') <> 'owner'", &[json!(artist_id)])?;
+    db.exec("DELETE FROM artist_tags WHERE artist_id = ? AND source = 'musicbrainz'", &[json!(artist_id)])?;
+    let _ = db.exec("DELETE FROM artist_relations WHERE artist_id = ?", &[json!(artist_id)]);
+    let _ = db.exec("UPDATE artists SET catalogue_fetched_at = NULL WHERE artist_id = ?", &[json!(artist_id)]);   // recount under the new id
+    let _ = fetch_tags(mb, db, artist_id, mbid);
+    let _ = crate::connectors::wikidata::origin_for(mb, db, artist_id, mbid);
+    Ok(())
+}
+
 pub fn resolve_batch(db: &Db, max_artists: usize) -> Result<usize> {
     let mb = Mb::new()?;
     let rows = db.query(&format!(
         "SELECT a.artist_id, a.name FROM artists a JOIN (SELECT artist_id, COUNT(*) c FROM plays_resolved GROUP BY 1) p USING (artist_id)
-         WHERE a.mbid IS NULL AND NOT EXISTS (SELECT 1 FROM api_calls c WHERE c.service = 'musicbrainz' AND c.endpoint = 'resolve:' || a.artist_id)
+         WHERE a.mbid IS NULL AND NOT EXISTS (SELECT 1 FROM artist_mb_match m WHERE m.artist_id = a.artist_id AND m.checked_at > now() - INTERVAL 60 DAY)
+           AND NOT EXISTS (SELECT 1 FROM api_calls c WHERE c.service = 'musicbrainz' AND c.endpoint = 'resolve:' || a.artist_id AND c.called_at > now() - INTERVAL 60 DAY)
          ORDER BY p.c DESC LIMIT {max_artists}"), &[])?;
     let mut n = 0;
     for r in rows {
         let (Some(id), Some(name)) = (r.get("artist_id").and_then(|v| v.as_str()), r.get("name").and_then(|v| v.as_str())) else { continue };
-        let query_text = format!("artist:\"{}\"", name.replace('"', ""));
-        let q = urlencoding::encode(&query_text).into_owned();
-        let v = match mb.get(db, &format!("artist/?query={q}&limit=3&fmt=json")) { Ok(v) => v, Err(e) => { set_state(db, "musicbrainz", "error", None, Some(&e.to_string())); break; } };
-        db.exec("INSERT INTO api_calls (service, endpoint, status) VALUES ('musicbrainz', ?, 200)", &[json!(format!("resolve:{id}"))])?;
-        let best = v["artists"].as_array().and_then(|a| a.iter().find(|x| x["score"].as_i64().unwrap_or(0) >= 90 && x["name"].as_str().map(|s| s.eq_ignore_ascii_case(name)).unwrap_or(false)).or(a.iter().find(|x| x["score"].as_i64().unwrap_or(0) >= 95)));
-        let Some(b) = best else { continue };
-        let Some(mbid) = b["id"].as_str() else { continue };
-        // enriched_at marks the row so entity_resolution keeps mbid across rebuilds
-        db.exec("UPDATE artists SET mbid = ?, enriched_at = now() WHERE artist_id = ?", &[json!(mbid), json!(id)])?;
-        for t in b["tags"].as_array().cloned().unwrap_or_default() {
-            let Some(tag) = t["name"].as_str().and_then(normalize_tag) else { continue };
-            let w = (t["count"].as_f64().unwrap_or(1.0) / 10.0).min(1.0).max(0.1);
-            db.exec("INSERT INTO artist_tags (artist_id, tag, weight, source) VALUES (?, ?, ?, 'musicbrainz') ON CONFLICT (artist_id, tag, source) DO UPDATE SET weight = GREATEST(artist_tags.weight, excluded.weight), fetched_at = now()",
-                &[json!(id), json!(tag), json!(w)])?;
-        }
-        n += 1;
+        let _ = db.exec("INSERT INTO api_calls (service, endpoint, status) VALUES ('musicbrainz', ?, 200)", &[json!(format!("resolve:{id}"))]);
+        let res: Result<()> = (|| {
+            if let Some((mbid, ev)) = mbid_from_isrc(&mb, db, id, name)? {
+                record_match(db, id, Some(&mbid), "isrc", &ev, 0)?;
+                db.exec("UPDATE artists SET mbid = ?, enriched_at = now() WHERE artist_id = ?", &[json!(mbid), json!(id)])?;
+                fetch_tags(&mb, db, id, &mbid)?; n += 1; return Ok(());
+            }
+            let c = namesakes(&mb, db, name)?;
+            let (pick, method, ev) = match c.len() {
+                0 => { record_match(db, id, None, "none", "no exact-name match", 0)?; return Ok(()); }
+                1 => (c[0]["id"].as_str().map(str::to_string), "name", "the only exact-name match".to_string()),
+                k => match pick_by_albums(&mb, db, id, &c)? {
+                    Some((m, ev)) => (Some(m), "albums", ev),
+                    None => { record_match(db, id, None, "ambiguous", &format!("{k} artists share this name"), k as i64)?; return Ok(()); }
+                },
+            };
+            let Some(mbid) = pick else { return Ok(()) };
+            record_match(db, id, Some(&mbid), method, &ev, c.len() as i64)?;
+            db.exec("UPDATE artists SET mbid = ?, enriched_at = now() WHERE artist_id = ?", &[json!(mbid), json!(id)])?;
+            fetch_tags(&mb, db, id, &mbid)?; n += 1; Ok(())
+        })();
+        if let Err(e) = res { set_state(db, "musicbrainz", "error", None, Some(&e.to_string())); break; }
     }
     if n > 0 { set_state(db, "musicbrainz", "connected", None, None); db.log_activity("musicbrainz", "info", &format!("Resolved {n} artists"), None); }
     Ok(n)
+}
+
+/// Re-check matches made before 9i (or by name only) against ISRC evidence; correct the wrong ones.
+pub fn verify_batch(db: &Db, max_artists: usize) -> Result<usize> {
+    let mb = Mb::new()?;
+    let rows = db.query(&format!(
+        "SELECT a.artist_id, a.name, a.mbid FROM artists a JOIN (SELECT artist_id, COUNT(*) c FROM plays_resolved GROUP BY 1) p USING (artist_id)
+         LEFT JOIN artist_mb_match m USING (artist_id)
+         WHERE a.mbid IS NOT NULL AND (m.artist_id IS NULL OR (m.method = 'name' AND m.checked_at < now() - INTERVAL 30 DAY))
+         ORDER BY p.c DESC LIMIT {max_artists}"), &[])?;
+    let mut fixed = 0; let mut names: Vec<String> = Vec::new();
+    for r in rows {
+        let g = |k: &str| r.get(k).and_then(|v| v.as_str()).map(str::to_string);
+        let (Some(id), Some(name), Some(cur)) = (g("artist_id"), g("name"), g("mbid")) else { continue };
+        match mbid_from_isrc(&mb, db, &id, &name) {
+            Ok(Some((mbid, ev))) if mbid != cur => {
+                record_match(db, &id, Some(&mbid), "isrc", &format!("{ev} — replaced a name-only match"), 0)?;
+                apply_mbid(&mb, db, &id, &mbid)?;
+                fixed += 1; if names.len() < 6 { names.push(name.clone()); }
+            }
+            Ok(Some((mbid, ev))) => record_match(db, &id, Some(&mbid), "isrc", &ev, 0)?,
+            Ok(None) => record_match(db, &id, Some(&cur), "name", "no ISRC evidence yet", 0)?,
+            Err(e) => { set_state(db, "musicbrainz", "error", None, Some(&e.to_string())); break; }
+        }
+    }
+    if fixed > 0 { db.log_activity("musicbrainz", "info", &format!("Corrected {fixed} MusicBrainz matches against your tracks' ISRCs: {}", names.join(", ")), None); }
+    Ok(fixed)
+}
+
+/// For the artist page's "wrong artist?" picker: every exact-name namesake with where/when it's from.
+pub fn candidates(db: &Db, artist_id: &str) -> Result<Vec<Value>> {
+    let mb = Mb::new()?;
+    let name = db.query("SELECT name FROM artists WHERE artist_id = ?", &[json!(artist_id)])?.first().and_then(|r| r.get("name")).and_then(|v| v.as_str()).map(str::to_string).ok_or_else(|| anyhow::anyhow!("unknown artist"))?;
+    let q = urlencoding::encode(&format!("artist:\"{}\"", name.replace('"', ""))).into_owned();
+    let v = mb.get(db, &format!("artist/?query={q}&limit=12&fmt=json"))?;
+    Ok(v["artists"].as_array().cloned().unwrap_or_default().into_iter().map(|a| json!({
+        "mbid": a["id"], "name": a["name"], "disambiguation": a["disambiguation"], "type": a["type"], "country": a["country"],
+        "area": a["area"]["name"], "beginArea": a["begin-area"]["name"], "begin": a["life-span"]["begin"], "end": a["life-span"]["end"], "score": a["score"],
+    })).collect())
+}
+
+pub fn set_owner_mbid(db: &Db, artist_id: &str, mbid: &str) -> Result<()> {
+    let mbid = mbid.trim().trim_end_matches('/').rsplit('/').next().unwrap_or("").to_string();   // accept a pasted musicbrainz.org URL
+    if mbid.len() != 36 || mbid.chars().filter(|c| *c == '-').count() != 4 { anyhow::bail!("That doesn't look like a MusicBrainz artist id or URL"); }
+    let mb = Mb::new()?;
+    record_match(db, artist_id, Some(&mbid), "owner", "chosen by you", 0)?;
+    apply_mbid(&mb, db, artist_id, &mbid)
 }
 
 /// CON-07 / REC-04 / REC-05: relationships (side projects) and recent release groups

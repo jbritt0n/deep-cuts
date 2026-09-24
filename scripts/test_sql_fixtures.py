@@ -281,6 +281,50 @@ def test_lyric_keywords_idf_is_per_language():
     sc = con.execute("SELECT score FROM track_lyric_keywords WHERE term = 'gece'").fetchone()[0]
     assert abs(sc - 5 * math.log(3)) < 1e-9, sc
 
+# ---------------------------------------------------------------- Phase 9i
+def test_export_after_polling_counts_each_listen_once():
+    # Owner plans a yearly extended-history export on top of polling. The export must supersede the polled copies
+    # (matched on track + START of play within 10 s) and keep its own truth: the skipped play stays 31 s, not 200 s.
+    import json
+    con = fresh()
+    poll = {"spotify_track_id": "abc", "track_name": "Song", "artist_name": "Band", "album_name": "LP", "ms_played": 200000, "source": "recently_played_poll"}
+    con.execute("INSERT INTO events (event_type, occurred_at, payload, source_file) VALUES ('play', TIMESTAMPTZ '2026-03-01 12:00:00+00', ?::JSON, 'recently_played_poll')", [json.dumps(poll)])
+    con.execute("INSERT INTO events (event_type, occurred_at, payload, source_file) VALUES ('play', TIMESTAMPTZ '2026-03-01 12:10:00+00', ?::JSON, 'recently_played_poll')", [json.dumps(dict(poll, spotify_track_id="def", track_name="Other"))])
+    # a polled play the export does NOT contain (after the export's cut-off) must survive
+    con.execute("INSERT INTO events (event_type, occurred_at, payload, source_file) VALUES ('play', TIMESTAMPTZ '2026-09-01 08:00:00+00', ?::JSON, 'recently_played_poll')", [json.dumps(dict(poll, spotify_track_id="new", track_name="After export"))])
+    con.execute(rd('import_existing_keys.sql'))
+    con.execute("""CREATE TEMP TABLE _stage AS SELECT * FROM (VALUES
+        (TIMESTAMP '2026-03-01 12:03:21', 'spotify:track:abc', 'Song', 'Band', 'LP', 200000::BIGINT, 'linux', 'trackdone', 'clickrow', false, false, false, false, 'US'),
+        (TIMESTAMP '2026-03-01 12:10:32', 'spotify:track:def', 'Other', 'Band', 'LP', 31000::BIGINT, 'linux', 'fwdbtn', 'clickrow', false, true, false, false, 'US'))
+        t(ts, spotify_track_uri, track_name, artist_name, album_name, ms_played, platform, end_reason, start_reason, shuffle, export_skipped, offline, incognito, country)""")
+    con.execute(rd('import_insert.sql').replace('?1', "'export-2026.json'"))
+    # importing the same export again adds nothing (exact-key dedupe)
+    con.execute(rd('import_existing_keys.sql')); con.execute(rd('import_insert.sql').replace('?1', "'export-2026.json'"))
+    rebuild(con)
+    rows = dict(con.execute("SELECT track_name, COUNT(*) FROM plays_resolved GROUP BY 1").fetchall())
+    assert rows == {'Song': 1, 'Other': 1, 'After export': 1}, rows
+    assert con.execute("SELECT ms_played FROM plays_resolved WHERE track_name = 'Other'").fetchone()[0] == 31000
+    assert con.execute("SELECT COUNT(*) FROM events WHERE event_type = 'play'").fetchone()[0] == 5   # append-only log keeps both copies
+
+def test_owner_overrides_survive_rebuild():
+    con = fresh()
+    play(con, "2024-03-01 20:00:00", "Song", "Band", album="Reissue")
+    rebuild(con)
+    aid = con.execute("SELECT album_id FROM albums").fetchone()[0]
+    con.execute("INSERT INTO metadata_overrides (entity_type, entity_id, field, value) VALUES ('album', ?, 'release_date', '1971-01-01')", [aid])
+    con.execute("INSERT INTO artist_origin (artist_id, country, city, source) VALUES ('name:band', 'US', 'Detroit', 'owner')")
+    rebuild(con); rebuild(con)
+    assert str(con.execute("SELECT release_date FROM albums WHERE album_id = ?", [aid]).fetchone()[0]) == '1971-01-01'
+    assert con.execute("SELECT country, city, source FROM artist_origin WHERE artist_id = 'name:band'").fetchone() == ('US', 'Detroit', 'owner')
+
+def test_demo_record_builds_with_every_feature():
+    con = fresh()
+    for f in ('demo_seed.sql', 'demo_events.sql', 'entity_resolution.sql', 'demo_enrich.sql', 'compute_sessions.sql', 'compute_milestones.sql', 'compute_scenes.sql', 'compute_insights.sql'): con.execute(rd(f))
+    for table, least in (('plays_resolved', 20000), ('sessions', 500), ('insights', 20), ('artist_scene', 10), ('track_features', 100), ('track_lyric_keywords', 100), ('album_popularity', 10), ('playlist_items', 20), ('artist_mb_match', 10)):
+        n = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]; assert n >= least, (table, n)
+    assert set(r[0] for r in con.execute("SELECT DISTINCT lang FROM track_lyric_keywords").fetchall()) >= {'en', 'tr'}
+    assert con.execute("SELECT COUNT(DISTINCT country) FROM plays_resolved WHERE country IS NOT NULL").fetchone()[0] >= 3
+
 if __name__ == '__main__':
     tests = [v for k, v in globals().items() if k.startswith('test_')]
     fails = 0

@@ -26,8 +26,8 @@ export type GenreThread = {
   tag: string; label: string; kind: 'tag' | 'decade' | 'scene'; start: string; end: string; endExclusive: string; weeks: number; hours: number; peakShare: number; meanShare: number;
   topArtists: { artistId: string; artist: string; hours: number }[]; inProgress: boolean; series: ThreadWeek[];
 };
-export type ThreadParams = { minWeeks: number; shareFloor: number; tagFloor: number; maxThreads: number; maxCoverage: number; decades: boolean; scenes: boolean };
-export const THREAD_DEFAULTS: ThreadParams = { minWeeks: 3, shareFloor: 0.08, tagFloor: 0.2, maxThreads: 12, maxCoverage: 0.2, decades: true, scenes: true };
+export type ThreadParams = { minWeeks: number; shareFloor: number; tagFloor: number; maxThreads: number; maxCoverage: number; decades: boolean; scenes: boolean; perYear: number };
+export const THREAD_DEFAULTS: ThreadParams = { minWeeks: 3, shareFloor: 0.08, tagFloor: 0.2, maxThreads: 24, maxCoverage: 0.2, decades: true, scenes: true, perYear: 2 };
 /** Phase 9g: scene-family threads carry this prefix in `tag` ('scene:west-african'); `threadLabel` renders them. */
 export const SCENE_PREFIX = 'scene:';
 export const isSceneThread = (tag: string) => tag.startsWith(SCENE_PREFIX);
@@ -40,7 +40,7 @@ export const isSceneThread = (tag: string) => tag.startsWith(SCENE_PREFIX);
  */
 export const GENERIC_TAGS = new Set(['rock', 'pop', 'indie', 'alternative', 'alternative rock', 'indie rock', 'indie pop', 'electronic', 'electronica', 'experimental', 'seen live', 'favorites', 'favourites', 'favorite', 'awesome', 'love', 'beautiful', 'chill', 'chillout', 'male vocalists', 'female vocalists', 'female vocalist', 'male vocalist', 'singer-songwriter', 'american', 'british', 'usa', 'uk', 'english', 'canadian', 'australian', 'german', 'french', '00s', '90s', '80s', '70s', '60s', '10s', '2000s', '2010s', '2020s', 'under 2000 listeners', 'all', 'music', 'good', 'cool', 'fun', 'classic', 'soundtrack', 'instrumental', 'live', 'cover', 'covers', 'remix', 'compilation', 'various artists', 'oldies', 'new', 'old']);
 /** Defaults with the owner's tag floor applied (Settings → Tuning). */
-const threadDefaults = (): ThreadParams => ({ ...THREAD_DEFAULTS, tagFloor: numSetting('tag_floor'), minWeeks: Math.round(numSetting('thread_min_weeks')), shareFloor: numSetting('thread_share_floor'), maxCoverage: numSetting('thread_max_coverage'), scenes: numSetting('thread_scenes') >= 0.5 });
+const threadDefaults = (): ThreadParams => ({ ...THREAD_DEFAULTS, tagFloor: numSetting('tag_floor'), minWeeks: Math.round(numSetting('thread_min_weeks')), shareFloor: numSetting('thread_share_floor'), maxCoverage: numSetting('thread_max_coverage'), scenes: numSetting('thread_scenes') >= 0.5, maxThreads: Math.round(numSetting('thread_max')), perYear: Math.round(numSetting('thread_per_year')) });
 
 /** Contiguous runs of weeks where `share >= floor`, at least `minWeeks` long. Weeks are consecutive ISO Mondays; a missing week breaks the run. */
 export function findRuns(weeks: ThreadWeek[], floor: number, minWeeks: number): ThreadWeek[][] {
@@ -156,8 +156,23 @@ export async function genreThreads(params?: Partial<ThreadParams>): Promise<Genr
       candidates.push({ tag, label: labels[tag] ?? tag, kind: isSceneThread(tag) ? 'scene' : /^\d{4}s$/.test(tag) ? 'decade' : 'tag', start, end, endExclusive: addDays(end, 7), weeks: run.length, hours, peakShare: Math.max(...run.map((w) => w.share)), meanShare: run.reduce((s, w) => s + w.share, 0) / run.length, inProgress: end === thisWeek, series: run });
     }
   }
+  // Phase 9i: 9h ranked every thread in the record by total hours and kept the top 12, so a thread that started
+  // this spring could never outweigh years-long ones (owner: "no new threads since Apr 6"). Now, in order:
+  //   1. anything still running or ended in the last 12 weeks (up to a third of the slots);
+  //   2. the strongest `perYear` threads that *start* in each calendar year;
+  //   3. the rest by hours — with scene-family threads capped at a third so the broad ones can't crowd out tags.
   candidates.sort((a, b) => b.hours - a.hours);
-  const picked = candidates.slice(0, Math.max(1, p.maxThreads));
+  const cap = Math.max(1, p.maxThreads);
+  const recentCut = addDays(thisWeek, -84);
+  const chosen = new Set<(typeof candidates)[number]>();
+  const sceneCap = Math.max(1, Math.floor(cap / 3));
+  const scenesIn = () => [...chosen].filter((c) => c.kind === 'scene').length;
+  const take = (c: (typeof candidates)[number]) => { if (chosen.size >= cap || chosen.has(c)) return; if (c.kind === 'scene' && scenesIn() >= sceneCap) return; chosen.add(c); };
+  candidates.filter((c) => c.end >= recentCut).slice(0, Math.max(2, Math.floor(cap / 3))).forEach(take);
+  const years = [...new Set(candidates.map((c) => c.start.slice(0, 4)))].sort();
+  for (const y of years) candidates.filter((c) => c.start.startsWith(y)).slice(0, Math.max(0, p.perYear)).forEach(take);
+  candidates.forEach(take);
+  const picked = [...chosen].sort((a, b) => b.hours - a.hours);
   const out: GenreThread[] = [];
   for (const c of picked) out.push({ ...c, topArtists: await threadArtists(c.tag, c.start, c.endExclusive, p.tagFloor) });
   return out.sort((a, b) => (a.start < b.start ? 1 : a.start > b.start ? -1 : b.hours - a.hours));

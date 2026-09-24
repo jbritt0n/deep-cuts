@@ -9,9 +9,14 @@
 //! miss-heavy batches), one tick per 6 h, and a hard stop at 900 requests in a calendar month so the owner keeps
 //! headroom. The monthly counter lives in `connector_state.detail` = {"month": "2026-09", "requests": 41}.
 //!
-//! The response shape is parsed defensively (see `parse_items`): FreqBlog's docs were read but a real `/bulk`
-//! response was not recorded in 9b — the first compile should fix any field name against a live reply and add
-//! it to `docs/` as a fixture (Kimi T5).
+//! Phase 9i fix (owner saw HTTP 422): `/bulk` takes a **bare JSON array** `[{track, artist, isrc}, …]` — 9g sent
+//! `{"tracks": [...]}`, which FastAPI rejects as 422. Verified against the official MCP client
+//! (github.com/stevebirring-star/music-metadata-mcp, index.js `apiPost("/bulk", tracks)`). Also from that source:
+//!   * billing is per *item* that returns features or queues an ingest (no-match items are free), not per request;
+//!   * lookup endpoints return `RateLimit-Remaining` — the real budget, which we now read instead of guessing;
+//!   * a track not yet analysed comes back queued (`backfill_status`), and collecting it later is free — so queued
+//!     items are left unwritten and picked up on the next tick rather than recorded as misses.
+//! The first successful reply is saved to `<data>/logs/freqblog-sample.json` so field names can be pinned exactly.
 
 use super::set_state;
 use crate::db::Db;
@@ -21,7 +26,8 @@ use serde_json::{json, Value};
 use std::time::Duration;
 
 const API: &str = "https://api.freqblog.com";
-pub const MONTHLY_CAP: i64 = 900;
+pub const MONTHLY_CAP: i64 = 900;       // units (items billed), keeps 100 of the free 1,000 in reserve
+const RESERVE: i64 = 100;               // stop when the server says fewer than this remain
 const BATCH: usize = 25;
 
 fn http() -> Result<reqwest::blocking::Client> {
@@ -38,9 +44,36 @@ pub fn used_this_month(db: &Db) -> i64 {
     if d["month"].as_str() == Some(month_key().as_str()) { d["requests"].as_i64().unwrap_or(0) } else { 0 }
 }
 
+/// Server-reported units left this month (RateLimit-Remaining), if seen this month.
+pub fn remaining(db: &Db) -> Option<i64> {
+    let d = detail(db);
+    if d["month"].as_str() == Some(month_key().as_str()) { d["remaining"].as_i64() } else { None }
+}
+fn detail(db: &Db) -> Value {
+    let raw = db.query("SELECT detail FROM connector_state WHERE service = 'freqblog'", &[]).ok().and_then(|r| r.first().and_then(|m| m.get("detail")).cloned()).unwrap_or(Value::Null);
+    match &raw { Value::String(s) => serde_json::from_str(s).unwrap_or(Value::Null), v => v.clone() }
+}
+fn set_remaining(db: &Db, rem: i64) -> Result<()> {
+    let mut d = detail(db);
+    if d["month"].as_str() != Some(month_key().as_str()) { d = json!({ "month": month_key(), "requests": 0 }); }
+    d["remaining"] = json!(rem);
+    db.exec("UPDATE connector_state SET detail = CAST(? AS JSON) WHERE service = 'freqblog'", &[json!(d.to_string())])?;
+    Ok(())
+}
+/// Keep the first real /bulk reply (≤ 64 KB) for pinning field names; never overwritten once written.
+fn save_sample(v: &Value) {
+    if let Ok(p) = crate::paths::resolve() {
+        let f = p.logs_dir.join("freqblog-sample.json");
+        if !f.exists() { let s = serde_json::to_string_pretty(v).unwrap_or_default(); let _ = std::fs::write(&f, &s[..s.len().min(65_536)]); }
+    }
+}
+
 fn bump_usage(db: &Db, by: i64) -> Result<()> {
     let used = used_this_month(db) + by;
-    db.exec("UPDATE connector_state SET detail = CAST(? AS JSON), last_sync_at = now() WHERE service = 'freqblog'", &[json!(json!({ "month": month_key(), "requests": used }).to_string())])?;
+    let mut d = detail(db);
+    if d["month"].as_str() != Some(month_key().as_str()) { d = json!({ "month": month_key() }); }
+    d["requests"] = json!(used);
+    db.exec("UPDATE connector_state SET detail = CAST(? AS JSON), last_sync_at = now() WHERE service = 'freqblog'", &[json!(d.to_string())])?;
     Ok(())
 }
 
@@ -111,17 +144,33 @@ pub fn enrich(db: &Db, max_tracks: usize) -> Result<usize> {
     let h = http()?;
     let mut done = 0usize;
     for chunk in rows.chunks(BATCH) {
-        if used_this_month(db) >= MONTHLY_CAP { break; }
+        if used_this_month(db) >= MONTHLY_CAP || remaining(db).map(|r| r < RESERVE).unwrap_or(false) { break; }
         let g = |r: &serde_json::Map<String, Value>, k: &str| r.get(k).and_then(|v| v.as_str()).map(str::to_string);
-        let body: Vec<Value> = chunk.iter().map(|r| match g(r, "isrc") { Some(i) => json!({ "isrc": i, "track": g(r, "name"), "artist": g(r, "artist") }), None => json!({ "track": g(r, "name"), "artist": g(r, "artist") }) }).collect();
+        // FreqBlog matches ISRC first and falls back to the name, so send both when we have them
+        let body: Vec<Value> = chunk.iter().map(|r| { let mut o = serde_json::Map::new(); if let Some(i) = g(r, "isrc") { o.insert("isrc".into(), json!(i)); } if let Some(t) = g(r, "name") { o.insert("track".into(), json!(t.chars().take(200).collect::<String>())); } if let Some(a) = g(r, "artist") { o.insert("artist".into(), json!(a.chars().take(200).collect::<String>())); } Value::Object(o) }).collect();
         let mut attempt = 0;
         let v: Value = loop {
-            let resp = h.post(format!("{API}/bulk")).header("X-Api-Key", &key).query(&[("wait", "20")]).json(&json!({ "tracks": body })).send().context("FreqBlog /bulk")?;
+            let resp = h.post(format!("{API}/bulk")).header("X-Api-Key", &key).json(&Value::Array(body.clone())).send().context("FreqBlog /bulk")?;
             let status = resp.status().as_u16();
             let _ = db.exec("INSERT INTO api_calls (service, endpoint, status) VALUES ('freqblog', 'bulk', ?)", &[json!(status as i64)]);
-            bump_usage(db, 1)?;
+            if let Some(rem) = resp.headers().get("ratelimit-remaining").and_then(|v| v.to_str().ok()).and_then(|s| s.trim().parse::<i64>().ok()) {
+                set_remaining(db, rem)?;
+                if rem < RESERVE { set_state(db, "freqblog", "connected", None, Some(&format!("{rem} units left this month — pausing until the reset"))); }
+            }
             match status {
-                200 => break resp.json().unwrap_or(Value::Null),
+                200 => {
+                    let v: Value = resp.json().unwrap_or(Value::Null);
+                    let units = v["found"].as_i64().or_else(|| v["billed"].as_i64()).unwrap_or(chunk.len() as i64);
+                    bump_usage(db, units)?;
+                    save_sample(&v);
+                    break v;
+                }
+                422 | 400 => {
+                    let detail = resp.text().unwrap_or_default();
+                    log::warn!("FreqBlog /bulk rejected the request ({status}): {detail}");
+                    set_state(db, "freqblog", "error", None, Some(&format!("HTTP {status}: {}", detail.chars().take(160).collect::<String>())));
+                    return Ok(done);
+                }
                 202 if attempt < 2 => { attempt += 1; std::thread::sleep(Duration::from_secs(15)); continue; }   // still analysing; costs a request each time, so twice only
                 202 => break Value::Null,
                 429 => { let wait = resp.headers().get("retry-after").and_then(|v| v.to_str().ok()).and_then(|s| s.parse::<u64>().ok()).unwrap_or(60).min(600); set_state(db, "freqblog", "connected", None, Some(&format!("rate limited, retrying in {wait}s"))); std::thread::sleep(Duration::from_secs(wait)); if attempt < 1 { attempt += 1; continue; } return Ok(done); }
@@ -136,6 +185,9 @@ pub fn enrich(db: &Db, max_tracks: usize) -> Result<usize> {
             let want_isrc = g(r, "isrc");
             let item = items.iter().find(|it| want_isrc.is_some() && (str_of(&it["isrc"]).as_deref() == want_isrc.as_deref() || str_of(&it["query"]["isrc"]).as_deref() == want_isrc.as_deref()))
                 .or_else(|| items.get(i));
+            // queued for on-demand analysis → leave unwritten; the next tick collects it for free
+            let backfill = item.and_then(|it| it["backfill_status"].as_str()).unwrap_or("").to_lowercase();
+            if ["queue", "pending", "processing", "ingest", "running"].iter().any(|k| backfill.contains(k)) || backfill == "over_limit" { continue; }
             let found = item.map(|it| !it["error"].is_string() && it["found"] != Value::Bool(false) && it["status"].as_str() != Some("not_found")).unwrap_or(false);
             let ft = item.map(parse_feat).unwrap_or_default();
             let found = found && (ft.bpm.is_some() || ft.key_name.is_some() || ft.energy.is_some());

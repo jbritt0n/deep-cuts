@@ -235,3 +235,33 @@ fn decrypt(pw: &str, blob: &[u8]) -> Result<Vec<u8>> {
     let cipher = XChaCha20Poly1305::new((&key).into());
     cipher.decrypt(XNonce::from_slice(nonce), ct).map_err(|_| anyhow!("wrong passphrase"))
 }
+
+/// Phase 9i — "Export everything": a readable copy of the whole record (not a restore bundle). Writes
+/// `<dest>/deep-cuts-export-<stamp>/` with every table as CSV or Parquet, `plays_enriched` (one row per play with its
+/// enrichment), and a README. Secrets are never included.
+pub fn export_record(db: &Db, dest_dir: &Path, format: &str) -> Result<PathBuf> {
+    let parquet = format == "parquet";
+    let ext = if parquet { "parquet" } else { "csv" };
+    let opts = if parquet { "(FORMAT PARQUET, COMPRESSION ZSTD)" } else { "(HEADER, DELIMITER ',')" };
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S");
+    let out = dest_dir.join(format!("deep-cuts-export-{stamp}"));
+    std::fs::create_dir_all(out.join("tables"))?;
+    db.checkpoint()?;
+    let mut listing = String::new();
+    // the flat file first — it's the one most people want
+    db.exec_batch(&format!("COPY (SELECT * FROM plays_enriched ORDER BY played_at) TO '{}' {opts}", q(&out.join(format!("plays_enriched.{ext}")))))?;
+    for t in base_tables(db)? {
+        let rows = db.scalar_i64(&format!("SELECT COUNT(*) FROM \"{t}\"")).unwrap_or(0);
+        if rows == 0 { continue; }
+        // CSV can't hold nested lists / JSON as-is; cast every column to text so spreadsheets read it
+        let select = if parquet { "*".to_string() } else {
+            db.query("SELECT column_name FROM information_schema.columns WHERE table_schema = 'main' AND table_name = ? ORDER BY ordinal_position", &[json!(t)])?
+                .into_iter().filter_map(|r| r.get("column_name").and_then(|v| v.as_str()).map(|c| format!("CAST(\"{c}\" AS VARCHAR) AS \"{c}\""))).collect::<Vec<_>>().join(", ")
+        };
+        db.exec_batch(&format!("COPY (SELECT {select} FROM \"{t}\") TO '{}' {opts}", q(&out.join("tables").join(format!("{t}.{ext}")))))?;
+        listing.push_str(&format!("  tables/{t}.{ext}  ({rows} rows)\n"));
+    }
+    std::fs::write(out.join("README.txt"), format!("Deep Cuts — everything in this record, exported {stamp}.\n\nplays_enriched.{ext}: one row per play with its artist origin, scene, tags, album art URL, release date,\nLast.fm listeners, audio features (FreqBlog), lyric language/themes (derived — no lyric text exists), and whether it is\nin your Liked Songs.\n\nEvery table as stored:\n{listing}\nTo move the record to another computer use Settings → Record → Move to another computer instead — that bundle restores.\nNo passwords or sign-in tokens are in this export.\n"))?;
+    db.log_activity("export", "info", &format!("Exported everything ({ext})"), Some(&out.to_string_lossy()));
+    Ok(out)
+}

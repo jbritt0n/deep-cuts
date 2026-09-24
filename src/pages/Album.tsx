@@ -1,4 +1,5 @@
 import { Link, useParams } from 'react-router-dom';
+import { AlbumMetadata } from '@/components/MetadataPanel';
 import { getAlbumDetail } from '@/lib/queries';
 import { useAsync, useFilter } from '@/lib/hooks';
 import { artistHref, fmtDate, fmtHours, fmtInt, fmtPct } from '@/lib/format';
@@ -30,6 +31,7 @@ export function AlbumPage() {
         <Card title="Two years, month by month"><MonthlySparkline data={a.monthly} /></Card>
         <Card title="Tracks" subtitle="By plays — the deep cuts sit at the bottom." aside={<MakePlaylistButton small name={`${a.album} · as you play it`} tracks={a.tracks} note={`album:${a.albumId}`} />}><TrackList data={a.tracks} showArtist={false} /></Card>
       </section>
+      <div className="mt-6 max-w-2xl"><AlbumMetadata albumId={a.albumId} /></div>
     </div>
   );
 }

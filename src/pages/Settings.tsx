@@ -20,6 +20,7 @@ import { integrity, overrunPlays, shortTrackOutliers, stuckRepeatSessions } from
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { SkipHallPage } from '@/pages/SkipHall';
 import { DENSITIES, loadDensity, rootPx, saveDensity, type Density } from '@/lib/display';
+import { ERA_STYLE_DEFAULT, PALETTES, loadEraStyle, saveEraStyle, type EraFill, type EraPalette, type EraStyle } from '@/lib/eraStyle';
 import { fmtDate, fmtPct, trackHref } from '@/lib/format';
 
 type ImportRun = { import_id: string; at: string; files: number; inserted: number; duplicate: number; skipped: number };
@@ -69,6 +70,7 @@ export function SettingsPage({ status, onChanged }: { status: AppStatus; onChang
       {err && <div className="mb-4"><ErrorBox message={err} /></div>}
 
       {tab === 'look' && <DisplaySize />}
+      {tab === 'look' && <EraStyleCard />}
       {tab === 'look' && (
         <Card title="Skin" subtitle="Colour scheme for the whole app, charts included. Saved on this machine.">
           <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
@@ -108,6 +110,8 @@ export function SettingsPage({ status, onChanged }: { status: AppStatus; onChang
             <div className="mt-4 flex flex-wrap gap-2 text-sm">
               <button disabled={!!busy} onClick={() => run('open', () => invoke('open_data_folder'), 'Opened the data folder.')} className="rounded-full border border-line px-4 py-2 text-dust hover:text-cream disabled:opacity-40">Show data folder</button>
               <button disabled={!!busy} onClick={() => run('export', async () => { const p = await invoke<string>('export_events'); setMsg(`Exported to ${p}`); }, 'Exported.')} className="rounded-full border border-line px-4 py-2 text-dust hover:text-cream disabled:opacity-40">Export all plays (Parquet)</button>
+              <button disabled={!!busy} onClick={() => run('exportall', async () => { const p = await invoke<string>('export_record', { destDir: null, format: 'csv' }); setMsg(`Everything exported (CSV) to ${p}`); }, 'Exported.')} className="rounded-full border border-line px-4 py-2 text-dust hover:text-cream disabled:opacity-40" title="Every table plus plays_enriched — one row per play with origin, scene, tags, art, audio and lyric features. Opens in any spreadsheet.">Export everything (CSV)</button>
+              <button disabled={!!busy} onClick={() => run('exportallpq', async () => { const p = await invoke<string>('export_record', { destDir: null, format: 'parquet' }); setMsg(`Everything exported (Parquet) to ${p}`); }, 'Exported.')} className="rounded-full border border-line px-4 py-2 text-dust hover:text-cream disabled:opacity-40">…as Parquet</button>
               <button disabled={!!busy} onClick={() => run('rebuild', () => invoke('rebuild'), 'Rebuilt every derived table from the raw plays.')} className="rounded-full border border-line px-4 py-2 text-dust hover:text-cream disabled:opacity-40">{busy === 'rebuild' ? 'Rebuilding…' : 'Rebuild everything'}</button>
             </div>
             <p className="mt-3 text-xs text-dust">Portable mode: put an empty file named <span className="num">portable.flag</span> next to the app and it keeps its data in a <span className="num">data</span> folder beside it.</p>
@@ -465,6 +469,46 @@ function DisplaySize() {
             <span className="block text-sm">{x.label}</span><span className="block text-[11px] text-dust">{x.px ? `${x.px} px` : 'fits the window'}</span>
           </button>
         ))}
+      </div>
+    </Card>
+  );
+}
+
+/** Phase 9i — Settings → Appearance → Eras chart: gaps, palette, fill, height, week width. Saved on this machine. */
+function EraStyleCard() {
+  const [st, setSt] = useState<EraStyle>(loadEraStyle);
+  const set = (patch: Partial<EraStyle>) => { const n = { ...st, ...patch }; setSt(n); saveEraStyle(n); };
+  const Slider = ({ label, k, min, max, step, fmt }: { label: string; k: 'gap' | 'bandGap' | 'height' | 'weekWidth'; min: number; max: number; step: number; fmt: (v: number) => string }) => (
+    <label className="block text-xs text-dust">{label} <span className="num text-cream">{fmt(st[k])}</span>
+      <input type="range" min={min} max={max} step={step} value={st[k]} onChange={(e) => set({ [k]: Number(e.target.value) } as Partial<EraStyle>)} className="mt-1 w-full accent-amber" />
+    </label>
+  );
+  const pal = PALETTES[st.palette];
+  return (
+    <Card title="Eras chart" subtitle="How the Areas view on Eras looks. Changes show immediately on any open chart." className="mb-6" aside={<button onClick={() => { setSt(ERA_STYLE_DEFAULT); saveEraStyle(ERA_STYLE_DEFAULT); }} className="text-xs text-dust hover:text-cream">Reset</button>}>
+      <div className="grid gap-6 lg:grid-cols-[1fr_1fr]">
+        <div className="space-y-4">
+          <Slider label="Gap between eras" k="gap" min={0} max={16} step={1} fmt={(v) => `${v} px`} />
+          <Slider label="Gap between eras and threads" k="bandGap" min={0} max={48} step={2} fmt={(v) => `${v} px`} />
+          <Slider label="Chart height" k="height" min={0.7} max={1.6} step={0.05} fmt={(v) => `${Math.round(v * 100)}%`} />
+          <Slider label="Week width (zoom)" k="weekWidth" min={6} max={28} step={1} fmt={(v) => `${v} px`} />
+          <label className="flex items-center gap-2 text-xs text-dust"><input type="checkbox" checked={st.labels === 'long'} onChange={(e) => set({ labels: e.target.checked ? 'long' : 'all' })} /> Label only eras of 10 weeks or more</label>
+        </div>
+        <div className="space-y-4">
+          <div><p className="mb-1 text-xs text-dust">Colours</p><div className="flex flex-wrap gap-2">{(Object.keys(PALETTES) as EraPalette[]).map((k) => (
+            <button key={k} onClick={() => set({ palette: k })} aria-pressed={st.palette === k} className={`rounded-xl border px-3 py-2 text-left text-xs ${st.palette === k ? 'border-amber text-cream' : 'border-line text-dust hover:text-cream'}`}>
+              <span className="mb-1 flex gap-0.5">{PALETTES[k].eras.slice(0, 5).map((c) => <span key={c} className="inline-block h-3 w-4 rounded-sm" style={{ background: c }} />)}</span>{PALETTES[k].label}
+            </button>))}</div></div>
+          <div><p className="mb-1 text-xs text-dust">Fill</p><div className="flex flex-wrap gap-1">{(['gradient', 'soft', 'solid', 'outline'] as EraFill[]).map((f) => <button key={f} onClick={() => set({ fill: f })} aria-pressed={st.fill === f} className={`rounded-full px-3 py-1 text-xs capitalize ${st.fill === f ? 'bg-raised text-cream' : 'border border-line text-dust hover:text-cream'}`}>{f}</button>)}</div></div>
+          <svg viewBox="0 0 300 90" className="w-full rounded-lg border border-line bg-ink/40" role="img" aria-label="Preview">
+            <defs>{pal.eras.slice(0, 3).map((c, i) => <linearGradient key={i} id={`pv${i}`} x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor={c} stopOpacity={0.85} /><stop offset="100%" stopColor={c} stopOpacity={0.12} /></linearGradient>)}</defs>
+            {[[8, 100, 'M8,60 L8,30 L40,22 L70,34 L100,26 L100,60 Z'], [100, 190, 'M100,60 L100,38 L130,18 L160,28 L190,40 L190,60 Z'], [190, 292, 'M190,60 L190,32 L220,26 L260,20 L292,34 L292,60 Z']].map(([, , d], i) => {
+              const g = st.gap / 2; const shift = i === 0 ? -g : i === 2 ? g : 0; const c = pal.eras[i % pal.eras.length];
+              return <path key={i} transform={`translate(${shift},0)`} d={String(d)} fill={st.fill === 'gradient' ? `url(#pv${i})` : c} fillOpacity={st.fill === 'gradient' ? 1 : st.fill === 'solid' ? 0.8 : st.fill === 'outline' ? 0.08 : 0.3} stroke={c} strokeWidth={st.fill === 'outline' ? 2 : 1.4} />;
+            })}
+            <path d={`M8,${80 + Math.min(8, st.bandGap / 6)} L60,${70 + Math.min(8, st.bandGap / 6)} L120,${74 + Math.min(8, st.bandGap / 6)} L180,${68 + Math.min(8, st.bandGap / 6)} L240,${76 + Math.min(8, st.bandGap / 6)}`} fill="none" stroke={pal.threads[0]} strokeWidth="1.4" strokeDasharray={st.fill === 'outline' ? undefined : '4 2'} />
+          </svg>
+        </div>
       </div>
     </Card>
   );

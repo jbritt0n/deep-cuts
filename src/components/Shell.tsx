@@ -30,6 +30,7 @@ export const NAV_GROUPS: NavGroup[] = [
   { id: 'stories', label: 'Stories', defaultOpen: false, items: [
     { to: '/notes', label: 'Liner Notes' },
     { to: '/review', label: 'In Review' },
+    { to: '/roast', label: 'Roast Me' },
     { to: '/compare', label: 'Compare' },
     { to: '/achievements', label: 'Achievements' },
   ] },

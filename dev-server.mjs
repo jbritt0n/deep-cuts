@@ -154,6 +154,18 @@ const commands = {
   async list_timezones() { return Intl.supportedValuesOf('timeZone'); },
   async set_timezone({ zone: z }) { await loadTz(z); await rebuild(); emit('data:changed', { reason: 'timezone' }); return null; },
   async open_data_folder() { return null; },
+  async export_record({ destDir, format }) {
+    const parquet = format === 'parquet', ext = parquet ? 'parquet' : 'csv', opts = parquet ? '(FORMAT PARQUET, COMPRESSION ZSTD)' : "(HEADER, DELIMITER ',')";
+    const out = path.join(destDir || path.dirname(dbPath), `deep-cuts-export-${new Date().toISOString().replace(/[-:T]/g, '').slice(0, 15)}`); fs.mkdirSync(path.join(out, 'tables'), { recursive: true });
+    await con.run(`COPY (SELECT * FROM plays_enriched ORDER BY played_at) TO ${q(path.join(out, `plays_enriched.${ext}`))} ${opts}`);
+    for (const { table_name: t } of await rowsOf("SELECT table_name FROM information_schema.tables WHERE table_schema = 'main' AND table_type = 'BASE TABLE' ORDER BY 1")) {
+      if (t === 'tz_offsets' || t.startsWith('_') || !Number(await scalar(`SELECT COUNT(*) FROM "${t}"`))) continue;
+      const cols = parquet ? '*' : (await rowsOf(`SELECT column_name FROM information_schema.columns WHERE table_schema = 'main' AND table_name = ${q(t)} ORDER BY ordinal_position`)).map((r) => `CAST("${r.column_name}" AS VARCHAR) AS "${r.column_name}"`).join(', ');
+      await con.run(`COPY (SELECT ${cols} FROM "${t}") TO ${q(path.join(out, 'tables', `${t}.${ext}`))} ${opts}`);
+    }
+    fs.writeFileSync(path.join(out, 'README.txt'), 'Deep Cuts — everything in this record (dev harness export). plays_enriched: one row per play with its enrichment.\n');
+    return out;
+  },
   async export_events() { const out = path.join(path.dirname(dbPath), `events-${Date.now()}.parquet`); await con.run(`COPY (SELECT * FROM events) TO '${out}' (FORMAT PARQUET)`); return out; },
   async set_setting({ key, value }) { await con.run(`INSERT INTO app_meta (key, value) VALUES ('${key}', '${String(value).replace(/'/g, "''")}') ON CONFLICT (key) DO UPDATE SET value = excluded.value`); return null; },
   async get_settings() { return rowsOf('SELECT key, value FROM app_meta'); },
@@ -278,6 +290,37 @@ const commands = {
     emit('data:changed', { reason: 'restore' });
     return { tables, rows, skipped_tables: skipped, secrets_restored: 0, manifest, backup_of_previous: backup };
   },
+  // Phase 9i — metadata corrections (mirror of commands.rs; MusicBrainz lookups need the desktop app)
+  async meta_set({ entityType, entityId, field, value }) {
+    const ok = { artist: ['image_url'], album: ['release_date', 'image_url'], track: ['isrc', 'release_date'] };
+    if (!ok[entityType]?.includes(field)) throw new Error(`${entityType}.${field} can't be edited`);
+    let v = (value ?? '').trim();
+    if (field === 'release_date' && v && !/^\d{4}(-\d{2}-\d{2})?$/.test(v)) throw new Error('Use a year (1972) or a date (1972-03-01)');
+    if (field === 'release_date' && /^\d{4}$/.test(v)) v += '-01-01';
+    if (field === 'isrc') v = v.replace(/-/g, '').toUpperCase();
+    if (!v) { await con.run(`DELETE FROM metadata_overrides WHERE entity_type = ${q(entityType)} AND entity_id = ${q(entityId)} AND field = ${q(field)}`); return null; }
+    await con.run(`INSERT INTO metadata_overrides (entity_type, entity_id, field, value) VALUES (${q(entityType)}, ${q(entityId)}, ${q(field)}, ${q(v)}) ON CONFLICT (entity_type, entity_id, field) DO UPDATE SET value = excluded.value, updated_at = now()`);
+    const [table, key] = { artist: ['artists', 'artist_id'], album: ['albums', 'album_id'], track: ['tracks', 'track_id'] }[entityType];
+    await con.run(`UPDATE ${table} SET ${field} = ${field === 'release_date' ? `TRY_CAST(${q(v)} AS DATE)` : q(v)} WHERE ${key} = ${q(entityId)}`);
+    if (field === 'isrc') { await con.run(`DELETE FROM track_features WHERE track_id = ${q(entityId)}`); await con.run(`DELETE FROM track_credits WHERE track_id = ${q(entityId)}`); }
+    return null;
+  },
+  async artist_set_origin({ artistId, country, city, formedYear }) {
+    const cc = (country ?? '').trim().toUpperCase();
+    if (cc && !/^[A-Z]{2}$/.test(cc)) throw new Error('Country must be a two-letter code (US, GB, TR…)');
+    if (!cc && !(city ?? '').trim() && formedYear == null) { await con.run(`DELETE FROM artist_origin WHERE artist_id = ${q(artistId)} AND source = 'owner'`); return null; }
+    await con.run(`INSERT INTO artist_origin (artist_id, country, country_name, city, formed_year, source) VALUES (${q(artistId)}, ${cc ? q(cc) : 'NULL'}, NULL, ${(city ?? '').trim() ? q(city.trim()) : 'NULL'}, ${formedYear == null ? 'NULL' : Number(formedYear)}, 'owner')
+                   ON CONFLICT (artist_id) DO UPDATE SET country = excluded.country, country_name = NULL, city = excluded.city, formed_year = excluded.formed_year, source = 'owner', fetched_at = now()`);
+    return null;
+  },
+  async artist_mb_candidates() { throw new Error('MusicBrainz lookups need the desktop app.'); },
+  async artist_set_mbid({ artistId, mbid }) {
+    const id = String(mbid).trim().replace(/\/$/, '').split('/').pop();
+    if (!/^[0-9a-f-]{36}$/i.test(id)) throw new Error("That doesn't look like a MusicBrainz artist id or URL");
+    await con.run(`INSERT INTO artist_mb_match (artist_id, mbid, method, evidence) VALUES (${q(artistId)}, ${q(id)}, 'owner', 'chosen by you') ON CONFLICT (artist_id) DO UPDATE SET mbid = excluded.mbid, method = 'owner', evidence = excluded.evidence, checked_at = now()`);
+    await con.run(`UPDATE artists SET mbid = ${q(id)} WHERE artist_id = ${q(artistId)}`);
+    return null;
+  },
   async forecast_log_write({ date, weekday, payload }) {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) throw new Error('date must be YYYY-MM-DD');
     const before = Number(await scalar('SELECT COUNT(*) FROM forecast_log'));
@@ -293,7 +336,7 @@ const commands = {
 
 const STATIC = process.env.DEEPCUTS_STATIC ? path.resolve(process.env.DEEPCUTS_STATIC) : (fs.existsSync(path.join(here, 'dist', 'index.html')) && process.env.DEEPCUTS_SERVE_DIST ? path.join(here, 'dist') : null);
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2', '.woff': 'font/woff', '.json': 'application/json', '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json' };
-const WRITE_CMDS = new Set(['set_setting', 'set_timezone', 'rebuild', 'rec_feedback', 'set_artist_scene', 'scene_family_upsert', 'scene_family_delete', 'scene_tag_set', 'scene_origin_set', 'recompute_scenes', 'restore_move_bundle', 'forecast_log_write', 'set_session_attention', 'merge_artists', 'import_files', 'start_import', 'set_tz_override', 'delete_tz_override']);
+const WRITE_CMDS = new Set(['set_setting', 'set_timezone', 'rebuild', 'rec_feedback', 'set_artist_scene', 'scene_family_upsert', 'scene_family_delete', 'scene_tag_set', 'scene_origin_set', 'recompute_scenes', 'restore_move_bundle', 'forecast_log_write', 'meta_set', 'artist_set_origin', 'artist_set_mbid', 'set_session_attention', 'merge_artists', 'import_files', 'start_import', 'set_tz_override', 'delete_tz_override']);
 function serveStatic(url, res) {
   if (!STATIC) return false;
   let rel = decodeURIComponent(url.pathname); if (rel === '/' || rel === '') rel = '/index.html';

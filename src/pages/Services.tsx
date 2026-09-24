@@ -237,14 +237,14 @@ function FreqblogBody({ row, busy, run }: { row: Row; busy: string | null; run: 
   if (row.status === 'connected' || row.status === 'error') return (
     <div className="num text-xs text-dust">
       <p>{fmtInt(Number(row.extra.featuredTracks ?? 0))} of {fmtInt(Number(row.extra.playedTracks ?? 0))} played tracks have features{Number(row.extra.missedTracks ?? 0) > 0 ? ` · ${fmtInt(Number(row.extra.missedTracks))} not in FreqBlog's catalogue` : ''}. One bulk request every six hours, most-played first.</p>
-      <div className="mt-2 flex items-center gap-2"><span>this month</span><div className="h-1.5 w-40 overflow-hidden rounded-full bg-raised"><div className={`h-full rounded-full ${used / cap > 0.85 ? 'bg-coral' : 'bg-moss/80'}`} style={{ width: `${Math.min(100, (used / cap) * 100)}%` }} /></div><span>{used} / {cap} requests</span></div>
+      <div className="mt-2 flex items-center gap-2"><span>this month</span><div className="h-1.5 w-40 overflow-hidden rounded-full bg-raised"><div className={`h-full rounded-full ${used / cap > 0.85 ? 'bg-coral' : 'bg-moss/80'}`} style={{ width: `${Math.min(100, (used / cap) * 100)}%` }} /></div><span>{used} / {cap} units</span>{row.extra.remaining != null && <span>· {fmtInt(Number(row.extra.remaining))} left per FreqBlog</span>}</div>
       {row.lastError && <p className="mt-1 text-coral">{row.lastError}</p>}
       <button disabled={!!busy} onClick={() => run('freqblog', () => invoke('freqblog_disconnect'), () => 'FreqBlog disconnected. Features already fetched are kept.')} className="mt-2 text-dust hover:text-cream">Disconnect</button>
     </div>
   );
   return (
     <div className="rounded-xl border border-line bg-ink/40 p-3 text-xs text-dust">
-      <p className="text-cream/80">Free key at freqblog.com (1,000 requests a month, no card). Deep Cuts asks for 25 tracks per request and stops at 900 so you keep headroom.</p>
+      <p className="text-cream/80">Free key at freqblog.com (1,000 requests a month, no card). Deep Cuts sends 25 tracks per request; FreqBlog bills each track that returns features (misses are free), and Deep Cuts pauses at 900 units so you keep headroom.</p>
       <div className="mt-2 grid gap-2 sm:grid-cols-[1fr_auto]">
         <input value={key} onChange={(e) => setKey(e.target.value)} placeholder="API key" type="password" className="num rounded-lg border border-line bg-ink px-3 py-1.5 text-xs" />
         <button disabled={!!busy || key.trim().length < 16} onClick={() => run('freqblog', () => invoke<string>('freqblog_connect', { apiKey: key }), () => 'Connected to FreqBlog. Features fill in from the next tick.')} className="rounded-full bg-amber px-3 py-1.5 text-xs font-medium text-ink disabled:opacity-40">Connect</button>

@@ -1,4 +1,5 @@
 import { C } from '@/lib/theme';
+import { TrackMetadata } from '@/components/MetadataPanel';
 import { Link, useParams } from 'react-router-dom';
 import { getTrackDetail } from '@/lib/queries';
 import { useAsync, useFilter } from '@/lib/hooks';
@@ -47,7 +48,7 @@ export function TrackPage() {
           {t.exitPoints.length ? <Histogram data={t.exitPoints.map((e) => ({ label: fmtMs(e.msPlayed), value: e.count }))} color={C.coral} /> : <p className="text-sm text-dust">You've never skipped this one.</p>}
         </Card>
       </section>
-      <div className="mt-6"><Card title="Recent plays"><PlaysTable data={t.recentPlays} showDate /></Card></div>
+      <div className="mt-6 grid gap-6 lg:grid-cols-[1.3fr_1fr]"><Card title="Recent plays"><PlaysTable data={t.recentPlays} showDate /></Card><TrackMetadata trackId={id} /></div>
     </div>
   );
 }

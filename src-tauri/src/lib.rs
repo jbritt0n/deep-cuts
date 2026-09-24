@@ -100,11 +100,22 @@ fn open_databases(paths: &paths::DataPaths) -> anyhow::Result<(Arc<Db>, Arc<Db>,
             Db::open(&paths.demo_db_path, &zone).context("recreating the demo record")?
         }
     };
+    // Phase 9i: a demo built by an older version lacks the newer features — replace it (never the real record).
+    let demo_rev = demo.query("SELECT value FROM app_meta WHERE key = 'demo_rev'", &[]).ok().and_then(|r| r.first().and_then(|m| m.get("value")).and_then(|v| v.as_str().map(str::to_string)));
+    let demo = if demo.scalar_i64("SELECT COUNT(*) FROM events")? > 0 && demo_rev.as_deref() != Some(db::DEMO_REV) {
+        log::info!("demo record is from {:?}; rebuilding it for {}", demo_rev, db::DEMO_REV);
+        drop(demo);
+        quarantine(&paths.demo_db_path);
+        Db::open(&paths.demo_db_path, &zone).context("recreating the demo record")?
+    } else { demo };
     if demo.scalar_i64("SELECT COUNT(*) FROM events")? == 0 {
         log::info!("seeding demo record");
-        demo.exec_batch(db::DEMO_SEED_SQL)?;
-        demo.exec_batch(db::ENTITY_RESOLUTION_SQL)?;
-        demo.exec_batch(db::COMPUTE_SESSIONS_SQL)?;
+        // the full pipeline plus stand-in enrichment, so every page has something to show before an import (Phase 9i)
+        for (name, sql) in [("demo_seed", db::DEMO_SEED_SQL), ("demo_events", db::DEMO_EVENTS_SQL), ("entity_resolution", db::ENTITY_RESOLUTION_SQL), ("demo_enrich", db::DEMO_ENRICH_SQL),
+                            ("compute_sessions", db::COMPUTE_SESSIONS_SQL), ("compute_milestones", db::COMPUTE_MILESTONES_SQL), ("compute_scenes", db::COMPUTE_SCENES_SQL), ("compute_insights", db::COMPUTE_INSIGHTS_SQL)] {
+            demo.exec_batch(sql).with_context(|| format!("building the demo record ({name}.sql)"))?;
+        }
+        demo.exec("INSERT INTO app_meta (key, value) VALUES ('demo_rev', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value", &[serde_json::json!(db::DEMO_REV)])?;
         demo.checkpoint()?;
     }
     // Real record: make sure derived tables exist for whatever is in events
@@ -233,6 +244,11 @@ pub fn run() {
             // Phase 9f
             commands::lyrics_status,
             commands::forecast_log_write,
+            commands::meta_set,
+            commands::export_record,
+            commands::artist_set_origin,
+            commands::artist_mb_candidates,
+            commands::artist_set_mbid,
             commands::freqblog_connect,
             commands::freqblog_disconnect,
             commands::scene_family_upsert,

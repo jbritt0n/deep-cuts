@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { revisit, revisitVerdict, type RevisitTrack } from '@/lib/revisitQueries';
 import { Link, useSearchParams } from 'react-router-dom';
 import { likedAlbums, likedArtists, likedFacets, likedSongs, pruneLists, type LikedFilters } from '@/lib/phase4Queries';
 import { playlistHealth, playlistRevisit, playlistTotals, playlistTracks, type PlaylistScope, type PlaylistSort, type PlaylistTrack } from '@/lib/playlistQueries';
@@ -15,12 +16,13 @@ import { Histogram } from '@/components/charts/Bars';
 export function LibraryPage() {
   const [params, setParams] = useSearchParams();
   const tab = params.get('tab') ?? 'songs';
-  const tabs = [['songs', 'Liked songs'], ['albums', 'Liked albums'], ['artists', 'Liked artists'], ['playlists', 'My playlists'], ['followed', 'Followed'], ['made', 'Made by Deep Cuts'], ['earworms', 'Earworms'], ['prune', 'Prune']];
+  const tabs = [['songs', 'Liked songs'], ['albums', 'Liked albums'], ['artists', 'Liked artists'], ['playlists', 'My playlists'], ['followed', 'Followed'], ['made', 'Made by Deep Cuts'], ['earworms', 'Earworms'], ['revisit', 'To revisit'], ['prune', 'Prune']];
   return (
     <div className="mx-auto max-w-6xl">
       <Sleeve kicker="Library" title="Liked songs and playlists, with your numbers" meta="Everything Spotify knows you saved, joined to everything you actually played. Syncs daily once Spotify is connected." />
       <div className="mb-6 flex flex-wrap gap-2 text-xs">{tabs.map(([k, l]) => <button key={k} onClick={() => setParams({ tab: k })} className={`rounded-full px-3 py-1.5 ${tab === k ? 'bg-amber text-ink' : 'border border-line text-dust hover:text-cream'}`}>{l}</button>)}</div>
       {tab === 'songs' && <LikedSongs />}{tab === 'albums' && <LikedAlbums />}{tab === 'artists' && <LikedArtists />}{tab === 'playlists' && <Playlists />}{tab === 'followed' && <Followed />}{tab === 'made' && <MadeBy />}{tab === 'earworms' && <Earworms />}{tab === 'prune' && <Prune />}
+      {tab === 'revisit' && <RevisitTab />}
     </div>
   );
 }
@@ -237,5 +239,46 @@ function Earworms() {
         </ul>
       )}
     </Card>
+  );
+}
+
+/** Phase 9i — Library → To revisit: songs you keep choosing and never saved. */
+function RevisitTab() {
+  const { filter } = useFilter();
+  const [tick, setTick] = useState(0);
+  const r = useAsync(() => revisit(40), [filter, tick]);
+  const [gone, setGone] = useState<Set<string>>(new Set());
+  const verdict = async (t: RevisitTrack, v: 'accepted' | 'dismissed') => { setGone((g) => new Set(g).add(t.trackId)); await revisitVerdict(t.trackId, v).catch(() => {}); };
+  if (r.error) return <ErrorBox message={r.error} />;
+  if (!r.data) return <Loading label="Looking for songs you never judged…" />;
+  const Shelf = ({ title, subtitle, list, name }: { title: string; subtitle: string; list: RevisitTrack[]; name: string }) => {
+    const shown = list.filter((t) => !gone.has(t.trackId));
+    return (
+      <Card title={`${title} · ${shown.length}`} subtitle={subtitle} aside={shown.length ? <MakePlaylistButton small label="Review as a playlist" name={name} kind="insight" description="Songs Deep Cuts thinks you should decide about — like them in Spotify or let them go." tracks={shown.map((t) => ({ trackId: t.trackId, track: t.track, artistId: t.artistId, artist: t.artist, plays: t.plays, hours: t.hours, skipRate: t.skipRate }))} /> : undefined}>
+        {shown.length === 0 ? <p className="text-sm text-dust">Nothing waiting for a verdict here.</p> : (
+          <ul className="max-h-[min(28rem,55vh)] divide-y divide-line/60 overflow-y-auto pr-1 text-sm">
+            {shown.map((t) => (
+              <li key={t.trackId} className="flex items-center gap-2 py-1.5">
+                <QueueButton trackId={t.trackId} />
+                <span className="min-w-0 flex-1 truncate"><Link to={trackHref(t.trackId)} className="hover:text-amber">{t.track}</Link> <span className="text-xs text-dust">{t.artistId ? <Link to={artistHref(t.artistId)} className="hover:text-cream">{t.artist}</Link> : t.artist}</span></span>
+                <span className="num hidden shrink-0 text-[11px] text-dust sm:inline" title={`first ${t.firstPlayed} · last ${t.lastPlayed} · skip rate ${Math.round(t.skipRate * 100)}%`}>{t.plays} plays · {t.days} days · last {t.lastPlayed}</span>
+                <button onClick={() => verdict(t, 'accepted')} title="I like it — keep it (hidden here for a year; like it in Spotify to add it to Liked Songs)" className="shrink-0 rounded-full border border-line px-2 text-[11px] text-dust hover:text-moss">keep</button>
+                <button onClick={() => verdict(t, 'dismissed')} title="Not for me — hide for a year" className="shrink-0 rounded-full border border-line px-2 text-[11px] text-dust hover:text-coral">let go</button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Card>
+    );
+  };
+  return (
+    <div className="space-y-6">
+      <p className="max-w-3xl text-sm text-dust">The mirror of Prune: songs you keep choosing but never saved. Make a shelf into a playlist to review them in Spotify, or give each a verdict here — either way it leaves this list for a year. <button onClick={() => setTick((x) => x + 1)} className="underline hover:text-cream">Refresh</button></p>
+      <Shelf title="Regulars you never saved" subtitle="8+ plays across 4+ days, skipped under a quarter of the time, not liked and not on any of your playlists." list={r.data.regulars} name="To revisit · regulars I never saved" />
+      <div className="grid gap-6 lg:grid-cols-2">
+        <Shelf title="On the fence" subtitle="3–7 plays in the last year, rarely skipped — you haven't decided." list={r.data.fence} name="To revisit · on the fence" />
+        <Shelf title="Heard once, by artists you like" subtitle="Played all the way through once, 2 months to 2 years ago, by an artist you've liked songs from." list={r.data.onceByLiked} name="To revisit · heard once" />
+      </div>
+    </div>
   );
 }

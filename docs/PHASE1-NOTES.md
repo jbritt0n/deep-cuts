@@ -121,3 +121,10 @@ Three errors, all fixed: `Mb::get` visibility; `urlencoding::encode(&format!(..)
 - **Forecast blends habit and trend 50/50** and verifies itself by replay (no look-ahead: each day only sees earlier data). The baseline is deliberately strong — "your ten biggest artists" — so a lift over it means the weekday/recency signal is real.
 - **Abroad uses where you were, not artist origin.** conn_country only exists in the extended export; polled plays fall back to travel time zones. Home is detected (most plays) but overridable, for people who moved.
 - **Per-language IDF**: comparing a Turkish word against English songs is meaningless; each language is its own corpus, and the cloud separates English from the rest.
+
+## Phase 9i (Sep 24, 2026) — decisions
+- **Evidence before names.** An artist's MusicBrainz id is taken from the recording behind one of the owner's own ISRCs when possible; name-only matches are marked as such and re-checked. When several namesakes remain and no album overlaps, the app leaves the artist unmatched and asks — a wrong origin is worse than none.
+- **Owner corrections live outside rebuilt tables** (`metadata_overrides`, `artist_mb_match`, `artist_origin.source = 'owner'`) and are re-applied by `entity_resolution.sql`, so a rebuild can never undo them.
+- **The export wins over the poll.** It has the real duration, skip flag, device and country; the poll only knows a track started. Both events stay in the append-only log; resolution picks one.
+- **To revisit lives in Library, not Discover** — Discover is for music new to you; this is housekeeping of music you know.
+- **Stylus speaks ListenBrainz** so existing clients (Pano, Web Scrobbler, multi-scrobbler, Navidrome…) work without a Deep Cuts app per device; the Docker relay is pulled from, so the desktop is never exposed.

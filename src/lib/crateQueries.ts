@@ -26,6 +26,8 @@ export type CrateRecord = {
   plays: number; hours: number; days: number; firstPlayed: string; lastPlayed: string; daysSilent: number;
   tracksPlayed: number; totalTracks: number | null; topTrackId: string | null; topTrack: string | null;
   obscurity: number | null; listeners: number | null; section: string | null; filedByYou: boolean; topTags: string[];
+  /** Phase 9i: the record's own Last.fm listeners, separate from the artist's */
+  albumObscurity?: number | null; albumListeners?: number | null;
   wear: number; abandoned: boolean; rediscover: boolean; kept: boolean;
 };
 export type CrateSection = { section: string; records: number; hours: number };
@@ -55,9 +57,9 @@ const BASE = () => `
     sc AS (SELECT artist_id, arg_max(scene, weight) AS scene, MAX(weight) >= 9 AS filed_by_you FROM artist_scene GROUP BY 1),
     tg AS (SELECT artist_id, list(tag ORDER BY weight DESC)[1:4] AS tags FROM artist_tags WHERE weight >= 0.2 GROUP BY 1),
     r AS (
-      SELECT p.*, al.image_url, al.total_tracks, o.obscurity, o.listeners, sc.scene AS section, sc.filed_by_you, tg.tags AS top_tags, tt.name AS top_track,
+      SELECT p.*, al.image_url, al.total_tracks, o.obscurity, o.listeners, ao.obscurity AS album_obscurity, ao.listeners AS album_listeners, sc.scene AS section, sc.filed_by_you, tg.tags AS top_tags, tt.name AS top_track,
              CAST(CAST($1 AS DATE) - CAST(p.last_at AS DATE) AS INTEGER) AS days_silent
-      FROM p LEFT JOIN albums al ON al.album_id = p.album_id LEFT JOIN artist_obscurity o ON o.artist_id = p.artist_id
+      FROM p LEFT JOIN albums al ON al.album_id = p.album_id LEFT JOIN artist_obscurity o ON o.artist_id = p.artist_id LEFT JOIN album_obscurity ao ON ao.album_id = p.album_id
              LEFT JOIN sc ON sc.artist_id = p.artist_id LEFT JOIN tg ON tg.artist_id = p.artist_id LEFT JOIN tt ON tt.track_id = p.top_track_id),
     fb AS (SELECT subject_key AS album_id, arg_max(verdict, decided_at) AS verdict, MAX(decided_at) AS at FROM recommendation_feedback WHERE engine = 'crate' AND subject_type = 'album' GROUP BY 1),
     flags AS (
@@ -76,13 +78,13 @@ export async function crateRecords({ shelf = 'all', section = null, sort = 'sect
   else if (section) { params.push(section); sec = `AND section = $${params.length}`; }
   const rows = await query(`${BASE()}
     SELECT album_id, album, artist_id, artist, image_url, plays, ROUND(hours, 2) AS hours, days, CAST(first_at AS VARCHAR) AS first_at, CAST(last_at AS VARCHAR) AS last_at, days_silent,
-           tracks_played, total_tracks, top_track_id, top_track, obscurity, listeners, section, filed_by_you, top_tags, wear, abandoned, rediscover, kept
+           tracks_played, total_tracks, top_track_id, top_track, obscurity, listeners, album_obscurity, album_listeners, section, filed_by_you, top_tags, wear, abandoned, rediscover, kept
     FROM flags WHERE NOT skipped AND ${SHELF_WHERE[shelf]} ${sec} ORDER BY kept DESC, ${SORTS[sort]} LIMIT ${Math.max(1, Math.round(limit))}`, params);
   return rows.map((r) => ({
     albumId: String(r.album_id), album: String(r.album), artistId: str(r.artist_id), artist: String(r.artist ?? ''), imageUrl: str(r.image_url),
     plays: num(r.plays), hours: num(r.hours), days: num(r.days), firstPlayed: String(r.first_at), lastPlayed: String(r.last_at), daysSilent: num(r.days_silent),
     tracksPlayed: num(r.tracks_played), totalTracks: r.total_tracks == null ? null : num(r.total_tracks), topTrackId: str(r.top_track_id), topTrack: str(r.top_track),
-    obscurity: r.obscurity == null ? null : num(r.obscurity), listeners: r.listeners == null ? null : num(r.listeners), section: str(r.section), filedByYou: Boolean(r.filed_by_you), topTags: Array.isArray(r.top_tags) ? (r.top_tags as unknown[]).map(String) : [],
+    obscurity: r.obscurity == null ? null : num(r.obscurity), listeners: r.listeners == null ? null : num(r.listeners), albumObscurity: r.album_obscurity == null ? null : num(r.album_obscurity), albumListeners: r.album_listeners == null ? null : num(r.album_listeners), section: str(r.section), filedByYou: Boolean(r.filed_by_you), topTags: Array.isArray(r.top_tags) ? (r.top_tags as unknown[]).map(String) : [],
     wear: num(r.wear), abandoned: Boolean(r.abandoned), rediscover: Boolean(r.rediscover), kept: Boolean(r.kept),
   }));
 }
@@ -167,7 +169,7 @@ export async function dailyDig(): Promise<DailyDig | null> {
   const today = localToday();
   const rows = await query(`${BASE()}
     SELECT album_id, album, artist_id, artist, image_url, plays, ROUND(hours, 2) AS hours, days, CAST(first_at AS VARCHAR) AS first_at, CAST(last_at AS VARCHAR) AS last_at, days_silent,
-           tracks_played, total_tracks, top_track_id, top_track, obscurity, listeners, section, filed_by_you, top_tags, wear, abandoned, rediscover, kept,
+           tracks_played, total_tracks, top_track_id, top_track, obscurity, listeners, album_obscurity, album_listeners, section, filed_by_you, top_tags, wear, abandoned, rediscover, kept,
            CASE WHEN rediscover THEN 'rediscover' WHEN abandoned AND days_silent >= 120 THEN 'abandoned' WHEN obscurity >= 0.3 AND plays <= 8 THEN 'backroom' END AS kind
     FROM flags WHERE NOT skipped AND NOT kept AND (rediscover OR (abandoned AND days_silent >= 120) OR (obscurity >= 0.3 AND plays <= 8))
     ORDER BY hash(album_id || '${today}') LIMIT 60`, [today]);

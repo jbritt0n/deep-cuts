@@ -46,6 +46,7 @@ jobs:
           npx tsx scripts/smoke-9f.ts
           npx tsx scripts/smoke-9g.ts
           npx tsx scripts/smoke-9h.ts
+          npx tsx scripts/smoke-9i.ts
           OLLAMA_MOCK=1 npx tsx scripts/smoke-ask.ts
 
   build:

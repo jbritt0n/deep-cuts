@@ -175,7 +175,7 @@ pub fn set_setting(state: State<'_, AppState>, key: String, value: String) -> Cm
         // Phase 9f: lyrics v2 — let the local model name themes from the transient text
         "lyrics_llm_enabled",
         // Phase 9g: Settings → Tuning → threads / Not for me
-        "thread_min_weeks", "thread_share_floor", "thread_max_coverage", "thread_scenes", "skiphall_min_shown", "skiphall_min_rate",
+        "thread_min_weeks", "thread_share_floor", "thread_max", "thread_per_year", "thread_max_coverage", "thread_scenes", "skiphall_min_shown", "skiphall_min_rate",
         // Phase 9h: Atlas → Listening abroad
         "home_country"];
     if !ALLOWED.contains(&key.as_str()) {
@@ -234,6 +234,16 @@ pub fn open_data_folder(state: State<'_, AppState>, app: AppHandle) -> CmdResult
 }
 
 /// NFR-03: one-click export of the raw event log as Parquet.
+#[tauri::command]
+/// Phase 9i — Settings → Record → Export everything (CSV or Parquet, every table + plays_enriched).
+#[tauri::command]
+pub async fn export_record(state: State<'_, AppState>, dest_dir: Option<String>, format: Option<String>) -> CmdResult<String> {
+    let real = state.real.clone(); let paths = state.paths.clone();
+    let dest = dest_dir.filter(|d| !d.trim().is_empty()).map(PathBuf::from).unwrap_or_else(|| paths.backups_dir.clone());
+    let fmt = format.unwrap_or_else(|| "csv".into());
+    tauri::async_runtime::spawn_blocking(move || crate::migrate::export_record(&real, &dest, &fmt).map(|p| p.to_string_lossy().to_string())).await.map_err(err)?.map_err(err)
+}
+
 #[tauri::command]
 pub async fn export_events(state: State<'_, AppState>) -> CmdResult<String> {
     let real = state.real.clone();
@@ -350,7 +360,7 @@ pub fn get_connectors(state: State<'_, AppState>) -> CmdResult<Vec<ConnectorRow>
                 "canQueue": state.spotify_ref().has_scope(crate::spotify::endpoints::SCOPE_QUEUE),
                 "callsLastHour": state.spotify_ref().calls_last_hour(&state.real), "enrichPerHour": crate::spotify::endpoints::budget::enrich_per_hour(&state.real),
                 "enrichedTracks": enriched.first().and_then(|x| x.get("e")).and_then(|v| v.as_i64()).unwrap_or(0), "totalTracks": enriched.first().and_then(|x| x.get("n")).and_then(|v| v.as_i64()).unwrap_or(0), "likedSongs": liked }),
-            "freqblog" => serde_json::json!({ "featuredTracks": state.real.scalar_i64("SELECT COUNT(*) FROM track_features WHERE found").unwrap_or(0), "missedTracks": state.real.scalar_i64("SELECT COUNT(*) FROM track_features WHERE NOT found").unwrap_or(0), "playedTracks": state.real.scalar_i64("SELECT COUNT(DISTINCT track_id) FROM plays_resolved WHERE attended AND track_id IS NOT NULL").unwrap_or(0), "requestsThisMonth": crate::connectors::freqblog::used_this_month(&state.real), "monthlyCap": crate::connectors::freqblog::MONTHLY_CAP }),
+            "freqblog" => serde_json::json!({ "featuredTracks": state.real.scalar_i64("SELECT COUNT(*) FROM track_features WHERE found").unwrap_or(0), "missedTracks": state.real.scalar_i64("SELECT COUNT(*) FROM track_features WHERE NOT found").unwrap_or(0), "playedTracks": state.real.scalar_i64("SELECT COUNT(DISTINCT track_id) FROM plays_resolved WHERE attended AND track_id IS NOT NULL").unwrap_or(0), "requestsThisMonth": crate::connectors::freqblog::used_this_month(&state.real), "monthlyCap": crate::connectors::freqblog::MONTHLY_CAP, "remaining": crate::connectors::freqblog::remaining(&state.real) }),
             "lastfm" => serde_json::json!({ "taggedArtists": tag_of("lastfm"), "popularityArtists": state.real.scalar_i64("SELECT COUNT(*) FROM artist_popularity").unwrap_or(0) }),
             "musicbrainz" => serde_json::json!({ "taggedArtists": tag_of("musicbrainz"), "resolvedArtists": mbids, "catalogueArtists": state.real.scalar_i64("SELECT COUNT(*) FROM artists WHERE catalogue_tracks IS NOT NULL").unwrap_or(0), "creditedTracks": state.real.scalar_i64("SELECT COUNT(DISTINCT track_id) FROM track_credits").unwrap_or(0) }),
             "lastfm_wild" => {
@@ -424,7 +434,7 @@ pub async fn sync_now(state: State<'_, AppState>, app: AppHandle, service: Strin
                 let enriched = sync::enrich_batch(&client, &real)?;
                 format!("Spotify: +{added} plays, {liked} liked songs, {pls}, {enriched} tracks enriched")
             }
-            "lastfm" => { let t = lastfm::enrich_tags(&real, 60)?; let s = lastfm::enrich_similar(&real, 15)?; let l = lastfm::enrich_popularity(&real, 30)?; format!("Last.fm: tagged {t} artists, {s} similar-artist seeds, listener counts for {l}") }
+            "lastfm" => { let t = lastfm::enrich_tags(&real, 60)?; let s = lastfm::enrich_similar(&real, 15)?; let l = lastfm::enrich_popularity(&real, 30)?; let al = lastfm::enrich_album_popularity(&real, 30)?; format!("Last.fm: tagged {t} artists, {s} similar-artist seeds, listener counts for {l} artists and {al} albums") }
             "musicbrainz" => { let n = musicbrainz::resolve_batch(&real, 40)?; let r = musicbrainz::enrich_relations(&real, 15)?; let c = musicbrainz::enrich_catalogue(&real, 15)?; let k = musicbrainz::enrich_credits(&real, 20)?; format!("MusicBrainz: resolved {n} artists, relationships for {r}, catalogue sizes for {c}, credits for {k} tracks") }
             "statsfm" => { let n = crate::connectors::statsfm::import(&real, 10)?; format!("stats.fm: +{n} plays") }
             "freqblog" => { let n = crate::connectors::freqblog::enrich(&real, 50)?; format!("FreqBlog: audio features for {n} tracks ({} requests used this month)", crate::connectors::freqblog::used_this_month(&real)) }
@@ -531,6 +541,71 @@ pub fn set_artist_scene(state: State<'_, AppState>, artist_id: String, scene: Op
     db.exec("INSERT INTO scene_overrides (artist_id, scene, decided_at) VALUES (?, ?, now()) ON CONFLICT (artist_id) DO UPDATE SET scene = excluded.scene, decided_at = now()", &[serde_json::json!(artist_id), serde_json::json!(scene)]).map_err(err)?;
     db.exec("DELETE FROM artist_scene WHERE artist_id = ?", &[serde_json::json!(artist_id)]).map_err(err)?;
     if let Some(sc) = scene { db.exec("INSERT INTO artist_scene VALUES (?, ?, 9.0)", &[serde_json::json!(artist_id), serde_json::json!(sc)]).map_err(err)?; }
+    Ok(())
+}
+
+// ---- Phase 9i: view and correct metadata from the Artist / Album / Song pages (src/components/MetadataPanel.tsx)
+const META_FIELDS: &[(&str, &str)] = &[("artist", "image_url"), ("album", "release_date"), ("album", "image_url"), ("track", "isrc"), ("track", "release_date")];
+
+/// Set (or with value = None, clear) one owner correction and apply it right away; the rebuild re-applies it forever after.
+#[tauri::command]
+pub fn meta_set(state: State<'_, AppState>, entity_type: String, entity_id: String, field: String, value: Option<String>) -> CmdResult<()> {
+    if !META_FIELDS.iter().any(|(t, f)| *t == entity_type && *f == field) { return Err(format!("{entity_type}.{field} can't be edited")); }
+    let db = &state.real;
+    let v = value.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    if field == "release_date" { if let Some(d) = &v { if chrono::NaiveDate::parse_from_str(if d.len() == 4 { format!("{d}-01-01") } else { d.clone() }.as_str(), "%Y-%m-%d").is_err() { return Err("Use a year (1972) or a date (1972-03-01)".into()); } } }
+    let v = v.map(|d| if field == "release_date" && d.len() == 4 { format!("{d}-01-01") } else if field == "isrc" { d.replace('-', "").to_uppercase() } else { d });
+    match &v {
+        Some(val) => db.exec("INSERT INTO metadata_overrides (entity_type, entity_id, field, value) VALUES (?, ?, ?, ?) ON CONFLICT (entity_type, entity_id, field) DO UPDATE SET value = excluded.value, updated_at = now()", &[serde_json::json!(entity_type), serde_json::json!(entity_id), serde_json::json!(field), serde_json::json!(val)]).map_err(err)?,
+        None => db.exec("DELETE FROM metadata_overrides WHERE entity_type = ? AND entity_id = ? AND field = ?", &[serde_json::json!(entity_type), serde_json::json!(entity_id), serde_json::json!(field)]).map_err(err)?,
+    };
+    // apply now (table names and columns come from the whitelist above, never from input)
+    let (table, key) = match entity_type.as_str() { "artist" => ("artists", "artist_id"), "album" => ("albums", "album_id"), _ => ("tracks", "track_id") };
+    if let Some(val) = &v {
+        let cast = if field == "release_date" { "TRY_CAST(? AS DATE)" } else { "?" };
+        db.exec(&format!("UPDATE {table} SET {field} = {cast} WHERE {key} = ?"), &[serde_json::json!(val), serde_json::json!(entity_id)]).map_err(err)?;
+    }
+    // a corrected ISRC invalidates what was looked up through the old one
+    if field == "isrc" {
+        for sql in ["DELETE FROM track_features WHERE track_id = ?", "DELETE FROM track_credits WHERE track_id = ?"] { let _ = db.exec(sql, &[serde_json::json!(entity_id)]); }
+    }
+    db.log_activity("metadata", "info", &format!("You corrected {entity_type} {field}"), Some(&entity_id));
+    Ok(())
+}
+
+/// Correct where an artist is from (kept as source = 'owner'; enrichment never overwrites it). All None = back to automatic.
+#[tauri::command]
+pub fn artist_set_origin(state: State<'_, AppState>, artist_id: String, country: Option<String>, city: Option<String>, formed_year: Option<i64>) -> CmdResult<()> {
+    let db = &state.real;
+    let cc = country.map(|c| c.trim().to_uppercase()).filter(|c| !c.is_empty());
+    if let Some(c) = &cc { if c.len() != 2 || !c.chars().all(|x| x.is_ascii_uppercase()) { return Err("Country must be a two-letter code (US, GB, TR…)".into()); } }
+    if cc.is_none() && city.as_deref().map(str::trim).unwrap_or("").is_empty() && formed_year.is_none() {
+        db.exec("DELETE FROM artist_origin WHERE artist_id = ? AND source = 'owner'", &[serde_json::json!(artist_id)]).map_err(err)?;   // re-fetched automatically on the next tick
+        return Ok(());
+    }
+    db.exec("INSERT INTO artist_origin (artist_id, country, country_name, city, formed_year, source) VALUES (?, ?, NULL, ?, ?, 'owner')
+             ON CONFLICT (artist_id) DO UPDATE SET country = excluded.country, country_name = NULL, city = excluded.city, formed_year = excluded.formed_year, source = 'owner', fetched_at = now()",
+        &[serde_json::json!(artist_id), serde_json::json!(cc), serde_json::json!(city.map(|c| c.trim().to_string()).filter(|c| !c.is_empty())), serde_json::json!(formed_year)]).map_err(err)?;
+    db.log_activity("metadata", "info", "You corrected an artist's origin", Some(&artist_id));
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn artist_mb_candidates(state: State<'_, AppState>, artist_id: String) -> CmdResult<Vec<serde_json::Value>> {
+    let real = state.real.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::connectors::musicbrainz::candidates(&real, &artist_id)).await.map_err(err)?.map_err(err)
+}
+
+/// Pick the right MusicBrainz artist (id or pasted URL). Origin, tags and relations from the old id are discarded and re-fetched.
+#[tauri::command]
+pub async fn artist_set_mbid(state: State<'_, AppState>, app: AppHandle, artist_id: String, mbid: String) -> CmdResult<()> {
+    let real = state.real.clone();
+    tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<()> {
+        crate::connectors::musicbrainz::set_owner_mbid(&real, &artist_id, &mbid)?;
+        real.exec_batch(crate::db::COMPUTE_SCENES_SQL)?;   // re-file the artist under its real tags
+        Ok(())
+    }).await.map_err(err)?.map_err(err)?;
+    events::emit(&app, events::DATA_CHANGED, serde_json::json!({ "reason": "metadata" }));
     Ok(())
 }
 
