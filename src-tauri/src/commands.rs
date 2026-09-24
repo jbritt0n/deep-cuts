@@ -233,8 +233,6 @@ pub fn open_data_folder(state: State<'_, AppState>, app: AppHandle) -> CmdResult
         .map_err(err)
 }
 
-/// NFR-03: one-click export of the raw event log as Parquet.
-#[tauri::command]
 /// Phase 9i — Settings → Record → Export everything (CSV or Parquet, every table + plays_enriched).
 #[tauri::command]
 pub async fn export_record(state: State<'_, AppState>, dest_dir: Option<String>, format: Option<String>) -> CmdResult<String> {
@@ -244,6 +242,7 @@ pub async fn export_record(state: State<'_, AppState>, dest_dir: Option<String>,
     tauri::async_runtime::spawn_blocking(move || crate::migrate::export_record(&real, &dest, &fmt).map(|p| p.to_string_lossy().to_string())).await.map_err(err)?.map_err(err)
 }
 
+/// NFR-03: one-click export of the raw event log as Parquet.
 #[tauri::command]
 pub async fn export_events(state: State<'_, AppState>) -> CmdResult<String> {
     let real = state.real.clone();

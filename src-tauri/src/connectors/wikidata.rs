@@ -5,7 +5,7 @@
 use super::musicbrainz::Mb;
 use crate::db::Db;
 use anyhow::Result;
-use serde_json::{json, Value};
+use serde_json::json;
 
 pub fn enrich_origin(db: &Db, max_artists: usize) -> Result<usize> {
     let mb = Mb::new()?;
