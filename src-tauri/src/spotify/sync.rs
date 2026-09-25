@@ -122,9 +122,10 @@ pub fn sync_playlists_detailed(client: &SpotifyClient, db: &Db, me_id: &str) -> 
             let Some(id) = s(&p[f::ID]) else { continue };
             let owner_id = s(&p[f::OWNER][f::ID]);
             let mine = owner_id.as_deref() == Some(me_id);
-            db.exec("INSERT INTO playlists (playlist_id, name, description, owner_is_me, owner_id, track_count, snapshot_id, public, synced_at, first_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, now(), now()) \
-                     ON CONFLICT (playlist_id) DO UPDATE SET name = excluded.name, description = excluded.description, owner_is_me = excluded.owner_is_me, owner_id = excluded.owner_id, track_count = excluded.track_count, snapshot_id = excluded.snapshot_id, public = excluded.public, synced_at = now()",
-                &[json!(id), json!(s(&p[f::NAME])), json!(s(&p[f::DESCRIPTION])), json!(mine), json!(owner_id), json!(p["tracks"][f::TOTAL].as_i64().or(p[f::ITEMS][f::TOTAL].as_i64())), json!(s(&p[f::SNAPSHOT_ID])), json!(p[f::PUBLIC].as_bool())])?;
+            // Phase 9n: keep a name we already have when this listing omits it (followed playlists sometimes come back nameless)
+            db.exec("INSERT INTO playlists (playlist_id, name, description, owner_is_me, owner_id, owner_name, track_count, snapshot_id, public, synced_at, first_seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, now(), now()) \
+                     ON CONFLICT (playlist_id) DO UPDATE SET name = COALESCE(NULLIF(excluded.name, ''), playlists.name), description = COALESCE(excluded.description, playlists.description), owner_is_me = excluded.owner_is_me, owner_id = excluded.owner_id, owner_name = COALESCE(excluded.owner_name, playlists.owner_name), track_count = excluded.track_count, snapshot_id = excluded.snapshot_id, public = excluded.public, synced_at = now()",
+                &[json!(id), json!(s(&p[f::NAME])), json!(s(&p[f::DESCRIPTION])), json!(mine), json!(owner_id), json!(s(&p[f::OWNER]["display_name"])), json!(p["tracks"][f::TOTAL].as_i64().or(p[f::ITEMS][f::TOTAL].as_i64())), json!(s(&p[f::SNAPSHOT_ID])), json!(p[f::PUBLIC].as_bool())])?;
             live_ids.push(id);
             seen += 1;
         }
@@ -134,6 +135,20 @@ pub fn sync_playlists_detailed(client: &SpotifyClient, db: &Db, me_id: &str) -> 
     // Spotify-made playlists can't be read by third-party apps any more: say so once, don't spend calls on them.
     db.exec("UPDATE playlists SET sync_error = 'unreadable: Spotify-made playlists are closed to third-party apps' WHERE owner_id = 'spotify' AND sync_error IS NULL", &[])?;
     db.log_activity("sync", "info", &format!("Playlists: {seen} known"), None);
+
+    // Phase 9n: rows still without a name → ask for that playlist's own details once (40 per sync)
+    let blank = db.query("SELECT playlist_id FROM playlists WHERE (name IS NULL OR trim(name) = '') AND COALESCE(sync_error, '') NOT LIKE 'unreadable:%' LIMIT 40", &[])?;
+    for r in blank {
+        let Some(id) = r.get("playlist_id").and_then(|v| v.as_str()).map(str::to_string) else { continue };
+        match client.get(db, &ep::playlist_meta(&id), false) {
+            Ok(v) => { db.exec("UPDATE playlists SET name = COALESCE(NULLIF(?, ''), name), description = COALESCE(?, description), owner_id = COALESCE(?, owner_id), owner_name = COALESCE(?, owner_name) WHERE playlist_id = ?",
+                        &[json!(s(&v[f::NAME])), json!(s(&v[f::DESCRIPTION])), json!(s(&v[f::OWNER][f::ID])), json!(s(&v[f::OWNER]["display_name"])), json!(id)])?; }
+            Err(ApiError::Http { status, .. }) if status == 403 || status == 404 => {
+                db.exec("UPDATE playlists SET sync_error = 'unreadable: Spotify no longer shares this playlist (private, deleted or Spotify-made)' WHERE playlist_id = ?", &[json!(id)])?;
+            }
+            Err(_) => break,
+        }
+    }
 
     // ---- pass 2: items where needed
     let todo = db.query(
@@ -182,7 +197,7 @@ fn fetch_items(client: &SpotifyClient, db: &Db, id: &str, item_cap: u32) -> Resu
         for it in &its {
             let t = &it[f::ITEM]; // API-04
             if let Some(tid) = s(&t[f::ID]) {
-                db.exec("INSERT INTO playlist_items (playlist_id, track_id, added_at, position) VALUES (?, ?, CAST(? AS TIMESTAMPTZ), ?)", &[json!(id), json!(tid), json!(s(&it[f::ADDED_AT])), json!(pos)]).map_err(ApiError::Other)?;
+                db.exec("INSERT INTO playlist_items (playlist_id, track_id, added_at, position, track_name, artist_name) VALUES (?, ?, CAST(? AS TIMESTAMPTZ), ?, ?, ?)", &[json!(id), json!(tid), json!(s(&it[f::ADDED_AT])), json!(pos), json!(s(&t[f::NAME])), json!(s(&t["artists"][0][f::NAME]))]).map_err(ApiError::Other)?;   // Phase 9n: names for affinity
                 pos += 1;
             }
         }

@@ -23,8 +23,10 @@ export const NAV_GROUPS: NavGroup[] = [
     { to: '/sessions', label: 'Sessions', match: ['/sessions'] },
     { to: '/eras', label: 'Eras' },
     { to: '/moods', label: 'Moods & Forecast', match: ['/moods', '/forecast'] },
+    { to: '/newness', label: 'The Newness' },
     { to: '/insights', label: 'Insights' },
     { to: '/atlas', label: 'Atlas' },
+    { to: '/connections', label: 'Connections' },
     { to: '/drift', label: 'Taste drift' },
   ] },
   { id: 'stories', label: 'Stories', defaultOpen: false, items: [

@@ -73,7 +73,7 @@ collect:
   Hygiene page recommended in §2.1, and reuses the existing `artist_merges` pattern.
 
 ### 1.5 Open design decisions still marked "say the word to revert"
-`docs/PHASE1-NOTES.md` §1 has a numbered list of judgment calls the implementer made
+`docs/DECISIONS.md` §1 has a numbered list of judgment calls the implementer made
 where the spec was silent (attention-gap default of 120 min, comfort-loop's 3-play
 minimum, eras' 0.3 cosine threshold instead of the spec's 0.6, etc.) — several are
 explicitly flagged "owner to confirm" in the SQL comments too (`compute_sessions.sql`,

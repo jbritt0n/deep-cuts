@@ -244,3 +244,15 @@ export async function listenerLandscape(): Promise<{ tiers: ListenerTier[]; smal
   const [f] = await query(`SELECT CAST(CAST(MIN(snapshot_at) AS DATE) + INTERVAL 30 DAY AS DATE) AS d, COUNT(*) FILTER (WHERE n >= 2) AS two FROM (SELECT artist_id, MIN(snapshot_at) AS snapshot_at, COUNT(*) AS n FROM artist_popularity_history GROUP BY 1)`);
   return { tiers, smallRooms, bigRooms, covered: all.length, firstComparison: f?.d ? String(f.d).slice(0, 10) : null };
 }
+
+// ------------------------------------------------------------------ Phase 9n: obscurity on entity pages
+export type ObscurityCard = { listeners: number | null; obscurity: number | null; tier: string | null; percentile: number | null; fetchedAt: string | null };
+/** One artist's or album's Last.fm-listener obscurity, and where it sits among everything you play (percentile by hours). */
+export async function entityObscurity(kind: 'artist' | 'album', id: string): Promise<ObscurityCard> {
+  const view = kind === 'artist' ? 'artist_obscurity' : 'album_obscurity', key = kind === 'artist' ? 'artist_id' : 'album_id';
+  const [r] = await query(`SELECT listeners, obscurity, CAST(fetched_at AS VARCHAR) AS f FROM ${view} WHERE ${key} = $1`, [id]);
+  if (!r || r.obscurity == null) return { listeners: r?.listeners == null ? null : num(r.listeners), obscurity: null, tier: null, percentile: null, fetchedAt: str(r?.f) };
+  const [pc] = await query(`WITH h AS (SELECT p.${key} AS k, SUM(p.ms_played) AS ms FROM plays_resolved p WHERE p.${key} IS NOT NULL GROUP BY 1)
+    SELECT SUM(h.ms) FILTER (WHERE o.obscurity < ${Number(num(r.obscurity)).toFixed(6)}) * 1.0 / NULLIF(SUM(h.ms), 0) AS below FROM h JOIN ${view} o ON o.${key} = h.k WHERE o.obscurity IS NOT NULL`);   // a number from the DB, safe to inline
+  return { listeners: num(r.listeners), obscurity: num(r.obscurity), tier: obscurityTier(num(r.obscurity)), percentile: pc?.below == null ? null : num(pc.below), fetchedAt: str(r.f) };
+}

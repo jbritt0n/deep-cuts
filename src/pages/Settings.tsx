@@ -14,7 +14,7 @@ import { Importer } from '@/components/Importer';
 import { SceneEditor } from '@/components/SceneEditor';
 import { MoveCard } from '@/components/MoveCard';
 import { WeatherSettingsCard } from '@/components/WeatherCards';
-import { SourceCoverageCard } from '@/components/SourceCoverageCard';
+import { IsrcDuplicatesCard, SourceCoverageCard } from '@/components/SourceCoverageCard';
 import { search } from '@/lib/queries';
 import type { ArtistRow } from '@/lib/types';
 import { sessionOverrides, travel } from '@/lib/phase7Queries';
@@ -157,6 +157,7 @@ export function SettingsPage({ status, onChanged }: { status: AppStatus; onChang
       {tab === 'notforme' && <SkipHallPage embedded />}
       {tab === 'hygiene' && (
         <div className="space-y-6">
+          <IsrcDuplicatesCard />
           <ReviewOutliers busy={busy} run={run} />
           <SessionHygiene busy={busy} run={run} />
           <MergeArtists busy={busy} run={run} />

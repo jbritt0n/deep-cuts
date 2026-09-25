@@ -1,4 +1,5 @@
 import { Card, ErrorBox, Loading } from '@/components/Card';
+import { isrcDuplicates } from '@/lib/hygieneQueries';
 import { fmtInt } from '@/lib/format';
 import { useAsync } from '@/lib/hooks';
 import { sourceCoverage } from '@/lib/sourceQueries';
@@ -20,6 +21,27 @@ export function SourceCoverageCard({ tick = 0 }: { tick?: number }) {
         {d.polledBeforeExport > 0 && <Row n={d.polledBeforeExport} label="polled plays from before the export's first day" />}
       </ul>
       <p className="mt-3 text-[11px] text-dust/70">Importing the same export twice adds nothing. A newer export that overlaps an older one adds only the plays the older one lacked. Download a fresh one any time from Spotify → Account → Privacy → Extended streaming history, then Settings → Record → Import.</p>
+    </Card>
+  );
+}
+
+/** Phase 10 — Settings → Hygiene: one recording, several track ids (single / album / reissue) splitting its plays. */
+export function IsrcDuplicatesCard() {
+  const d = useAsync(() => isrcDuplicates(40), []);
+  if (d.error) return <Card title="Same recording, several versions"><ErrorBox message={d.error} /></Card>;
+  if (!d.data) return <Card title="Same recording, several versions"><Loading rows={5} /></Card>;
+  const x = d.data;
+  return (
+    <Card title="Same recording, several versions" subtitle={`Songs that share one ISRC — the identical recording released as a single, on the album, on a reissue — but are counted under separate entries. ${fmtInt(x.totalGroups)} such songs; ${fmtInt(x.splitPlays)} plays sit on a secondary version.`}>
+      {x.groups.length === 0 ? <p className="text-sm text-dust">None found — each recording you play lives under one entry.</p> : (
+        <ul className="max-h-[min(24rem,50vh)] divide-y divide-line/50 overflow-y-auto pr-1 text-sm">{x.groups.map((g) => (
+          <li key={g.isrc} className="py-1.5">
+            <p className="flex items-baseline gap-2"><span className="min-w-0 flex-1 truncate">{g.track} <span className="text-xs text-dust">{g.artist}</span></span><span className="num text-[11px] text-dust">{fmtInt(g.plays)} plays · {g.isrc}</span></p>
+            <p className="truncate text-[11px] text-dust">{g.versions.map((v) => `${v.album ?? '—'} (${v.plays})`).join(' · ')}</p>
+          </li>
+        ))}</ul>
+      )}
+      <p className="mt-2 text-[11px] text-dust/70">Report only for now — merging the versions into one entry (so charts count them together) is on the Phase 10 list.</p>
     </Card>
   );
 }

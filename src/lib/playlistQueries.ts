@@ -12,13 +12,15 @@ import { query, num, str } from './db';
 import { playsWhere } from './filter';
 import { localToday } from './queries';
 
-export type PlaylistSort = 'most_played' | 'least_played' | 'fewest_heard' | 'most_complete' | 'biggest' | 'stalest' | 'newest' | 'most_gems' | 'most_dead';
+export type PlaylistSort = 'most_played' | 'least_played' | 'fewest_heard' | 'most_complete' | 'biggest' | 'stalest' | 'newest' | 'most_gems' | 'most_dead' | 'affinity' | 'least_affinity';
 export type PlaylistScope = 'all' | 'mine' | 'followed';
 
 export type PlaylistHealth = {
   playlistId: string; name: string; description: string | null; ownerIsMe: boolean; isPublic: boolean | null;
   trackCount: number; synced: number; partial: boolean;
-  unreadable: boolean; syncError: string | null; itemsSyncedAt: string | null;   // Phase 9f: Spotify-made playlists are closed to third-party apps
+  unreadable: boolean; syncError: string | null; itemsSyncedAt: string | null;
+  /** Phase 9n: 0–1 — how much the playlist suits you (view playlist_affinity); null when its items can't be read */
+  affinity: number | null; affLoved: number; affPlayed: number; affKnownArtist: number; affItems: number;   // Phase 9f: Spotify-made playlists are closed to third-party apps
   heard: number; completion: number;            // distinct tracks with any play since added / synced
   playsWithin: number; hoursWithin: number; skipRate: number;
   lastPlayedWithin: string | null; daysSinceTouched: number | null;
@@ -52,13 +54,13 @@ const HEALTH_SQL = () => `
              MAX(last_in) AS last_in, COUNT(*) FILTER (WHERE gem) AS gems, COUNT(*) FILTER (WHERE dead) AS dead, COUNT(*) FILTER (WHERE unheard) AS unheard,
              MIN(added_at) AS oldest_add, MAX(added_at) AS newest_add
       FROM cls GROUP BY 1)
-    SELECT pl.playlist_id, pl.name, pl.description, pl.owner_is_me, pl.public, pl.track_count, pl.sync_error, CAST(pl.items_synced_at AS VARCHAR) AS items_synced_at,
+    SELECT pl.playlist_id, af.affinity, COALESCE(af.loved, 0) AS af_loved, COALESCE(af.played, 0) AS af_played, COALESCE(af.known_artist, 0) AS af_known, COALESCE(af.items, 0) AS af_items, COALESCE(NULLIF(trim(pl.name), ''), 'Untitled playlist' || COALESCE(' · by ' || pl.owner_name, '')) AS name, pl.description, pl.owner_is_me, pl.public, pl.track_count, pl.sync_error, CAST(pl.items_synced_at AS VARCHAR) AS items_synced_at,
            COALESCE(a.synced, 0) AS synced, COALESCE(a.heard, 0) AS heard, COALESCE(a.plays_in, 0) AS plays_in, ROUND(COALESCE(a.hours_in, 0), 1) AS hours_in,
            COALESCE(a.sr, 0) AS sr, CAST(a.last_in AS VARCHAR) AS last_in,
            CASE WHEN a.last_in IS NULL THEN NULL ELSE CAST(CAST($1 AS DATE) - CAST(a.last_in AS DATE) AS INTEGER) END AS days_since,
            COALESCE(a.gems, 0) AS gems, COALESCE(a.dead, 0) AS dead, COALESCE(a.unheard, 0) AS unheard,
            CAST(a.oldest_add AS VARCHAR) AS oldest_add, CAST(a.newest_add AS VARCHAR) AS newest_add
-    FROM playlists pl LEFT JOIN agg a USING (playlist_id)`;
+    FROM playlists pl LEFT JOIN agg a ON a.playlist_id = pl.playlist_id LEFT JOIN playlist_affinity af ON af.playlist_id = pl.playlist_id`;
 
 const toHealth = (r: Record<string, unknown>): PlaylistHealth => {
   const synced = num(r.synced), heard = num(r.heard), tc = num(r.track_count);
@@ -66,12 +68,14 @@ const toHealth = (r: Record<string, unknown>): PlaylistHealth => {
     playlistId: String(r.playlist_id), name: String(r.name), description: str(r.description), ownerIsMe: Boolean(r.owner_is_me), isPublic: r.public == null ? null : Boolean(r.public),
     trackCount: tc, synced, partial: tc > 0 && synced < tc && !String(r.sync_error ?? '').startsWith('unreadable'), heard, completion: synced ? heard / synced : 0,
     unreadable: String(r.sync_error ?? '').startsWith('unreadable'), syncError: str(r.sync_error), itemsSyncedAt: str(r.items_synced_at),
+    affinity: r.affinity == null ? null : num(r.affinity), affLoved: num(r.af_loved), affPlayed: num(r.af_played), affKnownArtist: num(r.af_known), affItems: num(r.af_items),
     playsWithin: num(r.plays_in), hoursWithin: num(r.hours_in), skipRate: num(r.sr), lastPlayedWithin: str(r.last_in), daysSinceTouched: r.days_since == null ? null : num(r.days_since),
     gems: num(r.gems), deadWeight: num(r.dead), unheard: num(r.unheard), oldestAdd: str(r.oldest_add), newestAdd: str(r.newest_add),
   };
 };
 
 const ORDER: Record<PlaylistSort, string> = {
+  affinity: 'af.affinity DESC NULLS LAST', least_affinity: 'af.affinity ASC NULLS LAST',
   most_played: 'plays_in DESC, hours_in DESC', least_played: 'plays_in ASC, synced DESC', fewest_heard: 'CASE WHEN synced > 0 THEN heard * 1.0 / synced END ASC NULLS LAST, synced DESC',
   most_complete: 'CASE WHEN synced > 0 THEN heard * 1.0 / synced END DESC NULLS LAST, plays_in DESC', biggest: 'pl.track_count DESC', stalest: 'days_since DESC NULLS FIRST, plays_in DESC',
   newest: 'newest_add DESC NULLS LAST', most_gems: 'gems DESC, plays_in DESC', most_dead: 'dead DESC, synced DESC',

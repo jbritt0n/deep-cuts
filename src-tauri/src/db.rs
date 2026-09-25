@@ -141,7 +141,7 @@ impl Db {
     /// trusted UI today, but before the LLM "Ask" phase feeds *model-written*
     /// SQL through here it should be replaced by a real parse (DuckDB's own
     /// `json_serialize_sql` can classify statement type) or a strict allow-list
-    /// grammar. Tracked in docs/PROJECT-STATUS-AND-ROADMAP.md.
+    /// grammar. Tracked in docs/history/PHASE-LOG.md.
     pub fn assert_read_only(sql: &str) -> Result<()> {
         let trimmed = sql.trim().trim_end_matches(';');
         if trimmed.contains(';') {

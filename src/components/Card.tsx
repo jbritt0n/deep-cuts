@@ -33,13 +33,28 @@ export function Empty({ children }: { children: ReactNode }) {
   return <p className="py-6 text-center text-sm text-dust">{children}</p>;
 }
 
-export function Loading({ label = 'Reading the record…' }: { label?: string }) {
+/**
+ * Phase 10 (Kimi T3): a skeleton instead of a spinner — pulsing bars roughly where the content will be, so pages
+ * don't jump when a query lands. The label stays for screen readers (role=status) and as a small caption.
+ * `rows` sizes the skeleton; the pulse is disabled by the reduced-motion rule in index.css.
+ */
+export function Loading({ label = 'Reading the record…', rows = 4 }: { label?: string; rows?: number }) {
+  const widths = ['92%', '78%', '85%', '64%', '88%', '71%', '80%', '58%'];
   return (
-    <div className="flex items-center gap-3 py-16 text-dust">
-      <span aria-hidden className="spin relative block h-6 w-6 rounded-full border border-dust/50">
-        <span className="absolute inset-[9px] rounded-full bg-amber" />
-      </span>
-      <span className="text-sm">{label}</span>
+    <div role="status" aria-live="polite" className="py-4">
+      <div aria-hidden className="space-y-2.5">
+        {Array.from({ length: Math.max(1, rows) }, (_, i) => <div key={i} className="skeleton h-3.5 rounded-full" style={{ width: widths[i % widths.length] }} />)}
+      </div>
+      <p className="mt-3 text-[11px] text-dust/70">{label}</p>
+    </div>
+  );
+}
+
+/** A skeleton shaped like a chart: bars of varying height. */
+export function ChartSkeleton({ height = 140, bars = 24 }: { height?: number; bars?: number }) {
+  return (
+    <div role="status" aria-label="Loading chart" className="flex items-end gap-1 py-2" style={{ height }}>
+      {Array.from({ length: bars }, (_, i) => <div key={i} className="skeleton flex-1 rounded-sm" style={{ height: `${30 + ((i * 37) % 60)}%` }} />)}
     </div>
   );
 }

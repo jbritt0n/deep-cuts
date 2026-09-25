@@ -146,7 +146,7 @@ function LastfmBody({ row, busy, run }: { row: Row; busy: string | null; run: Ru
   const [key, setKey] = useState(''); const [user, setUser] = useState('');
   if (row.status === 'connected') return (
     <div className="num text-xs text-dust">
-      <p>{fmtInt(Number(row.extra.taggedArtists ?? 0))} artists tagged so far. Tags top up in the background a few dozen artists at a time.</p>
+      <p>{fmtInt(Number(row.extra.taggedArtists ?? 0))} artists tagged so far · {fmtInt(Number(row.extra.albumListeners ?? 0))} albums with listener counts (album obscurity). Both top up in the background a few dozen at a time.</p>
       <button disabled={!!busy} onClick={() => run('lastfm', () => invoke('lastfm_disconnect'), () => 'Last.fm disconnected. Tags already fetched are kept.')} className="mt-2 text-dust hover:text-cream">Disconnect</button>
     </div>
   );

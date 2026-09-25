@@ -2,6 +2,7 @@ import { C } from '@/lib/theme';
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { SessionArc } from '@/components/SoundTools';
+import { ActivityCard } from '@/components/DepthCards';
 import { DEFAULT_SESSION_FILTERS, PAGE, getSessionDetail, getSessionsOverview, listSessions, type SessionFilters } from '@/lib/sessionQueries';
 import { useAsync, useDebounced, useFilter } from '@/lib/hooks';
 import { QueueButton } from '@/components/QueueButton';
@@ -52,6 +53,7 @@ function SessionsOverviewPage() {
 
   return (
     <div className="mx-auto max-w-6xl">
+      <div className="mb-6"><ActivityCard /></div>
       <Sleeve kicker="Sessions" title="How you listen"
         meta={<>{fmtInt(o.count)} sessions of two or more plays · median {mins(o.medianMin)} · one in ten runs past {mins(o.p90Min)} · {fmtInt(o.marathonCount)} marathons of 3 h+</>}>
         <p className="mt-4 max-w-2xl text-sm text-dust">

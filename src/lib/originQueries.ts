@@ -6,6 +6,20 @@
 import { query, num, str } from './db';
 import { playsWhere } from './filter';
 
+/**
+ * Phase 9n: country names always come from the ISO code (Intl.DisplayNames, English). Before 9i the MusicBrainz *area*
+ * was stored as country_name, so some rows said "New York" or "Istanbul" where a country belongs (owner, Atlas).
+ * The stored name is only a fallback for codes the runtime doesn't know (XK and a few territories).
+ */
+const DN = (() => { try { return new Intl.DisplayNames(['en'], { type: 'region' }); } catch { return null; } })();
+export const countryName = (cc: string | null | undefined, fallback?: string | null): string => {
+  if (!cc) return fallback ?? '—';
+  const code = cc.toUpperCase();
+  if (code === 'XK') return 'Kosovo';
+  try { const n = DN?.of(code); if (n && n !== code) return n; } catch { /* unknown code */ }
+  return fallback ?? code;
+};
+
 export type CountryRow = { country: string; name: string; hours: number; plays: number; artists: number; share: number; topArtists: string[]; scene: string | null; sceneLabel: string | null; firstPlayed: string | null };
 export type OriginSummary = { rows: CountryRow[]; totalHours: number; coveredHours: number; coveredArtists: number; totalArtists: number; countries: number };
 
@@ -26,7 +40,7 @@ export async function originSummary(): Promise<OriginSummary> {
     FROM pa LEFT JOIN artist_origin o USING (artist_id)`);
   const totalHours = num(t?.total), coveredHours = num(t?.covered);
   const out: CountryRow[] = rows.map((r) => ({
-    country: String(r.country), name: String(r.name), hours: num(r.hours), plays: num(r.plays), artists: num(r.artists), share: coveredHours ? num(r.hours) / coveredHours : 0,
+    country: String(r.country), name: countryName(String(r.country), str(r.name)), hours: num(r.hours), plays: num(r.plays), artists: num(r.artists), share: coveredHours ? num(r.hours) / coveredHours : 0,
     topArtists: Array.isArray(r.top) ? (r.top as unknown[]).map(String) : [], scene: str(r.scene), sceneLabel: r.scene ? labels[String(r.scene)] ?? String(r.scene) : null, firstPlayed: str(r.first_at)?.slice(0, 10) ?? null,
   }));
   return { rows: out, totalHours, coveredHours, coveredArtists: num(t?.covered_artists), totalArtists: num(t?.artists), countries: out.length };
@@ -87,7 +101,7 @@ export async function abroadSummary(): Promise<AbroadSummary> {
     SELECT cc, trip, CAST(s AS VARCHAR) AS s, CAST(e AS VARCHAR) AS e, days, h FROM t ORDER BY s DESC`);
   const names: Record<string, string> = {};
   for (const r of await query(`SELECT country, arg_max(country_name, 1) AS n FROM artist_origin WHERE country IS NOT NULL GROUP BY 1`)) names[String(r.country)] = String(r.n);
-  const nm = (cc: string) => names[cc] ?? REGION.of(cc) ?? cc;
+  const nm = (cc: string) => countryName(cc, names[cc]);
   // home baseline: share of home listening per artist-origin country
   const baseRows = await query(`WITH ${WHERE(home)} SELECT o.country AS cc, SUM(pw.ms_played) * 1.0 / (SELECT SUM(ms_played) FROM pw WHERE where_cc = '${home}') AS share FROM pw JOIN artist_origin o USING (artist_id) WHERE pw.where_cc = '${home}' GROUP BY 1`);
   const homeShare = new Map(baseRows.map((r) => [String(r.cc), num(r.share)]));
@@ -126,6 +140,5 @@ export async function abroadSummary(): Promise<AbroadSummary> {
   const scenes = sc.map((r) => ({ scene: String(r.scene), label: String(r.label), abroad: num(r.abroad), home: num(r.home), lift: (num(r.abroad) + 0.005) / (num(r.home) + 0.005) })).filter((x) => x.abroad >= 0.03).sort((a, b) => b.lift - a.lift).slice(0, 8);
   return { home, homeDetected: h.detected, knownShare: h.knownShare, trips, countries: [...byC.values()].sort((a, b) => b.hours - a.hours), hoursAbroad: num(tot?.a), hoursTotal: num(tot?.h), scenes, byCountryHours };
 }
-const REGION = (() => { try { const dn = new Intl.DisplayNames(['en'], { type: 'region' }); return { of: (c: string) => { try { return dn.of(c) ?? null; } catch { return null; } } }; } catch { return { of: () => null }; } })();
 /** Regional-indicator flag for an ISO-2 code ("TR" → 🇹🇷). */
 export const flag = (cc: string) => (/^[A-Z]{2}$/.test(cc) ? String.fromCodePoint(...[...cc].map((c) => 0x1f1e6 + c.charCodeAt(0) - 65)) : '');

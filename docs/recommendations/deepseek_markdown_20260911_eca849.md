@@ -4,7 +4,7 @@
 **Status:** Suggestions only — not committed to roadmap, not scoped, not estimated.
 **Purpose:** A menu of possible next features, organized by theme, for the owner to
 triage. Everything here is written against the current architecture as documented in
-`docs/PROJECT-STATUS-AND-ROADMAP.md`, `docs/PHASE1-NOTES.md`, and the SQL/TS layers.
+`docs/history/PHASE-LOG.md`, `docs/DECISIONS.md`, and the SQL/TS layers.
 
 > **Note to whoever picks this up:** these are *recommendations from an outside reader
 > of the codebase*, not requests from the owner. Treat them as a starting menu. The

@@ -21,6 +21,8 @@ import { SessionsPage } from './pages/Sessions';
 import { ErasPage } from './pages/Eras';
 import { AtlasPage } from './pages/Atlas';
 import { RoastPage } from './pages/Roast';
+import { NewnessPage } from './pages/Newness';
+import { ConnectionsPage } from './pages/Connections';
 import { InsightsPage } from './pages/Insights';
 import { ActivityPage } from './pages/Activity';
 import { AskPage } from './pages/Ask';
@@ -92,6 +94,8 @@ export function App() {
             <Route path="/eras" element={<ErasPage />} />
             <Route path="/atlas" element={<AtlasPage />} />
             <Route path="/roast" element={<RoastPage />} />
+            <Route path="/newness" element={<NewnessPage />} />
+            <Route path="/connections" element={<ConnectionsPage />} />
             <Route path="/insights" element={<InsightsPage />} />
             <Route path="/activity" element={<ActivityPage />} />
             <Route path="/notforme" element={<Navigate to="/settings?tab=notforme" replace />} />

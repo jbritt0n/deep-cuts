@@ -5,6 +5,7 @@ import { adventurousness, energyByHour, featureCoverage, featureExtremes, featur
 import { fmtInt, fmtPct, trackHref } from '@/lib/format';
 import { useAsync, useFilter } from '@/lib/hooks';
 import { C } from '@/lib/theme';
+import { DurationCard } from '@/components/DepthCards';
 
 /**
  * Phase 9g — "Sound": what your listening sounds like, from FreqBlog audio features (tempo, key, energy, loudness).
@@ -21,7 +22,7 @@ export function SoundSection() {
   const ext = useAsync(() => featureExtremes(3), [filter]);
   if (cov.error) return <Card title="Sound"><ErrorBox message={cov.error} /></Card>;
   if (!cov.data) return <Card title="Sound"><Loading label="Reading audio features…" /></Card>;
-  if (cov.data.featured === 0) return <Card title="Sound" subtitle="Tempo, key, energy and loudness of what you play — needs the FreqBlog connector."><p className="text-sm text-dust">No audio features yet. Connect FreqBlog on <Link to="/services" className="underline hover:text-cream">Services</Link> (free key); features fill in a batch every six hours, most-played first.</p></Card>;
+  if (cov.data.featured === 0) return <div className="space-y-6"><Card title="Sound" subtitle="Tempo, key, energy and loudness of what you play — needs the FreqBlog connector."><p className="text-sm text-dust">No audio features yet. Connect FreqBlog on <Link to="/services" className="underline hover:text-cream">Services</Link> (free key); features fill in a batch every six hours, most-played first.</p></Card><DurationCard /></div>;
   const c = cov.data;
   const peakHour = hours.data?.length ? hours.data.reduce((a, b) => (b.energy > a.energy ? b : a)) : null;
   const calmHour = hours.data?.length ? hours.data.filter((h) => h.plays >= 20).reduce((a, b) => (b.energy < a.energy ? b : a), hours.data[0]) : null;
@@ -76,6 +77,7 @@ export function SoundSection() {
           )}
         </Card>
       </div>
+      <DurationCard />
       <p className="text-[11px] text-dust/70">Tempo, key, energy and loudness are FreqBlog's full-coverage fields. Its perceptual estimates — valence, mood, danceability — are stored but not charted: the service itself calls them coarse.</p>
     </div>
   );

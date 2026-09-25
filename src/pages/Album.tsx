@@ -1,4 +1,5 @@
 import { Link, useParams } from 'react-router-dom';
+import { ObscurityPanel } from '@/components/ObscurityPanel';
 import { AlbumMetadata } from '@/components/MetadataPanel';
 import { getAlbumDetail } from '@/lib/queries';
 import { useAsync, useFilter } from '@/lib/hooks';
@@ -31,7 +32,7 @@ export function AlbumPage() {
         <Card title="Two years, month by month"><MonthlySparkline data={a.monthly} /></Card>
         <Card title="Tracks" subtitle="By plays — the deep cuts sit at the bottom." aside={<MakePlaylistButton small name={`${a.album} · as you play it`} tracks={a.tracks} note={`album:${a.albumId}`} />}><TrackList data={a.tracks} showArtist={false} /></Card>
       </section>
-      <div className="mt-6 max-w-2xl"><AlbumMetadata albumId={a.albumId} /></div>
+      <div className="mt-6 grid gap-6 lg:grid-cols-2"><ObscurityPanel artistId={a.artistId ?? null} albumId={a.albumId} /><AlbumMetadata albumId={a.albumId} /></div>
     </div>
   );
 }

@@ -11,4 +11,4 @@ Four outside reads of the codebase at Phase 7d (all Sep 11 2026), kept verbatim 
 
 **Phase 8 took** from these: CI test gating (Kimi T1), vitest coverage and the parameterised-SQL fix (synthesis §1.3/§1.1), the `assert_read_only` note (§1.2), the owner's §3 items, and the first slice of Record Hygiene (§2.1.1). Two owner ideas not in any of these documents — Shazam/Now Playing capture and discovery by genre — became *Heard in the Wild* and *Browse by genre*.
 
-**Phase 9a took** the eras fix, retention drill-down, playlist intelligence (§2.5) and the poll-priority fix. **Still open** is tracked in `docs/HANDOFF-PHASE-9B.md`. These files are not updated as items ship; the roadmap is.
+**Phase 9a took** the eras fix, retention drill-down, playlist intelligence (§2.5) and the poll-priority fix. **Still open** is tracked in `docs/history/handoffs/HANDOFF-PHASE-9B.md`. These files are not updated as items ship; the roadmap is.

@@ -93,3 +93,20 @@ export async function integrity(): Promise<Integrity> {
     impossibleDays: num(r?.impossible_days), overrunPlays: num(r?.overrun), enrichedShare: num(r?.enriched_share), tzOverrides: num(r?.tz_overrides), mergedArtists: num(r?.merges), wildCaptures: num(r?.wild),
   };
 }
+
+// ---------------------------------------------------------------- Phase 10: ISRC duplicates (synthesis §1.4)
+export type IsrcGroup = { isrc: string; track: string; artist: string; versions: { trackId: string; album: string | null; plays: number }[]; plays: number };
+/** The same recording (one ISRC) under several track ids — a single, the album cut, a reissue — which splits its plays. */
+export async function isrcDuplicates(limit = 40): Promise<{ groups: IsrcGroup[]; totalGroups: number; splitPlays: number }> {
+  const rows = await query(`
+    WITH t AS (SELECT t.track_id, upper(replace(t.isrc, '-', '')) AS isrc, t.name, a.name AS artist, al.name AS album FROM tracks t LEFT JOIN artists a USING (artist_id) LEFT JOIN albums al USING (album_id)
+               WHERE t.isrc IS NOT NULL AND length(t.isrc) >= 12),
+         g AS (SELECT isrc FROM t GROUP BY 1 HAVING COUNT(DISTINCT track_id) >= 2),
+         p AS (SELECT track_id, COUNT(*) AS n FROM plays_resolved GROUP BY 1)
+    SELECT t.isrc, arg_max(t.name, COALESCE(p.n, 0)) AS track, arg_max(t.artist, COALESCE(p.n, 0)) AS artist, SUM(COALESCE(p.n, 0)) AS plays,
+           list({'trackId': t.track_id, 'album': t.album, 'plays': COALESCE(p.n, 0)} ORDER BY COALESCE(p.n, 0) DESC) AS versions, COUNT(*) FILTER (WHERE COALESCE(p.n, 0) > 0) AS played_versions
+    FROM t JOIN g USING (isrc) LEFT JOIN p USING (track_id) GROUP BY 1 HAVING COUNT(*) FILTER (WHERE COALESCE(p.n, 0) > 0) >= 2 ORDER BY plays DESC`);
+  const groups = rows.map((r) => ({ isrc: String(r.isrc), track: String(r.track), artist: String(r.artist ?? ''), plays: num(r.plays),
+    versions: (Array.isArray(r.versions) ? r.versions as { trackId: string; album: string | null; plays: number }[] : []).map((v) => ({ trackId: String(v.trackId), album: v.album == null ? null : String(v.album), plays: num(v.plays) })) }));
+  return { groups: groups.slice(0, limit), totalGroups: groups.length, splitPlays: groups.reduce((a, g) => a + g.plays - (g.versions[0]?.plays ?? 0), 0) };
+}

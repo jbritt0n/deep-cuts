@@ -1,3 +1,4 @@
+import { AntiRecsCard, BlindSpotsCard, BubbleCard } from '@/components/DepthCards';
 import { C } from '@/lib/theme';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
@@ -155,6 +156,11 @@ export function DiscoveryPage() {
           <button onClick={reload} className="text-xs text-dust hover:text-cream">Refresh suggestions</button>
         </div>
       </div>
+      <section className="mt-10 space-y-6" aria-label="Discovery depth">
+        <div><p className="text-sm text-dust">Discovery depth</p><h2 className="font-display text-3xl">Your bubble, and what's outside it</h2></div>
+        <div className="grid gap-6 lg:grid-cols-[1fr_1.6fr]"><BubbleCard /><BlindSpotsCard /></div>
+        <AntiRecsCard />
+      </section>
     </div>
   );
 }

@@ -1100,3 +1100,47 @@ CREATE TABLE IF NOT EXISTS stylus_devices (
 );
 CREATE TABLE IF NOT EXISTS stylus_inbox (device_id VARCHAR, body VARCHAR, received_at TIMESTAMPTZ DEFAULT now());
 CREATE TABLE IF NOT EXISTS stylus_now_playing (device_id VARCHAR PRIMARY KEY, artist_name VARCHAR, track_name VARCHAR, release_name VARCHAR, since TIMESTAMPTZ DEFAULT now());
+
+-- Phase 9n (runs once): every "not in FreqBlog's catalogue" recorded before the parser fix was a parse failure on a billed
+-- hit, so forget those misses and let them be looked up again.
+DELETE FROM track_features WHERE NOT found AND NOT EXISTS (SELECT 1 FROM app_meta WHERE key = 'freqblog_parser_rev' AND value >= '2');
+INSERT INTO app_meta (key, value) VALUES ('freqblog_parser_rev', '2') ON CONFLICT (key) DO UPDATE SET value = excluded.value;
+
+-- Phase 9n: the owner's display name, so a playlist Spotify lists without a name still reads "Untitled · by X"
+ALTER TABLE playlists ADD COLUMN IF NOT EXISTS owner_name VARCHAR;
+
+-- Phase 9n — playlist affinity needs to know who is on the songs you've never played, so items keep their artist + title.
+ALTER TABLE playlist_items ADD COLUMN IF NOT EXISTS track_name VARCHAR;
+ALTER TABLE playlist_items ADD COLUMN IF NOT EXISTS artist_name VARCHAR;
+-- once: let every playlist's items re-sync (rotating within the quota) so older rows gain those names
+UPDATE playlists SET items_snapshot_id = NULL WHERE NOT EXISTS (SELECT 1 FROM app_meta WHERE key = 'playlist_items_rev' AND value >= '2');
+INSERT INTO app_meta (key, value) VALUES ('playlist_items_rev', '2') ON CONFLICT (key) DO UPDATE SET value = excluded.value;
+
+-- Phase 9n — how much each playlist suits you, from your own listening. Per item:
+--   1.0  a song you love (3+ attended plays, skipped < 30 %)
+--   0.4–0.8  a song you've played (less the more you skip it)
+--   ≤ 0.6  an unplayed song by an artist you know (scaled by your hours with them, matched by name)
+--   0.2  an unplayed song whose artist is in one of your 8 biggest scenes
+--   0    anything else
+-- affinity = the mean, 0–1. Spotify-made playlists have no readable items and so no affinity.
+CREATE OR REPLACE VIEW playlist_affinity AS
+WITH items AS (SELECT DISTINCT i.playlist_id, i.track_id, lower(trim(i.artist_name)) AS artist_key FROM playlist_items i),
+t AS (SELECT track_id, COUNT(*) AS n, AVG(CASE WHEN was_skipped THEN 1.0 ELSE 0 END) AS sr FROM plays_resolved WHERE attended GROUP BY 1),
+a AS (SELECT lower(trim(arg_max(artist_name, ms_played))) AS artist_key, arg_max(artist_id, ms_played) AS artist_id, SUM(ms_played) / 3600000.0 AS h FROM plays_resolved WHERE attended AND artist_id IS NOT NULL GROUP BY artist_id),
+sc AS (SELECT artist_id, arg_max(scene, weight) AS scene FROM artist_scene GROUP BY 1),
+top_sc AS (SELECT sc.scene FROM plays_resolved p JOIN sc USING (artist_id) WHERE p.attended GROUP BY 1 ORDER BY SUM(p.ms_played) DESC LIMIT 8),
+s AS (SELECT items.playlist_id,
+             CASE WHEN t.n >= 3 AND t.sr < 0.3 THEN 1.0
+                  WHEN t.n >= 1 THEN GREATEST(0.4, 0.8 - t.sr * 0.6)
+                  WHEN a.h IS NOT NULL THEN LEAST(0.6, 0.15 + a.h / 10)
+                  WHEN sc.scene IN (SELECT scene FROM top_sc) THEN 0.2
+                  ELSE 0 END AS score,
+             (t.n >= 3 AND t.sr < 0.3) AS loved, (t.n IS NOT NULL) AS played, (t.n IS NULL AND a.h IS NOT NULL) AS known_artist, (t.n IS NULL AND items.artist_key IS NULL) AS unknown
+      FROM items LEFT JOIN t USING (track_id) LEFT JOIN a ON a.artist_key = items.artist_key LEFT JOIN sc ON sc.artist_id = a.artist_id)
+SELECT playlist_id, AVG(score) AS affinity, COUNT(*) AS items,
+       SUM(CASE WHEN loved THEN 1 ELSE 0 END) AS loved, SUM(CASE WHEN played THEN 1 ELSE 0 END) AS played,
+       SUM(CASE WHEN known_artist THEN 1 ELSE 0 END) AS known_artist, SUM(CASE WHEN unknown THEN 1 ELSE 0 END) AS unknown
+FROM s GROUP BY 1;
+
+-- Phase 9n: clear area names stored as country names by pre-9i origin rows (the UI now names countries by ISO code)
+UPDATE artist_origin SET country_name = NULL WHERE source <> 'owner' AND country_name IS NOT NULL AND city IS NOT NULL AND lower(country_name) = lower(regexp_replace(city, ' \(born/formed\)$', ''));

@@ -76,7 +76,15 @@ pub fn start(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(Duration::from_secs(90)).await;
         loop {
-            run_blocking(&a, "lastfm", |st| { lastfm::enrich_tags(&st.real, 40)?; lastfm::enrich_similar(&st.real, 10)?; lastfm::enrich_popularity(&st.real, 15)?; lastfm::enrich_album_popularity(&st.real, 15)?; Ok(()) }).await;
+            // Phase 9n: each step independent — before, an error in tags / similar / artist listeners ended the tick before albums,
+            // which is why album obscurity never filled in (owner: "the crate still shows only artist obscurity")
+            run_blocking(&a, "lastfm", |st| {
+                for (name, r) in [("tags", lastfm::enrich_tags(&st.real, 40).map(|_| ())), ("similar", lastfm::enrich_similar(&st.real, 10).map(|_| ())),
+                                  ("artist listeners", lastfm::enrich_popularity(&st.real, 15).map(|_| ())), ("album listeners", lastfm::enrich_album_popularity(&st.real, 25).map(|_| ()))] {
+                    if let Err(e) = r { log::warn!("Last.fm {name}: {e:#}"); }
+                }
+                Ok(())
+            }).await;
             run_blocking(&a, "musicbrainz", |st| {
                 let connected = st.real.query("SELECT status FROM connector_state WHERE service = 'musicbrainz'", &[])
                     .ok().and_then(|r| r.first().and_then(|m| m.get("status")).and_then(|v| v.as_str().map(str::to_string)));

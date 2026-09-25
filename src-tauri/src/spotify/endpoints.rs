@@ -25,6 +25,8 @@ pub fn my_playlists(limit: u32, offset: u32) -> String { format!("{API_BASE}/me/
 /// API-04: `/playlists/{id}/items`, fields `items` / `item`.
 /// Phase 9e: one playlist, for verifying the count after creation.
 pub fn playlist(id: &str) -> String { format!("{API_BASE}/playlists/{id}?fields=tracks.total,items.total") }
+/// Phase 9n: one playlist's own details — used for rows /me/playlists lists without a name.
+pub fn playlist_meta(id: &str) -> String { format!("{API_BASE}/playlists/{id}?fields=name,description,public,snapshot_id,owner(id,display_name)") }
 pub fn playlist_items(id: &str, limit: u32, offset: u32) -> String { format!("{API_BASE}/playlists/{id}/items?limit={limit}&offset={offset}") }
 /// API-03: playlist creation is `POST /me/playlists`.
 pub fn create_playlist() -> String { format!("{API_BASE}/me/playlists") }

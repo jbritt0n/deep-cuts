@@ -108,10 +108,25 @@ fn f64_of(v: &Value) -> Option<f64> { v.as_f64().or_else(|| v.as_str().and_then(
 fn i64_of(v: &Value) -> Option<i64> { v.as_i64().or_else(|| v.as_f64().map(|f| f.round() as i64)).or_else(|| v.as_str().and_then(|s| s.parse().ok())) }
 fn str_of(v: &Value) -> Option<String> { v.as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty()) }
 
-/// Accept the feature object flat or nested under `features` / `audio_features` / `analysis`.
+/// Phase 9n: find the object that carries the features wherever the reply nests it. FreqBlog's single lookup returns
+/// them top-level (`bpm`, `key` "B", `camelot` "1A", `mode` "minor", `energy` …); a /bulk result wraps each track in an
+/// object whose key 9g guessed wrong, so every billed hit was recorded as a miss (owner: 0 found, 115 units used).
+/// Depth-first search for the first object with a `bpm`, `camelot` or numeric `tempo`, up to 4 levels.
+fn feature_obj(v: &Value, depth: u8) -> Option<&Value> {
+    if !v.is_object() { return None; }
+    if v.get("bpm").map(|b| !b.is_null()).unwrap_or(false) || v.get("camelot").map(|b| !b.is_null()).unwrap_or(false) || v.get("tempo").map(|b| b.is_number()).unwrap_or(false) { return Some(v); }
+    if depth == 0 { return None; }
+    v.as_object()?.values().find_map(|c| feature_obj(c, depth - 1))
+}
+
 fn parse_feat(item: &Value) -> Feat {
-    let f = ["features", "audio_features", "analysis", "data"].iter().map(|k| &item[*k]).find(|v| v.is_object()).unwrap_or(item);
-    let key_name = str_of(&f["key_name"]).or_else(|| str_of(&f["key"]).filter(|s| s.chars().any(|c| c.is_alphabetic())));
+    let f = feature_obj(item, 4).unwrap_or(item);
+    // "key": "B" + "mode": "minor" → "B minor"
+    let mode_word = str_of(&f["mode"]).filter(|m| m.chars().any(|c| c.is_alphabetic()));
+    let key_name = str_of(&f["key_name"]).or_else(|| str_of(&f["key"]).filter(|s| s.chars().any(|c| c.is_alphabetic())).map(|k| {
+        let kl = k.to_lowercase();
+        match &mode_word { Some(m) if !kl.contains("major") && !kl.contains("minor") => format!("{k} {}", m.to_lowercase()), _ => k }
+    }));
     let mode = i64_of(&f["mode"]).or_else(|| str_of(&f["mode"]).map(|m| if m.to_lowercase().starts_with("maj") { 1 } else { 0 }))
         .or_else(|| key_name.as_ref().map(|k| if k.to_lowercase().contains("minor") || k.ends_with('m') { 0 } else { 1 }));
     Feat {
@@ -183,14 +198,26 @@ pub fn enrich(db: &Db, max_tracks: usize) -> Result<usize> {
         for (i, r) in chunk.iter().enumerate() {
             let Some(id) = g(r, "track_id") else { continue };
             let want_isrc = g(r, "isrc");
-            let item = items.iter().find(|it| want_isrc.is_some() && (str_of(&it["isrc"]).as_deref() == want_isrc.as_deref() || str_of(&it["query"]["isrc"]).as_deref() == want_isrc.as_deref()))
+            // match the reply to this request: ISRC anywhere in the item, then track + artist names, then position
+            let norm = |s: &str| s.to_lowercase().chars().filter(|c| c.is_alphanumeric()).collect::<String>();
+            let (want_t, want_a) = (g(r, "name").map(|x| norm(&x)), g(r, "artist").map(|x| norm(&x)));
+            let want_i = want_isrc.as_deref().map(|x| x.replace('-', "").to_uppercase());
+            let isrc_of = |it: &Value| -> Option<String> { str_of(&it["isrc"]).or_else(|| str_of(&it["query"]["isrc"])).or_else(|| feature_obj(it, 4).and_then(|f| str_of(&f["isrc"]))).map(|x| x.replace('-', "").to_uppercase()) };
+            let names_of = |it: &Value| -> (Option<String>, Option<String>) {
+                let f = feature_obj(it, 4).unwrap_or(it);
+                let t = str_of(&f["track_name"]).or_else(|| str_of(&it["query"]["track"])).or_else(|| it["track"].as_str().map(str::to_string));
+                let a = str_of(&f["artist_name"]).or_else(|| str_of(&it["query"]["artist"])).or_else(|| it["artist"].as_str().map(str::to_string));
+                (t.map(|x| norm(&x)), a.map(|x| norm(&x)))
+            };
+            let item = items.iter().find(|it| want_i.is_some() && isrc_of(it) == want_i)
+                .or_else(|| items.iter().find(|it| { let (t, a) = names_of(it); want_t.is_some() && t == want_t && (a == want_a || a.is_none()) }))
                 .or_else(|| items.get(i));
             // queued for on-demand analysis → leave unwritten; the next tick collects it for free
             let backfill = item.and_then(|it| it["backfill_status"].as_str()).unwrap_or("").to_lowercase();
             if ["queue", "pending", "processing", "ingest", "running"].iter().any(|k| backfill.contains(k)) || backfill == "over_limit" { continue; }
-            let found = item.map(|it| !it["error"].is_string() && it["found"] != Value::Bool(false) && it["status"].as_str() != Some("not_found")).unwrap_or(false);
+            // the features themselves are the proof of a hit (the item's own flags were read wrongly in 9g)
             let ft = item.map(parse_feat).unwrap_or_default();
-            let found = found && (ft.bpm.is_some() || ft.key_name.is_some() || ft.energy.is_some());
+            let found = ft.bpm.is_some() || ft.key_name.is_some() || ft.camelot.is_some() || ft.energy.is_some();
             db.exec("INSERT OR REPLACE INTO track_features (track_id, isrc, bpm, bpm_alt, bpm_confidence, key_name, key_int, mode, camelot, energy, loudness_db, danceability, valence, mood, time_signature, acousticness, instrumentalness, liveness, speechiness, genre, feature_source, found, fetched_at)
                      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now())",
                 &[json!(id), json!(ft.isrc.or(want_isrc.clone())), json!(ft.bpm), json!(ft.bpm_alt), json!(ft.bpm_conf), json!(ft.key_name), json!(ft.key_int), json!(ft.mode), json!(ft.camelot), json!(ft.energy), json!(ft.loudness), json!(ft.dance), json!(ft.valence), json!(ft.mood), json!(ft.time_sig), json!(ft.acoustic), json!(ft.instrumental), json!(ft.live), json!(ft.speech), json!(ft.genre), json!(if want_isrc.is_some() { "isrc" } else { "name" }), json!(found)])?;
