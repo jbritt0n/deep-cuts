@@ -90,7 +90,7 @@ jobs:
         run: |
           # tauri's context macro needs frontendDist to exist at compile time; the real build below replaces it
           mkdir -p ../dist && [ -f ../dist/index.html ] || echo '<!doctype html><title>test</title>' > ../dist/index.html
-          cargo test --lib --locked
+          cargo test --lib
       - name: Build
         run: npm run tauri build -- --bundles ${{ matrix.bundles }}
       - name: Collect Linux packages
