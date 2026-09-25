@@ -1,4 +1,3 @@
-import { AntiRecsCard, BlindSpotsCard, BubbleCard } from '@/components/DepthCards';
 import { C } from '@/lib/theme';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
@@ -23,7 +22,8 @@ const ENGINE: Record<Rec['engine'], { label: string; color: string }> = {
   release_radar: { label: 'New release', color: '#6F8FB0' },
 };
 
-export function DiscoveryPage() {
+/** Phase 10b: one component, two pages — Discover (finding music) and Mixtape (making playlists). */
+export function DiscoveryPage({ view = 'discover' }: { view?: 'discover' | 'mixtape' } = {}) {
   const { filter } = useFilter();
   const { data, error, reload } = useAsync(inbox, [filter]);
   const cur = useAsync(curated, [filter]);
@@ -50,6 +50,35 @@ export function DiscoveryPage() {
   const recs = data.recs.filter((r) => !hidden.has(r.key) && (!only || r.engine === only));
   const counts = data.recs.reduce<Record<string, number>>((m, r) => ((m[r.engine] = (m[r.engine] ?? 0) + 1), m), {});
 
+  if (view === 'mixtape') return (
+    <div className="mx-auto max-w-6xl">
+      <Sleeve kicker="Mixtape" title="Make something to listen to" meta="Blend your own archive into a playlist, pick from ready-made ones, and find everything Deep Cuts has made on your Spotify." />
+      {msg && <div className="mb-4 rounded-xl border border-line bg-surface px-4 py-3 text-sm text-dust">{msg}</div>}
+      <div className="mb-6 grid gap-6 lg:grid-cols-[1.2fr_1fr]">
+        <Card title="Mixtape builder" subtitle="Set the blend, pick a length, preview, publish. Artists you don't own are filled in from Spotify search."><MixtapeBuilder /></Card>
+        <Card title="Made by Deep Cuts" subtitle="Playlists this app created on your Spotify. Radar lives here too." aside={made.data?.some((m) => m.kind === 'radar') ? <a href={made.data.find((m) => m.kind === 'radar')!.url ?? '#'} target="_blank" rel="noreferrer" className="text-xs text-dust hover:text-amber">open Radar</a> : undefined}>
+          {made.data && made.data.length ? <ul className="divide-y divide-line/60 text-sm">{made.data.slice(0, 8).map((m) => <li key={m.id} className="flex items-center gap-3 py-1.5"><span className="min-w-0 flex-1 truncate">{m.url ? <a href={m.url} target="_blank" rel="noreferrer" className="hover:text-amber">{m.name}</a> : m.name}</span><span className="num shrink-0 text-xs text-dust">{m.kind} · {m.tracks} · {m.isPublic ? 'public' : 'private'} · {m.createdAt.slice(0, 10)}</span></li>)}</ul> : <p className="text-sm text-dust">Nothing created yet. Radar appears here after your first “Add to Radar”.</p>}
+        </Card>
+      </div>
+      <div className="mb-6">
+        <Card title="Curated from your own archive" subtitle="Deterministic playlists built from what you already have. Preview, trim, add, publish.">
+          {cur.data ? (
+            <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+              {cur.data.map((c) => (
+                <div key={c.id} className="rounded-xl border border-line bg-ink/40 p-4">
+                  <p className="font-display text-lg">{c.title}</p>
+                  <p className="mt-1 text-xs text-dust">{c.blurb}</p>
+                  <p className="num mt-2 truncate text-xs text-dust">{c.tracks.slice(0, 3).map((t) => t.track).join(' · ')}…</p>
+                  <div className="mt-3"><MakePlaylistButton name={c.title} tracks={c.tracks} kind="insight" description={`${c.blurb} Made with Deep Cuts.`} note={`curated:${c.id}`} pool={c.tracks} label={`Preview ${c.tracks.length} tracks`} /></div>
+                </div>
+              ))}
+            </div>
+          ) : <Loading label="Curating…" />}
+        </Card>
+      </div>
+    </div>
+  );
+
   return (
     <div className="mx-auto max-w-6xl">
       <Sleeve kicker="Discovery" title="Things you'd probably like"
@@ -72,29 +101,6 @@ export function DiscoveryPage() {
         ))}
       </div>
 
-      <div className="mb-6 grid gap-6 lg:grid-cols-[1.2fr_1fr]">
-        <Card title="Mixtape builder" subtitle="Set the blend, pick a length, preview, publish. Artists you don't own are filled in from Spotify search."><MixtapeBuilder /></Card>
-        <Card title="Made by Deep Cuts" subtitle="Playlists this app created on your Spotify. Radar lives here too." aside={made.data?.some((m) => m.kind === 'radar') ? <a href={made.data.find((m) => m.kind === 'radar')!.url ?? '#'} target="_blank" rel="noreferrer" className="text-xs text-dust hover:text-amber">open Radar</a> : undefined}>
-          {made.data && made.data.length ? <ul className="divide-y divide-line/60 text-sm">{made.data.slice(0, 8).map((m) => <li key={m.id} className="flex items-center gap-3 py-1.5"><span className="min-w-0 flex-1 truncate">{m.url ? <a href={m.url} target="_blank" rel="noreferrer" className="hover:text-amber">{m.name}</a> : m.name}</span><span className="num shrink-0 text-xs text-dust">{m.kind} · {m.tracks} · {m.isPublic ? 'public' : 'private'} · {m.createdAt.slice(0, 10)}</span></li>)}</ul> : <p className="text-sm text-dust">Nothing created yet. Radar appears here after your first “Add to Radar”.</p>}
-        </Card>
-      </div>
-      <div className="mb-6"><GenreBrowser onMsg={setMsg} onAccepted={() => made.reload()} /></div>
-      <div className="mb-6">
-        <Card title="Curated from your own archive" subtitle="Deterministic playlists built from what you already have. Preview, trim, add, publish.">
-          {cur.data ? (
-            <div className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
-              {cur.data.map((c) => (
-                <div key={c.id} className="rounded-xl border border-line bg-ink/40 p-4">
-                  <p className="font-display text-lg">{c.title}</p>
-                  <p className="mt-1 text-xs text-dust">{c.blurb}</p>
-                  <p className="num mt-2 truncate text-xs text-dust">{c.tracks.slice(0, 3).map((t) => t.track).join(' · ')}…</p>
-                  <div className="mt-3"><MakePlaylistButton name={c.title} tracks={c.tracks} kind="insight" description={`${c.blurb} Made with Deep Cuts.`} note={`curated:${c.id}`} pool={c.tracks} label={`Preview ${c.tracks.length} tracks`} /></div>
-                </div>
-              ))}
-            </div>
-          ) : <Loading label="Curating…" />}
-        </Card>
-      </div>
       <div className="grid gap-6 lg:grid-cols-[1.6fr_1fr]">
         <div className="space-y-3">
           {recs.length === 0 && <Card><p className="text-sm text-dust">Nothing left in this view. Connect Last.fm and MusicBrainz for more, or come back after new plays.</p></Card>}
@@ -156,11 +162,7 @@ export function DiscoveryPage() {
           <button onClick={reload} className="text-xs text-dust hover:text-cream">Refresh suggestions</button>
         </div>
       </div>
-      <section className="mt-10 space-y-6" aria-label="Discovery depth">
-        <div><p className="text-sm text-dust">Discovery depth</p><h2 className="font-display text-3xl">Your bubble, and what's outside it</h2></div>
-        <div className="grid gap-6 lg:grid-cols-[1fr_1.6fr]"><BubbleCard /><BlindSpotsCard /></div>
-        <AntiRecsCard />
-      </section>
+      <div className="mt-8"><GenreBrowser onMsg={setMsg} onAccepted={() => made.reload()} /></div>
     </div>
   );
 }

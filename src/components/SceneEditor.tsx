@@ -1,3 +1,4 @@
+import { confirmDialog } from '@/components/Overlay';
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Card, ErrorBox } from '@/components/Card';
@@ -54,7 +55,7 @@ export function SceneEditor() {
                 </button>
                 <span className="num shrink-0 text-xs text-dust" title={`${f.tags} tags → ${f.artists} artists (${f.filedByYou} filed by you) · ${fmtHours(f.hours)}`}>{f.artists} · {fmtHours(f.hours)}</span>
                 <button disabled={busy} onClick={() => act(() => upsertSceneFamily({ ...f, hidden: !f.hidden }), f.hidden ? `${f.label} shown again.` : `${f.label} hidden — its tags no longer file anyone.`)} className="shrink-0 text-[11px] text-dust hover:text-cream" title={f.hidden ? 'Show this family again' : 'Hide this family (keeps its tags for later)'}>{f.hidden ? 'show' : 'hide'}</button>
-                {!f.builtin && <button disabled={busy} onClick={() => { if (window.confirm(`Delete the family "${f.label}"? Its tag mappings and any artists you filed under it are unfiled.`)) void act(() => deleteSceneFamily(f.scene), `${f.label} deleted.`); }} className="shrink-0 text-[11px] text-dust hover:text-coral">delete</button>}
+                {!f.builtin && <button disabled={busy} onClick={() => { void confirmDialog(`Delete the family "${f.label}"? Its tag mappings and any artists you filed under it are unfiled.`).then((ok) => { if (ok) void act(() => deleteSceneFamily(f.scene), `${f.label} deleted.`); }); }} className="shrink-0 text-[11px] text-dust hover:text-coral">delete</button>}
               </li>
             ))}
           </ul>

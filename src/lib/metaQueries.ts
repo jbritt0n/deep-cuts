@@ -103,3 +103,16 @@ export async function artistWiki(id: string): Promise<ArtistWiki | null> {
   const [w] = await query(`SELECT title, lang, extract, description, image_url, page_url, CAST(fetched_at AS VARCHAR) AS f FROM artist_wiki WHERE artist_id = $1 AND found`, [id]);
   return w ? { title: String(w.title), lang: String(w.lang ?? 'en'), extract: str(w.extract), description: str(w.description), imageUrl: str(w.image_url), pageUrl: str(w.page_url), fetchedAt: str(w.f) } : null;
 }
+
+// ============================================================================ Phase 10c — song lineage
+export type LineageRow = { kind: 'samples' | 'sampled_by' | 'remix_of' | 'remixed_by' | 'cover_of' | 'version'; title: string; artist: string | null; year: number | null; original: boolean; mbid: string; trackId: string | null; plays: number };
+/** Samples, remixes and other versions of one song (MusicBrainz), each linked to your record when you have it. */
+export async function lineageFor(trackId: string): Promise<LineageRow[]> {
+  return (await query(`
+    WITH mine AS (SELECT t.track_id, lower(t.name) AS n, lower(a.name) AS an, COUNT(p.track_id) AS plays FROM tracks t JOIN artists a USING (artist_id) LEFT JOIN plays_resolved p USING (track_id) GROUP BY 1, 2, 3)
+    SELECT l.kind, l.other_title, l.other_artist, l.year, l.is_original, l.other_mbid, arg_max(m.track_id, m.plays) AS mine, MAX(m.plays) AS plays
+    FROM track_lineage l LEFT JOIN mine m ON m.n = lower(l.other_title) AND l.other_artist IS NOT NULL AND lower(l.other_artist) LIKE m.an || '%'
+    WHERE l.track_id = $1 GROUP BY 1, 2, 3, 4, 5, 6
+    ORDER BY CASE l.kind WHEN 'cover_of' THEN 0 WHEN 'samples' THEN 1 WHEN 'sampled_by' THEN 2 WHEN 'remix_of' THEN 3 WHEN 'remixed_by' THEN 4 ELSE 5 END, l.year NULLS LAST`, [trackId]))
+    .map((r) => ({ kind: String(r.kind) as LineageRow['kind'], title: String(r.other_title ?? '?'), artist: str(r.other_artist), year: r.year == null ? null : num(r.year), original: Boolean(r.is_original), mbid: String(r.other_mbid), trackId: str(r.mine), plays: num(r.plays) }));
+}

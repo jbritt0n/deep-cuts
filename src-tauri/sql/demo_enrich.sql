@@ -138,3 +138,23 @@ FROM (
   FROM (SELECT CAST(g AS DATE) AS d, CAST((hash(md5(CAST(g AS VARCHAR) || 'weather')) % 1000) AS INTEGER) AS h
         FROM generate_series((SELECT CAST(MIN(played_at) AS DATE) FROM plays_resolved), current_date + INTERVAL 6 DAY, INTERVAL 1 DAY) s(g))
 ) ON CONFLICT DO NOTHING;
+
+-- Phase 10b: a few real, well-known MusicBrainz relationships so Connections → Family tree has something to draw.
+-- Ids for people/bands outside the record are md5-derived stand-ins; ids for demo artists match artist_mb_match.
+CREATE TEMP TABLE _mbid AS SELECT n, substr(h, 1, 8) || '-' || substr(h, 9, 4) || '-' || substr(h, 13, 4) || '-' || substr(h, 17, 4) || '-' || substr(h, 21, 12) AS id
+FROM (SELECT n, md5(n) AS h FROM (VALUES ('radiohead'), ('thom yorke'), ('jonny greenwood'), ('ed o''brien'), ('the smile'), ('atoms for peace'), ('floating points'), ('pharoah sanders'), ('khruangbin'), ('leon bridges'), ('tom skinner')) v(n));
+INSERT INTO artist_relations (artist_mbid, relation_type, related_mbid, related_name)
+SELECT a.id, t, b.id || '|', bn FROM (VALUES
+  ('radiohead', 'member of band', 'thom yorke', 'Thom Yorke'), ('radiohead', 'member of band', 'jonny greenwood', 'Jonny Greenwood'), ('radiohead', 'member of band', 'ed o''brien', 'Ed O''Brien'),
+  ('thom yorke', 'member of band', 'the smile', 'The Smile'), ('jonny greenwood', 'member of band', 'the smile', 'The Smile'), ('tom skinner', 'member of band', 'the smile', 'The Smile'),
+  ('thom yorke', 'member of band', 'atoms for peace', 'Atoms for Peace'),
+  ('floating points', 'collaboration', 'pharoah sanders', 'Pharoah Sanders'), ('khruangbin', 'collaboration', 'leon bridges', 'Leon Bridges')) r(src, t, dst, bn)
+JOIN _mbid a ON a.n = r.src JOIN _mbid b ON b.n = r.dst;
+DROP TABLE _mbid;
+
+-- Phase 10c: lineage within the demo's own (invented) songs — three bands share a "Salt Tide", and one samples another.
+INSERT INTO track_lineage (track_id, kind, other_title, other_artist, other_mbid, year, is_original)
+SELECT k.track_id, x.kind, x.title, x.artist, md5(x.artist || x.title), x.yr, x.orig
+FROM (SELECT t.track_id FROM tracks t JOIN artists a USING (artist_id) WHERE a.name = 'Khruangbin' AND t.name = 'Salt Tide' LIMIT 1) k,
+     (VALUES ('cover_of', 'Salt Tide', 'Radiohead', 2001, true), ('version', 'Salt Tide', 'Floating Points', 2019, false), ('sampled_by', 'Neon Motor', 'Floating Points', 2021, false)) x(kind, title, artist, yr, orig)
+ON CONFLICT DO NOTHING;

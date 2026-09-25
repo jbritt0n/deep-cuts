@@ -71,3 +71,11 @@ WHERE device_id IN (SELECT DISTINCT device_id FROM _sin);
 
 DELETE FROM stylus_inbox WHERE (device_id, received_at) IN (SELECT device_id, received_at FROM _sin);
 DROP TABLE _sin; DROP TABLE _sl; DROP TABLE _sl2;
+
+-- Phase 10b — Stylus S2 retention: past a device's retention_days, its scrobbles keep only what a play needs (track,
+-- artist, album, time, duration); player, service and the device's name are dropped. Runs with every submission.
+UPDATE events SET payload = json_merge_patch(payload, '{"media_player": null, "music_service": null, "platform": "stylus"}')
+WHERE source_file LIKE 'stylus:%'
+  AND EXISTS (SELECT 1 FROM stylus_devices d WHERE 'stylus:' || d.device_id = events.source_file AND d.retention_days IS NOT NULL
+              AND events.occurred_at < now() - d.retention_days * INTERVAL 1 DAY)
+  AND (json_extract_string(payload, '$.media_player') IS NOT NULL OR json_extract_string(payload, '$.music_service') IS NOT NULL OR json_extract_string(payload, '$.platform') <> 'stylus');

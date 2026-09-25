@@ -69,7 +69,7 @@ export function AskPage() {
       </div>
 
       <form onSubmit={(e) => { e.preventDefault(); ask(q); }} className="sticky bottom-4 mt-6 flex items-center gap-2 rounded-2xl border border-line bg-surface/95 p-2 shadow-glow backdrop-blur">
-        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={ready ? 'Ask the record…' : 'Connect Ollama to start asking'} disabled={!ready || !!busy} className="flex-1 bg-transparent px-3 py-2 text-sm outline-none placeholder:text-dust/60" aria-label="Your question" />
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder={ready ? 'Ask the record…' : 'Connect Ollama to start asking'} disabled={!ready || !!busy} className="flex-1 bg-transparent px-3 py-2 text-sm placeholder:text-dust/60" aria-label="Your question" />
         {turns.length > 0 && <button type="button" onClick={() => setTurns([])} className="text-xs text-dust hover:text-cream">clear</button>}
         <button type="submit" disabled={!ready || !!busy || !q.trim()} className="rounded-full bg-amber px-4 py-2 text-sm font-medium text-ink disabled:opacity-40">Ask</button>
       </form>

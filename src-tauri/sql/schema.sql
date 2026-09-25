@@ -1144,3 +1144,20 @@ FROM s GROUP BY 1;
 
 -- Phase 9n: clear area names stored as country names by pre-9i origin rows (the UI now names countries by ISO code)
 UPDATE artist_origin SET country_name = NULL WHERE source <> 'owner' AND country_name IS NOT NULL AND city IS NOT NULL AND lower(country_name) = lower(regexp_replace(city, ' \(born/formed\)$', ''));
+
+-- Phase 10b — Stylus S2: per-device retention of the optional details (player, service, device name). NULL = keep.
+ALTER TABLE stylus_devices ADD COLUMN IF NOT EXISTS retention_days INTEGER;
+
+-- Phase 10c — song lineage from MusicBrainz: what a recording samples / is sampled by, remixes, and other versions of the
+-- same song (the "work"), with the earliest marked as the original. Replaces WhoSampled (no public API).
+CREATE TABLE IF NOT EXISTS track_lineage (
+    track_id      VARCHAR,
+    kind          VARCHAR,       -- samples | sampled_by | remix_of | remixed_by | cover_of | version
+    other_title   VARCHAR,
+    other_artist  VARCHAR,
+    other_mbid    VARCHAR,       -- MusicBrainz recording id
+    year          INTEGER,
+    is_original   BOOLEAN DEFAULT false,   -- the earliest known recording of the work
+    fetched_at    TIMESTAMPTZ DEFAULT now(),
+    PRIMARY KEY (track_id, kind, other_mbid)
+);

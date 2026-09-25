@@ -53,13 +53,14 @@ function SessionsOverviewPage() {
 
   return (
     <div className="mx-auto max-w-6xl">
-      <div className="mb-6"><ActivityCard /></div>
       <Sleeve kicker="Sessions" title="How you listen"
         meta={<>{fmtInt(o.count)} sessions of two or more plays · median {mins(o.medianMin)} · one in ten runs past {mins(o.p90Min)} · {fmtInt(o.marathonCount)} marathons of 3 h+</>}>
         <p className="mt-4 max-w-2xl text-sm text-dust">
           A session is a run of plays with no long gap: 30 minutes, 45 late at night, an hour in the car. Each one gets a shape from how you behaved inside it — skips, repeats, new songs, one artist or many.
         </p>
       </Sleeve>
+      {/* Phase 10b: under the banner (10a put it above by mistake) */}
+      <div className="mb-6"><ActivityCard /></div>
 
       <section className="grid gap-4 sm:grid-cols-2 md:grid-cols-4">
         <StatCard label="Completion" value={fmtPct(o.completion)} footnote="how much of each song you let play" accent />

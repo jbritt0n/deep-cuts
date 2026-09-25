@@ -23,7 +23,10 @@ export function useAsync<T>(fn: () => Promise<T>, deps: DependencyList): AsyncSt
   useEffect(() => {
     let un: (() => void) | undefined;
     listen('data:changed', () => setTick((t) => t + 1)).then((u) => { un = u; });
-    return () => { un?.(); };
+    // Phase 10c: "Refresh this page" in the command palette (and the post-rebuild refresh) re-run every query on screen
+    const again = () => setTick((t) => t + 1);
+    window.addEventListener('deepcuts:refresh', again);
+    return () => { un?.(); window.removeEventListener('deepcuts:refresh', again); };
   }, []);
   return { data, error, loading, reload: () => setTick((t) => t + 1) };
 }

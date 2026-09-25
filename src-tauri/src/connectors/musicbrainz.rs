@@ -316,3 +316,63 @@ pub fn enrich_credits(db: &Db, max_tracks: usize) -> Result<usize> {
     if n > 0 { db.log_activity("musicbrainz", "info", &format!("Artist credits for {n} tracks"), None); }
     Ok(n)
 }
+
+/// Phase 10c — song lineage: samples, remixes and other versions of the same song (see `track_lineage`).
+/// 2–3 requests per track (ISRC → recording, recording relations, recordings of its work); most-played first.
+pub fn enrich_lineage(db: &Db, max_tracks: usize) -> Result<usize> {
+    let mb = Mb::new()?;
+    let rows = db.query(&format!(
+        "SELECT t.track_id, t.isrc FROM tracks t JOIN (SELECT track_id, COUNT(*) c FROM plays_resolved GROUP BY 1) p USING (track_id)
+         WHERE t.isrc IS NOT NULL AND t.track_id NOT LIKE 'local:%'
+           AND NOT EXISTS (SELECT 1 FROM api_calls c WHERE c.service = 'musicbrainz' AND c.endpoint = 'lineage:' || t.isrc)
+         ORDER BY p.c DESC LIMIT {max_tracks}"), &[])?;
+    let year_of = |v: &Value| v["first-release-date"].as_str().and_then(|d| d.get(0..4)).and_then(|y| y.parse::<i64>().ok());
+    let artist_of = |v: &Value| v["artist-credit"].as_array().map(|a| a.iter().map(|c| format!("{}{}", c["name"].as_str().unwrap_or(""), c["joinphrase"].as_str().unwrap_or(""))).collect::<String>()).filter(|s| !s.is_empty());
+    let mut n = 0;
+    for r in rows {
+        let (Some(id), Some(isrc)) = (r.get("track_id").and_then(|v| v.as_str()), r.get("isrc").and_then(|v| v.as_str())) else { continue };
+        let stop = |e: anyhow::Error| { set_state(db, "musicbrainz", "error", None, Some(&e.to_string())); };
+        let v = match mb.get(db, &format!("recording?query=isrc:{isrc}&limit=1&fmt=json")) { Ok(v) => v, Err(e) => { stop(e); break; } };
+        db.exec("INSERT INTO api_calls (service, endpoint, status) VALUES ('musicbrainz', ?, 200)", &[json!(format!("lineage:{isrc}"))])?;
+        let Some(rid) = v["recordings"].as_array().and_then(|a| a.first()).and_then(|x| x["id"].as_str()).map(String::from) else { continue };
+        let rec = match mb.get(db, &format!("recording/{rid}?inc=recording-rels+work-rels+artist-credits&fmt=json")) { Ok(v) => v, Err(e) => { stop(e); break; } };
+        db.exec("DELETE FROM track_lineage WHERE track_id = ?", &[json!(id)])?;
+        let put = |kind: &str, other: &Value, original: bool| -> Result<()> {
+            let Some(oid) = other["id"].as_str() else { return Ok(()) };
+            db.exec("INSERT INTO track_lineage (track_id, kind, other_title, other_artist, other_mbid, year, is_original) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT DO NOTHING",
+                &[json!(id), json!(kind), json!(other["title"].as_str()), json!(artist_of(other)), json!(oid), json!(year_of(other)), json!(original)])?;
+            Ok(())
+        };
+        let mut work: Option<(String, bool)> = None;
+        for rel in rec["relations"].as_array().cloned().unwrap_or_default() {
+            let t = rel["type"].as_str().unwrap_or("");
+            let back = rel["direction"].as_str() == Some("backward");
+            match (t, rel["target-type"].as_str()) {
+                ("samples material", Some("recording")) => put(if back { "sampled_by" } else { "samples" }, &rel["recording"], false)?,
+                ("remix", Some("recording")) => put(if back { "remixed_by" } else { "remix_of" }, &rel["recording"], false)?,
+                ("performance", Some("work")) => {
+                    let cover = rel["attributes"].as_array().map(|a| a.iter().any(|x| x.as_str() == Some("cover"))).unwrap_or(false);
+                    if let Some(w) = rel["work"]["id"].as_str() { work = Some((w.to_string(), cover)); }
+                }
+                _ => {}
+            }
+        }
+        // other recordings of the same song, by other artists; earliest = the original
+        if let Some((wid, cover)) = work {
+            let vs = match mb.get(db, &format!("recording?query=wid:{wid}&limit=25&fmt=json")) { Ok(v) => v, Err(e) => { stop(e); break; } };
+            let me = artist_of(&rec).unwrap_or_default().to_lowercase();
+            let mut others: Vec<Value> = vs["recordings"].as_array().cloned().unwrap_or_default().into_iter()
+                .filter(|x| x["id"].as_str() != Some(rid.as_str()) && artist_of(x).map(|a| a.to_lowercase() != me).unwrap_or(false)).collect();
+            others.sort_by_key(|x| year_of(x).unwrap_or(9999));
+            others.dedup_by(|a, b| artist_of(&*a) == artist_of(&*b));
+            let first_year = others.first().and_then(|x| year_of(x));
+            let mine_year = year_of(&rec).or_else(|| v["recordings"][0]["first-release-date"].as_str().and_then(|d| d.get(0..4)).and_then(|y| y.parse().ok()));
+            for (i, o) in others.iter().take(12).enumerate() {
+                let original = i == 0 && (cover || matches!((first_year, mine_year), (Some(a), Some(b)) if a < b));
+                put(if original { "cover_of" } else { "version" }, o, original)?;
+            }
+        }
+        n += 1;
+    }
+    Ok(n)
+}

@@ -1,10 +1,11 @@
+import { describeError } from '@/lib/errors';
 import type { ReactNode } from 'react';
 
 export function Card({ title, subtitle, aside, children, className = '' }: {
   title?: string; subtitle?: string; aside?: ReactNode; children: ReactNode; className?: string;
 }) {
   return (
-    <section className={`rounded-2xl border border-line bg-surface p-6 ${className}`}>
+    <section id={title ? `c-${title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 48)}` : undefined} data-card-title={title || undefined} className={`scroll-mt-4 rounded-2xl border border-line bg-surface p-6 ${className}`}>
       {(title || aside) && (
         <div className="mb-4 flex flex-wrap items-baseline justify-between gap-2">
           <div>
@@ -59,8 +60,16 @@ export function ChartSkeleton({ height = 140, bars = 24 }: { height?: number; ba
   );
 }
 
+/** Phase 10b: a plain explanation from the error's code, the technical text under "details". */
 export function ErrorBox({ message }: { message: string }) {
-  return <div className="rounded-xl border border-coral/40 bg-coral/5 px-4 py-3 text-sm text-coral">{message}</div>;
+  const d = describeError(message);
+  const tone = d.code === 'quota' || d.code === 'busy' || d.code === 'network' ? 'border-amber/40 bg-amber/5 text-amber' : 'border-coral/40 bg-coral/5 text-coral';
+  return (
+    <div role="alert" className={`rounded-xl border px-4 py-3 text-sm ${tone}`}>
+      <p>{d.hint}{d.code === 'auth' && <> <a href="#/services" className="underline">Open Services</a></>}</p>
+      {d.hint !== d.detail && <details className="mt-1 text-[11px] opacity-80"><summary className="cursor-pointer">details · {d.code}</summary><p className="mt-1 whitespace-pre-wrap break-words font-mono">{d.detail}</p></details>}
+    </div>
+  );
 }
 
 /** Record-sleeve page header for entities. */

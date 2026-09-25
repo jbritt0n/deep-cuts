@@ -1,6 +1,7 @@
+import { memo } from 'react';
 import { C } from '@/lib/theme';
 /** Small vertical histogram / bar chart with labelled buckets. */
-export function Histogram({ data, color = C.amber, highlight }: { data: { label: string; value: number }[]; color?: string; highlight?: (i: number) => boolean }) {
+function HistogramImpl({ data, color = C.amber, highlight }: { data: { label: string; value: number }[]; color?: string; highlight?: (i: number) => boolean }) {
   const w = 520, h = 150, pad = 6, bottom = 18;
   const max = Math.max(...data.map((d) => d.value), 1);
   const bw = (w - pad * 2) / data.length;
@@ -23,7 +24,7 @@ export function Histogram({ data, color = C.amber, highlight }: { data: { label:
 }
 
 /** Horizontal labelled bars for rate comparisons (skip rate by platform etc.). */
-export function RateBars({ data, format, color = C.coral }: { data: { label: string; value: number; note?: string }[]; format: (v: number) => string; color?: string }) {
+function RateBarsImpl({ data, format, color = C.coral }: { data: { label: string; value: number; note?: string }[]; format: (v: number) => string; color?: string }) {
   const max = Math.max(...data.map((d) => d.value), 0.0001);
   return (
     <ul className="space-y-2">
@@ -39,7 +40,7 @@ export function RateBars({ data, format, color = C.coral }: { data: { label: str
 }
 
 /** Stacked 100% bars per year (shapes mix, attention mix). */
-export function StackedYears({ rows, keys, colors, labels }: { rows: { year: number; values: Record<string, number> }[]; keys: string[]; colors: Record<string, string>; labels: Record<string, string> }) {
+function StackedYearsImpl({ rows, keys, colors, labels }: { rows: { year: number; values: Record<string, number> }[]; keys: string[]; colors: Record<string, string>; labels: Record<string, string> }) {
   const w = 560, h = 170, pad = 6, bottom = 18, legend = 0;
   const bw = (w - pad * 2) / Math.max(rows.length, 1);
   return (
@@ -67,7 +68,7 @@ export function StackedYears({ rows, keys, colors, labels }: { rows: { year: num
 }
 
 /** Line of values per year with a light band; used for completion / skip / median trends. */
-export function YearLines({ rows, series }: { rows: { year: number }[]; series: { key: string; label: string; color: string; values: number[]; format: (v: number) => string }[] }) {
+function YearLinesImpl({ rows, series }: { rows: { year: number }[]; series: { key: string; label: string; color: string; values: number[]; format: (v: number) => string }[] }) {
   const w = 560, h = 150, pad = 10, bottom = 18;
   const n = rows.length;
   const x = (i: number) => pad + (n > 1 ? (i / (n - 1)) * (w - pad * 2) : w / 2);
@@ -93,3 +94,15 @@ export function YearLines({ rows, series }: { rows: { year: number }[]; series: 
     </div>
   );
 }
+
+/** Phase 10c (Kimi T3): redraw only when its props change, not on every parent render. */
+export const Histogram = memo(HistogramImpl);
+
+/** Phase 10c (Kimi T3): redraw only when its props change, not on every parent render. */
+export const RateBars = memo(RateBarsImpl);
+
+/** Phase 10c (Kimi T3): redraw only when its props change, not on every parent render. */
+export const StackedYears = memo(StackedYearsImpl);
+
+/** Phase 10c (Kimi T3): redraw only when its props change, not on every parent render. */
+export const YearLines = memo(YearLinesImpl);

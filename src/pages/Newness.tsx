@@ -39,11 +39,12 @@ export function NewnessPage() {
             <Stat v={fmtPct(d.newShare)} l={`of ${fmtHours(d.hours)} was new · usually ${fmtPct(d.usualShare)}`} tone={d.newShare > d.usualShare * 1.2 ? 'text-moss' : d.newShare < d.usualShare * 0.7 ? 'text-coral' : ''} />
           </section>
 
-          <section className="mt-6 grid gap-6 lg:grid-cols-[1.5fr_1fr]">
+          {/* Phase 10b: items-start — a stretched card left the scroll list ending halfway down its box */}
+          <section className="mt-6 grid items-start gap-6 lg:grid-cols-[1.5fr_1fr]">
             <Card title="Best finds" subtitle={d.complete ? 'New artists this period, ranked by how much you played them then and since. ● = still playing them in the last 45 days.' : 'New artists so far this period, ranked by plays.'}
               aside={d.finds.length > 2 ? <MakePlaylistButton small label="Make a playlist" name={`The Newness · ${period.label}`} kind="insight" description={`Artists new to you in ${period.label} — their song you played most.`} tracks={d.finds.filter((f) => f.topTrackId).map((f) => ({ trackId: f.topTrackId!, track: f.topTrack ?? '', artistId: f.artistId, artist: f.artist, plays: f.plays, hours: f.hours, skipRate: 0 }) as TrackRow)} /> : undefined}>
               {d.finds.length === 0 ? <p className="text-sm text-dust">No new artists this period.</p> : (
-                <ol className="max-h-[min(30rem,60vh)] space-y-1.5 overflow-y-auto pr-1 text-sm">
+                <ol className="max-h-[min(46rem,72vh)] space-y-1.5 overflow-y-auto pr-1 text-sm">
                   {d.finds.map((f, i) => (
                     <li key={f.artistId} className="flex items-center gap-2">
                       <span className="num w-6 text-right text-xs text-dust">{i + 1}</span>

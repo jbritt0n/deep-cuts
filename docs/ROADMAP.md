@@ -1,10 +1,24 @@
 # Deep Cuts — Roadmap
 
-**The one living plan.** Updated every build; nothing else in `docs/` tracks status. Last update: September 25, 2026 (Phase 10a).
+**The one living plan.** Updated every build; nothing else in `docs/` tracks status. Last update: September 25, 2026 (Phase 10b).
 Where things came from: `recommendations/` (four external reviews, kept verbatim — their item-by-item status is in
 `recommendations/STATUS.md`), owner feedback (handoffs in `history/handoffs/`), and the phase log (`history/PHASE-LOG.md`).
 
 ---
+
+## Phase 10c (Sep 25, 2026) — UI foundations + lineage
+
+| Item | Status |
+|---|---|
+| Command palette (Ctrl/⌘+K, `/`) — pages, Settings tabs, actions, artists/albums/songs | ✅ 10c |
+| Themed confirm dialog + toasts (`Overlay.tsx`); all `window.confirm` gone | ✅ 10c |
+| "On this page" jump menu on pages with 5+ sections; Card titles are anchors | ✅ 10c |
+| Visible keyboard focus (`:focus-visible`), `outline-none` removed | ✅ 10c |
+| Chart memoisation (11 components) | ✅ 10c |
+| ISRC version merge (Tuning `merge_isrc_versions`, default on; album credit kept; owner ISRCs honoured) | ✅ 10c |
+| Song lineage from MusicBrainz (`enrich_lineage`, Lineage card) | ✅ 10c |
+| Next UI: Button component (28 styles → 1), banners → toasts (18), real empty states (16 "—"), header on Atlas/Review/Dashboard/Explore/Moods, theme tokens for 28 hex colours, table twins for charts, high-contrast skin | ○ 10d candidates |
+| Discogs connector | ○ next roadmap item |
 
 ## 1. What exists today (by area)
 
@@ -28,18 +42,18 @@ Status: ✅ done in 10a · ◐ started · ○ next.
 ### 10.1 Stabilise
 | Item | Source | Status |
 |---|---|---|
-| Compiled, tested releases — CI runs `cargo test` (the guard tests exist) alongside the build; a local compile loop | Kimi T1 follow-up, 9h–9m handoffs | ○ |
-| Structured `{code, message}` error envelope at the Rust boundary | Kimi T2 | ○ |
+| Compiled, tested releases — CI runs `cargo test --lib` before packaging (guard, envelope, FreqBlog fixture tests) | Kimi T1 follow-up | ✅ CI step · ○ local compile loop |
+| Structured `{code, message}` error envelope at the Rust boundary | Kimi T2 | ✅ `err()` + `errors.ts` + ErrorBox |
 | Loading skeletons (`Loading`, `ChartSkeleton`) | Kimi T3 | ✅ skeletons · ○ chart memoisation |
-| Connector parse fixtures — one real reply per connector, parsed in tests (FreqBlog first: `logs/freqblog-sample.json`) | Kimi T5 | ○ |
+| Connector parse fixtures — one real reply per connector, parsed in tests | Kimi T5 | ✅ FreqBlog (`src-tauri/tests/fixtures/freqblog-bulk.json`) · ○ Last.fm, MusicBrainz, Wikipedia, Open-Meteo |
 | ISRC duplicate detection (report in Hygiene) | synthesis §1.4 | ✅ report · ○ merge versions into one entry |
-| Stylus S2 privacy — per-device retention, Settings → Privacy page listing what each device keeps | STYLUS-SPEC §5 | ○ |
+| Stylus S2 privacy — per-device retention, Settings → Privacy page listing what each device keeps | STYLUS-SPEC §5 | ✅ |
 
 ### 10.2 Connectors
 | Connector | Reality check (Sept 2026) | Plan |
 |---|---|---|
 | **Discogs** | Official API, free personal access token, ~60 requests/min | ○ Build: label, format (vinyl/CD/cassette), pressing year and country per release → a label dimension in The Crate and album pages |
-| **WhoSampled** | No public API (academic licence only, 1,000 calls/month); acquired by Spotify Nov 2025; scraping breaks its terms | ○ Use **MusicBrainz** recording relationships instead (`samples material`, `cover of`, `remix of`) — legitimate, already fetched per artist; a "Samples & covers" card on the song page. Revisit WhoSampled only if a licensed API appears |
+| **WhoSampled** | No public API (academic licence only, 1,000 calls/month); acquired by Spotify Nov 2025; scraping breaks its terms | ✅ 10c: MusicBrainz lineage instead — samples, sampled-by, remixes, covers and other versions (`track_lineage`, Lineage card on song pages) |
 | **Every Noise at Once** | Frozen since Dec 2023 (no longer maintained) | ○ One-time, opt-in import of its genre map coordinates if the owner wants the map view; no ongoing connector |
 | **AcousticBrainz** | Shut down Feb 2022; 7.5 M-track dump remains | ○ Skip as a connector — FreqBlog already folds several AcousticBrainz low-level fields into its replies; a dump import only for tracks FreqBlog misses, if coverage proves thin |
 
@@ -48,17 +62,20 @@ Status: ✅ done in 10a · ◐ started · ○ next.
 |---|---|
 | Co-listening network (Kimi R1) — Connections page | ✅ |
 | Playlist overlap / genealogy, incl. near-copies | ✅ |
-| Artist family tree (MusicBrainz member-of / collaboration relations) | ○ next |
+| Artist family tree (MusicBrainz member-of / collaboration relations) | ✅ 10b |
 | Seed-based neighbourhood graph; containment pack | later |
 
 ### 10.4 Discovery depth (DeepSeek §2.3 / §2.4 / §2.6)
 | Item | Where | Status |
 |---|---|---|
-| Blind spots (never-played similar artists, doorstep scenes, empty regions, thin decades) | Discover | ✅ |
-| Bubble score (scene entropy + effective artists, per year) | Discover | ✅ |
-| Anti-recommendations (should like, but skip; tags you skip) | Discover | ✅ |
+| Blind spots (never-played similar artists, doorstep scenes, empty regions, thin decades) | Bubble & blind spots page (10b) | ✅ |
+| Bubble score (scene entropy + effective artists, per year) | Bubble & blind spots page | ✅ (log-of-zero fixed 10b) |
+| Anti-recommendations (should like, but skip; tags you skip) | Bubble & blind spots page | ✅ |
 | Activity inference (focus / commute / workout / party / wind-down) | Sessions | ✅ |
 | Duration preference | Insights → Sound | ✅ |
+
+### 10.6 Owner feedback folded into 10b
+FreqBlog key names canonical from `key_int` + `mode` (the real reply spells one key both `A#-Major` and `Bb-Major`); Discover split into **Discover** / **Bubble & blind spots** / **Mixtape**; the activity card moved under the Sessions banner; Best finds (The Newness) and By country (Atlas) no longer end halfway down a stretched box.
 
 ### 10.5 Owner feedback folded into 10a
 FreqBlog parser (features were billed but read as misses), album obscurity (Last.fm steps no longer chained), obscurity on Artist and Album pages, nameless followed playlists, playlist affinity %, Atlas country names from ISO codes, **The Newness** page.

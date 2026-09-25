@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { Card, ErrorBox, Loading, Sleeve } from '@/components/Card';
-import { coListening, playlistOverlap } from '@/lib/connectionQueries';
+import { coListening, familyTree, playlistOverlap, relLabel, treeCandidates } from '@/lib/connectionQueries';
 import { layout } from '@/lib/forceLayout';
 import { artistHref, fmtHours, fmtInt, fmtPct } from '@/lib/format';
 import { useAsync, useFilter } from '@/lib/hooks';
@@ -20,7 +20,7 @@ export function ConnectionsPage() {
       </div>
       {tab === 'colisten' && <CoListening />}
       {tab === 'overlap' && <PlaylistOverlap />}
-      {tab === 'family' && <Card title="Family tree — next phase" subtitle="Bands, members, side projects and collaborations from MusicBrainz relationships, around any artist you pick. Scheduled right after the co-listening network (DeepSeek §5.1)."><p className="text-sm text-dust">The MusicBrainz relationship data is already being collected (Services → MusicBrainz); the view arrives in the next build.</p></Card>}
+      {tab === 'family' && <FamilyTree />}
     </div>
   );
 }
@@ -92,5 +92,54 @@ function PlaylistOverlap() {
       </Card>
       <p className="text-[11px] text-dust/70">Built from the playlist items Deep Cuts has synced (Library → Playlists); Spotify-made playlists can't be read, so they're not here. <Link to="/library?tab=playlists" className="underline hover:text-cream">Library → Playlists</Link></p>
     </div>
+  );
+}
+
+/** Phase 10b — bands, members, side projects and collaborations around one artist (MusicBrainz relationships). */
+function FamilyTree() {
+  const nav = useNavigate();
+  const cands = useAsync(() => treeCandidates(80), []);
+  const [pick, setPick] = useState<string | null>(null);
+  const id = pick ?? cands.data?.[0]?.artistId ?? null;
+  const t = useAsync(() => (id ? familyTree(id) : Promise.resolve(null)), [id]);
+  const [hover, setHover] = useState<string | null>(null);
+  if (cands.error) return <ErrorBox message={cands.error} />;
+  if (!cands.data) return <Loading rows={6} />;
+  if (!cands.data.length) return <Card title="Family tree"><p className="text-sm text-dust">No MusicBrainz relationships collected yet — they arrive as the MusicBrainz pass works through your artists (Services).</p></Card>;
+  const d = t.data;
+  const W = 900, H = 640, cx = W / 2, cy = H / 2;
+  const ring1 = d?.nodes.filter((n) => n.ring === 1) ?? [];
+  const ring2 = d?.nodes.filter((n) => n.ring === 2) ?? [];
+  const pos = new Map<string, { x: number; y: number }>();
+  if (d?.centre) pos.set(d.centre.id, { x: cx, y: cy });
+  ring1.forEach((n, i) => { const a = (i / Math.max(1, ring1.length)) * Math.PI * 2 - Math.PI / 2; pos.set(n.id, { x: cx + Math.cos(a) * 170, y: cy + Math.sin(a) * 170 }); });
+  // ring 2 sits outside its parent, fanned around the parent's angle
+  const kids = new Map<string, typeof ring2>(); for (const n of ring2) { const k = kids.get(n.via ?? '') ?? []; k.push(n); kids.set(n.via ?? '', k); }
+  for (const [via, list] of kids) { const p = pos.get(via); if (!p) continue; const base = Math.atan2(p.y - cy, p.x - cx);
+    list.forEach((n, i) => { const a = base + (i - (list.length - 1) / 2) * Math.min(0.28, 1.6 / Math.max(1, list.length)); pos.set(n.id, { x: cx + Math.cos(a) * 290, y: cy + Math.sin(a) * 290 }); }); }
+  const all = d ? [d.centre!, ...d.nodes] : [];
+  const near = hover && d ? new Set(d.edges.filter((e) => e.a === hover || e.b === hover).flatMap((e) => [e.a, e.b])) : null;
+  return (
+    <Card title="Family tree" subtitle="Bands, members, side projects and collaborations from MusicBrainz, two steps out from the artist you pick. Filled circles are artists in your record — click one to open it."
+      aside={<select value={id ?? ''} onChange={(e) => setPick(e.target.value)} className="max-w-[16rem] rounded border border-line bg-ink px-2 py-1 text-xs text-cream">{cands.data.map((c) => <option key={c.artistId} value={c.artistId}>{c.name} · {c.relations}</option>)}</select>}>
+      {t.error ? <ErrorBox message={t.error} /> : !d ? <Loading rows={6} /> : !d.centre ? <p className="text-sm text-dust">This artist has no MusicBrainz match yet.</p> : (
+        <div className="overflow-x-auto">
+          <svg viewBox={`0 0 ${W} ${H}`} className="w-full min-w-[600px]" role="img" aria-label={`Relationships around ${d.centre.name}`}>
+            {d.edges.map((e, i) => { const a = pos.get(e.a), b = pos.get(e.b); if (!a || !b) return null; const on = !near || (near.has(e.a) && near.has(e.b));
+              return <g key={i}><line x1={a.x} y1={a.y} x2={b.x} y2={b.y} stroke="var(--c-dust)" strokeOpacity={on ? 0.45 : 0.08} strokeDasharray={e.relation === 'member of band' ? undefined : '4 3'} />
+                {on && near && <text x={(a.x + b.x) / 2} y={(a.y + b.y) / 2} fontSize="10" textAnchor="middle" fill="var(--c-dust)">{relLabel(e.relation)}</text>}</g>; })}
+            {all.map((n) => { const p = pos.get(n.id); if (!p) return null; const r = n.ring === 0 ? 22 : n.ring === 1 ? 11 : 6; const yours = !!n.artistId; const on = !near || near.has(n.id);
+              return (
+                <g key={n.id} opacity={on ? 1 : 0.25} onMouseEnter={() => setHover(n.id)} onMouseLeave={() => setHover(null)} onClick={() => { if (n.artistId && n.ring > 0) setPick(n.artistId); else if (n.artistId) nav(artistHref(n.artistId)); }} className={yours ? 'cursor-pointer' : ''}>
+                  <circle cx={p.x} cy={p.y} r={r} fill={yours ? 'var(--c-amber)' : 'var(--c-surface)'} stroke={yours ? 'var(--c-amber)' : 'var(--c-dust)'} strokeWidth="1.5" />
+                  <text x={p.x} y={p.y + r + 13} fontSize={n.ring === 0 ? 15 : n.ring === 1 ? 12 : 10} textAnchor="middle" fill={n.ring === 2 && !yours ? 'var(--c-dust)' : 'var(--c-cream)'} style={{ paintOrder: 'stroke', stroke: 'var(--c-ink)', strokeWidth: 3 }}>{n.name}</text>
+                  {n.ring > 0 && <title>{n.name} — {relLabel(n.relation)}{yours ? ` · ${fmtHours(n.hours)} in your record (click to centre)` : ''}</title>}
+                </g>
+              ); })}
+          </svg>
+          <p className="text-[11px] text-dust">Solid line = band membership, dashed = other relationships. {ring1.length} direct, {ring2.length} one step further{ring2.length >= 40 ? ' (first 40 shown)' : ''}. Click a filled circle to centre the tree on it; click the centre to open its page.</p>
+        </div>
+      )}
+    </Card>
   );
 }

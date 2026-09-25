@@ -73,6 +73,23 @@ UPDATE _p SET artist_id = m.into_artist_id FROM artist_merges m WHERE _p.artist_
 UPDATE _p SET album_id = 'name:' || md5(substr(artist_id, 6) || '|' || lower(trim(album_name))) WHERE album_id IS NOT NULL AND artist_id IN (SELECT into_artist_id FROM artist_merges);
 UPDATE _p SET track_id = 'local:' || md5(substr(artist_id, 6) || '|' || lower(trim(track_name))) WHERE track_id LIKE 'local:%' AND artist_id IN (SELECT into_artist_id FROM artist_merges);
 
+-- Phase 10c — one recording, one song: versions sharing an ISRC (single vs album cut, a reissue) count under the version
+-- played most. album_id is untouched, so album statistics still credit the record the play came from. Tuning →
+-- merge_isrc_versions = 0 turns it off. Owner ISRC overrides (metadata_overrides) are honoured.
+CREATE OR REPLACE TEMP TABLE _isrc_of AS          -- owner overrides win, and also cover songs Spotify never enriched
+SELECT entity_id AS track_id, NULLIF(value, '') AS isrc FROM metadata_overrides WHERE entity_type = 'track' AND field = 'isrc' AND NULLIF(value, '') IS NOT NULL
+UNION ALL
+SELECT k.track_id, k.isrc FROM _keep_tracks k WHERE k.isrc IS NOT NULL
+  AND NOT EXISTS (SELECT 1 FROM metadata_overrides o WHERE o.entity_type = 'track' AND o.field = 'isrc' AND o.entity_id = k.track_id);
+CREATE OR REPLACE TEMP TABLE _isrc_canon AS
+WITH n AS (SELECT track_id, COUNT(*) AS plays FROM _p WHERE track_id IS NOT NULL GROUP BY 1),
+     c AS (SELECT i.track_id, upper(trim(i.isrc)) AS isrc, COALESCE(n.plays, 0) AS plays FROM _isrc_of i JOIN n USING (track_id)),
+     best AS (SELECT isrc, first(track_id ORDER BY plays DESC, track_id) AS canon, COUNT(*) AS versions FROM c GROUP BY 1)
+SELECT c.track_id AS from_id, b.canon FROM c JOIN best b USING (isrc)
+WHERE b.versions > 1 AND c.track_id <> b.canon
+  AND COALESCE((SELECT value FROM app_meta WHERE key = 'merge_isrc_versions'), '1') NOT IN ('0', 'false');
+UPDATE _p SET track_id = m.canon FROM _isrc_canon m WHERE _p.track_id = m.from_id;
+
 -- ---- artists ----------------------------------------------------------------
 CREATE OR REPLACE TEMP TABLE _artist_names AS
 SELECT artist_id, artist_name, COUNT(*) AS plays, MAX(played_at) AS last_at

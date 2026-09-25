@@ -91,8 +91,8 @@ function PlaylistDialog({ draft, onClose }: { draft: Draft; onClose: () => void 
       <div className="grid max-h-[88vh] w-full max-w-4xl grid-rows-[auto_1fr_auto] overflow-hidden rounded-2xl border border-line bg-surface" onClick={(e) => e.stopPropagation()}>
         <div className="border-b border-line p-6">
           <p className="text-xs text-dust">New Spotify playlist · {tracks.length} tracks</p>
-          <input value={name} onChange={(e) => setName(e.target.value)} className="mt-1 w-full bg-transparent font-display text-2xl focus:outline-none" aria-label="Playlist name" />
-          <input value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="Description (optional)" className="mt-1 w-full bg-transparent text-sm text-dust placeholder:text-dust/50 focus:outline-none" aria-label="Description" />
+          <input value={name} onChange={(e) => setName(e.target.value)} className="mt-1 w-full bg-transparent font-display text-2xl" aria-label="Playlist name" />
+          <input value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="Description (optional)" className="mt-1 w-full bg-transparent text-sm text-dust placeholder:text-dust/50" aria-label="Description" />
         </div>
         <div className="grid min-h-0 gap-0 md:grid-cols-[1.2fr_1fr]">
           <div className="min-h-0 overflow-y-auto border-r border-line px-6 py-3">

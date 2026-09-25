@@ -48,3 +48,8 @@ a, button { -webkit-tap-highlight-color: transparent; }
 /* Phase 10 (Kimi T3): loading skeletons */
 .skeleton { background: linear-gradient(90deg, var(--c-raised) 0%, var(--c-line) 50%, var(--c-raised) 100%); background-size: 200% 100%; animation: skeleton-pulse 1.4s ease-in-out infinite; }
 @keyframes skeleton-pulse { 0% { background-position: 100% 0; } 100% { background-position: -100% 0; } }
+
+/* Phase 10c — keyboard focus you can see (only for keyboard users: :focus-visible), and key hints */
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible { outline: 2px solid var(--c-amber); outline-offset: 2px; border-radius: 6px; }
+:where(input, select, textarea):focus-visible { outline-offset: 0; }
+kbd { font: inherit; font-size: 0.85em; padding: 0 0.35em; border: 1px solid var(--c-line); border-bottom-width: 2px; border-radius: 4px; background: var(--c-raised); color: var(--c-cream); }

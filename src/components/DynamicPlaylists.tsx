@@ -1,3 +1,4 @@
+import { confirmDialog } from '@/components/Overlay';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Card, ErrorBox, Loading } from '@/components/Card';
@@ -29,7 +30,7 @@ export function DynamicTab() {
           {list.map((d) => (
             <DynamicCard key={d.id} d={d} busy={busy === d.id}
               onChange={(patch) => save(list.map((x) => (x.id === d.id ? { ...x, ...patch } : x)))}
-              onDelete={() => { if (window.confirm(`Delete “${d.name}”? The Spotify playlist (if any) is left as it is.`)) void save(list.filter((x) => x.id !== d.id)); }}
+              onDelete={() => { void confirmDialog(`Delete “${d.name}”? The Spotify playlist (if any) is left as it is.`).then((ok) => { if (ok) void save(list.filter((x) => x.id !== d.id)); }); }}
               onRefresh={() => act(d.id, async () => { const r = await refreshDue([d.id]); setMsg(r.errors.length ? r.errors.join(' · ') : `“${d.name}” rebuilt${r.synced.length ? ' and synced to Spotify' : ''}.`); })}
               onLink={() => act(d.id, async () => {
                 const tracks = await buildRule(d.rule, d.size);

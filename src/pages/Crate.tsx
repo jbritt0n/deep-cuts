@@ -135,7 +135,7 @@ function Stack({ deck, i, next, prev, setI, decide }: { deck: Item[]; i: number;
             );
           })}
           {front && (
-            <button onClick={flip} disabled={i >= deck.length - 1} aria-label={front.kind === 'record' ? `Flip ${front.r.album} away` : `Flip past the ${front.section} divider`} className="absolute left-1/2 top-12 w-[300px] origin-bottom rounded-lg text-left transition-all duration-300 motion-reduce:transition-none focus:outline-none focus-visible:ring-2 focus-visible:ring-amber" style={{ transform: leaving === i ? 'translateX(-50%) translateX(-340px) rotate(-14deg) rotateY(-35deg)' : 'translateX(-50%)', opacity: leaving === i ? 0 : 1, zIndex: 30 }}>
+            <button onClick={flip} disabled={i >= deck.length - 1} aria-label={front.kind === 'record' ? `Flip ${front.r.album} away` : `Flip past the ${front.section} divider`} className="absolute left-1/2 top-12 w-[300px] origin-bottom rounded-lg text-left transition-all duration-300 motion-reduce:transition-none focus-visible:ring-2 focus-visible:ring-amber" style={{ transform: leaving === i ? 'translateX(-50%) translateX(-340px) rotate(-14deg) rotateY(-35deg)' : 'translateX(-50%)', opacity: leaving === i ? 0 : 1, zIndex: 30 }}>
               {front.kind === 'divider' ? <DividerCard section={front.section} count={front.count} /> : <FrontCover r={front.r} />}
             </button>
           )}

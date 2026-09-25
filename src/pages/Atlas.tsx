@@ -74,7 +74,7 @@ export function AtlasPage() {
         <div className="mt-2 flex items-center gap-2 text-[11px] text-dust"><span>less</span><span className="h-2 w-40 rounded-full" style={{ background: 'linear-gradient(to right, color-mix(in srgb, var(--c-amber) 15%, var(--c-raised)), var(--c-amber))' }} /><span>more</span><span className="ml-3 inline-block h-2 w-4 rounded-sm bg-raised" /><span>no artists placed</span></div>
       </Card>
 
-      <section className="mt-6 grid gap-6 lg:grid-cols-[1.2fr_1fr]">
+      <section className="mt-6 grid items-start gap-6 lg:grid-cols-[1.2fr_1fr]">
         <Card title="By country" subtitle="The accessible twin of the map — same numbers, sortable by hours or artists.">
           <ol className="max-h-[min(480px,55vh)] divide-y divide-line/60 overflow-y-auto text-sm">
             {[...d.rows].sort((a, b) => (metric === 'hours' ? b.hours - a.hours : b.artists - a.artists)).map((r, i) => (

@@ -52,6 +52,8 @@ jobs:
           npx tsx scripts/smoke-9l.ts
           npx tsx scripts/smoke-9m.ts
           npx tsx scripts/smoke-10a.ts
+          npx tsx scripts/smoke-10b.ts
+          npx tsx scripts/smoke-10c.ts
           OLLAMA_MOCK=1 npx tsx scripts/smoke-ask.ts
 
   build:
@@ -80,6 +82,15 @@ jobs:
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev \
             libayatana-appindicator3-dev librsvg2-dev patchelf libsecret-1-dev libdbus-1-dev
       - run: npm ci --no-audit --no-fund
+      - name: Rust unit tests (SQL guard, FreqBlog fixture, …)
+        # Phase 10b: compile-and-test before packaging, so a Rust test failure stops the release. Linux only — the
+        # tests are platform-independent and the Windows runner would add ~20 minutes for the same result.
+        if: runner.os == 'Linux'
+        working-directory: src-tauri
+        run: |
+          # tauri's context macro needs frontendDist to exist at compile time; the real build below replaces it
+          mkdir -p ../dist && [ -f ../dist/index.html ] || echo '<!doctype html><title>test</title>' > ../dist/index.html
+          cargo test --lib --locked
       - name: Build
         run: npm run tauri build -- --bundles ${{ matrix.bundles }}
       - name: Collect Linux packages

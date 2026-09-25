@@ -1,3 +1,4 @@
+import { confirmDialog } from '@/components/Overlay';
 import { useState } from 'react';
 import { Card, ErrorBox } from '@/components/Card';
 import { inTauri, invoke } from '@/lib/bridge';
@@ -66,7 +67,7 @@ export function MoveCard({ onChanged }: { onChanged: () => void }) {
               <p className="num mt-1 text-xs text-dust">made {man.created_at.slice(0, 16).replace('T', ' ')} on {man.source_os} · Deep Cuts {man.app_version} (pipeline {man.pipeline_rev}) · zone {man.zone} · {man.tables.length} tables, {fmtInt(man.tables.reduce((a, t) => a + t.rows, 0))} rows · {man.secrets ? 'includes encrypted sign-ins' : 'no sign-ins included'}</p>
               {man.secrets && <input type="password" value={pw} onChange={(e) => setPw(e.target.value)} placeholder="Passphrase for the sign-ins (blank = restore without them)" className="mt-3 w-full rounded-lg border border-line bg-ink px-3 py-2 text-sm" autoComplete="off" />}
               <p className="mt-3 text-xs text-coral">Restoring replaces everything in this record with the bundle's contents. Your current plays are first written to backups/ as a safety copy.</p>
-              <button disabled={busy} onClick={() => { if (window.confirm('Replace this record with the bundle? Current plays are backed up first.')) void run(async () => { const r = await invoke<Report>('restore_move_bundle', { path: bundle, passphrase: pw || null }); setReport(r); setMsg(`Restored ${r.tables} tables (${fmtInt(r.rows)} rows)${r.secrets_restored ? `, ${r.secrets_restored} sign-ins` : ''}. Everything was rebuilt.`); onChanged(); }); }} className="mt-3 rounded-full border border-coral/60 px-4 py-2 text-coral hover:bg-coral/10 disabled:opacity-40">{busy ? 'Restoring…' : 'Restore this bundle'}</button>
+              <button disabled={busy} onClick={() => { void confirmDialog('Replace this record with the bundle? Current plays are backed up first.').then((ok) => { if (ok) void run(async () => { const r = await invoke<Report>('restore_move_bundle', { path: bundle, passphrase: pw || null }); setReport(r); setMsg(`Restored ${r.tables} tables (${fmtInt(r.rows)} rows)${r.secrets_restored ? `, ${r.secrets_restored} sign-ins` : ''}. Everything was rebuilt.`); onChanged(); }); }); }} className="mt-3 rounded-full border border-coral/60 px-4 py-2 text-coral hover:bg-coral/10 disabled:opacity-40">{busy ? 'Restoring…' : 'Restore this bundle'}</button>
             </div>
           )}
           {report && (

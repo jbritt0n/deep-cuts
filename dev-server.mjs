@@ -326,9 +326,11 @@ const commands = {
     await con.run(`INSERT INTO stylus_devices (device_id, name, token_hash) VALUES (${q(id)}, ${q(n)}, ${q(createHash('sha256').update(token).digest('hex'))})`);
     return { deviceId: id, token };
   },
-  async stylus_update_device({ deviceId, tsPrecision, keepPlayer, keepService, keepDevice, paused }) {
+  async stylus_update_device({ deviceId, tsPrecision, keepPlayer, keepService, keepDevice, paused, retentionDays }) {
     const p = ['exact', 'minute', 'hour'].includes(tsPrecision) ? tsPrecision : 'exact';
-    await con.run(`UPDATE stylus_devices SET ts_precision = ${q(p)}, keep_player = ${!!keepPlayer}, keep_service = ${!!keepService}, keep_device = ${!!keepDevice}, paused = ${!!paused} WHERE device_id = ${q(deviceId)}`);
+    const keep = Number(retentionDays) > 0 && Number(retentionDays) <= 3650 ? Math.round(Number(retentionDays)) : 'NULL';
+    await con.run(`UPDATE stylus_devices SET ts_precision = ${q(p)}, keep_player = ${!!keepPlayer}, keep_service = ${!!keepService}, keep_device = ${!!keepDevice}, paused = ${!!paused}, retention_days = ${keep} WHERE device_id = ${q(deviceId)}`);
+    await con.run(rd('stylus_process.sql'));
     return null;
   },
   async stylus_remove_device({ deviceId }) { await con.run(`DELETE FROM stylus_devices WHERE device_id = ${q(deviceId)}`); await con.run(`DELETE FROM stylus_now_playing WHERE device_id = ${q(deviceId)}`); return null; },
@@ -426,5 +428,5 @@ http.createServer(async (req, res) => {
     if (READONLY && WRITE_CMDS.has(cmd)) throw new Error('This server is read-only — make the change in the desktop app.');
     const out = await commands[cmd](body ? JSON.parse(body) : {});
     res.setHeader('content-type', 'application/json'); res.end(JSON.stringify(out ?? null, (_, v) => (typeof v === 'bigint' ? Number(v) : v)));
-  } catch (e) { res.statusCode = 400; res.end(String(e.message ?? e)); }
+  } catch (e) { res.statusCode = 400; res.setHeader('content-type', 'application/json'); res.end(JSON.stringify({ code: null, message: String(e.message ?? e) })); }   // envelope; the UI classifies
 }).listen(PORT, HOST, () => console.log(`Deep Cuts server on http://${HOST}:${PORT} — db ${dbPath}${READONLY ? ' (read-only)' : ''} — zone ${zone}${STATIC ? ` — serving ${STATIC}` : ''}`));

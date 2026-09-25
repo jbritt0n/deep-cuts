@@ -1,3 +1,5 @@
+import { CommandPalette } from '@/components/CommandPalette';
+import { OnThisPage, OverlayHost } from '@/components/Overlay';
 import { useEffect, useRef, useState } from 'react';
 import { NavLink, Outlet, useLocation } from 'react-router-dom';
 import type { AppStatus } from '@/lib/types';
@@ -12,7 +14,7 @@ import { ErrorBoundary } from './ErrorBoundary';
  */
 type NavItem = { to: string; label: string; match?: string[] };
 type NavGroup = { id: string; label: string; items: NavItem[]; defaultOpen: boolean };
-const PINNED: NavItem[] = [
+export const PINNED: NavItem[] = [
   { to: '/', label: 'Dashboard' },
   { to: '/explore', label: 'Ask the archive', match: ['/explore'] },
   { to: '/library', label: 'Library' },
@@ -38,6 +40,8 @@ export const NAV_GROUPS: NavGroup[] = [
   ] },
   { id: 'act', label: 'Act', defaultOpen: true, items: [
     { to: '/discover', label: 'Discover' },
+    { to: '/depth', label: 'Bubble & blind spots' },
+    { to: '/mixtape', label: 'Mixtape' },
     { to: '/wild', label: 'Heard in the Wild' },
     { to: '/blend', label: 'Blend' },
   ] },
@@ -122,9 +126,13 @@ export function Shell({ status }: { status: AppStatus }) {
       <div className="flex min-h-0 flex-col">
         <header className="z-30 flex shrink-0 items-center gap-4 border-b border-line bg-ink/85 px-[clamp(1rem,2.2vw,2rem)] py-2.5 backdrop-blur">
           <SearchBox />
+          <button onClick={() => window.dispatchEvent(new Event('deepcuts:palette'))} title="Go to anything — Ctrl+K or /" aria-label="Open the command palette" className="shrink-0 rounded-lg border border-line px-2 py-1 text-[11px] text-dust hover:text-cream"><kbd>Ctrl</kbd> <kbd>K</kbd></button>
           <div className="ml-auto"><FilterLens /></div>
         </header>
         {rebuilding && <div role="status" className="shrink-0 border-b border-amber/40 bg-amber/10 px-6 py-2 text-sm text-amber">Rebuilding your record after the update — everything works, pages may be slow for a few minutes. This happens once per upgrade.</div>}
+        <CommandPalette />
+        <OverlayHost />
+        <OnThisPage />
         <main id="main" ref={mainRef} tabIndex={-1} className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-[clamp(1rem,2.2vw,2rem)] pb-16 pt-[clamp(1rem,2vh,1.5rem)]">
           <ErrorBoundary resetKey={loc.pathname + loc.search}><Outlet /></ErrorBoundary>
         </main>

@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { C } from '@/lib/theme';
 import { Link } from 'react-router-dom';
 import type { DayCell } from '@/lib/types';
@@ -6,7 +7,7 @@ import { dayHref } from '@/lib/format';
 const CELL = 11, GAP = 3;
 
 /** GitHub-style year heatmap in the amber scale (v1). Each cell links to its day. */
-export function CalendarHeatmap({ data }: { data: DayCell[] }) {
+function CalendarHeatmapImpl({ data }: { data: DayCell[] }) {
   if (!data.length) return null;
   const max = Math.max(...data.map((d) => d.minutes), 1);
   const first = new Date(data[0].day + 'T00:00:00Z');
@@ -34,3 +35,6 @@ export function CalendarHeatmap({ data }: { data: DayCell[] }) {
     </svg>
   );
 }
+
+/** Phase 10c (Kimi T3): redraw only when its props change, not on every parent render. */
+export const CalendarHeatmap = memo(CalendarHeatmapImpl);

@@ -443,6 +443,39 @@ def test_stylus_scrobble_before_poll_gives_way():
     rows = con.execute("SELECT track_id FROM plays_resolved").fetchall()
     assert rows == [('4uLU6hMCjMI75M1A2tKUQC',)], rows
 
+# ---------------------------------------------------------------- Phase 10b
+def test_stylus_retention_drops_details_keeps_plays():
+    import json
+    con = fresh()
+    con.execute("INSERT INTO stylus_devices (device_id, name, token_hash, retention_days) VALUES ('phone', 'Pixel', 'x', 30)")
+    for days, track in ((90, 'Old one'), (5, 'Recent one')):
+        con.execute("INSERT INTO events (event_type, occurred_at, payload, source_file) VALUES ('play', now() - INTERVAL (?) DAY, ?::JSON, 'stylus:phone')",
+                    [days, json.dumps({"source": "stylus", "track_name": track, "artist_name": "Band", "ms_played": 200000, "platform": "stylus:Pixel", "media_player": "Poweramp", "music_service": "bandcamp.com"})])
+    con.execute(rd('stylus_process.sql'))
+    rows = dict((r[0], r[1:]) for r in con.execute("SELECT json_extract_string(payload, '$.track_name'), json_extract_string(payload, '$.media_player'), json_extract_string(payload, '$.music_service'), json_extract_string(payload, '$.platform') FROM events").fetchall())
+    assert rows['Old one'] == (None, None, 'stylus'), rows
+    assert rows['Recent one'] == ('Poweramp', 'bandcamp.com', 'stylus:Pixel'), rows
+    rebuild(con)
+    assert con.execute("SELECT COUNT(*) FROM plays_resolved").fetchone()[0] == 2   # both plays survive
+
+# ---------------------------------------------------------------- Phase 10c
+def test_isrc_versions_merge_into_most_played():
+    con = fresh()
+    def many(tid, album, n, day):
+        for i in range(n): play(con, f'2024-01-{day:02d} {8 + i * 2:02d}:00:00', 'Song', 'Band', album=album, tid=tid)
+    many('single', 'Song (Single)', 2, 3); many('albumcut', 'The Album', 5, 4); many('other', 'The Album', 1, 5)
+    rebuild(con)
+    for tid in ('single', 'albumcut'): con.execute("UPDATE tracks SET isrc = 'GBAAA2400001', enriched_at = now() WHERE track_id = ?", [tid])
+    rebuild(con)
+    rows = dict(con.execute("SELECT track_id, COUNT(*) FROM plays_resolved GROUP BY 1").fetchall())
+    assert rows.get('albumcut') == 7 and 'single' not in rows, rows            # both versions count under the album cut
+    albums = dict(con.execute("SELECT a.name, COUNT(*) FROM plays_resolved p JOIN albums a USING (album_id) GROUP BY 1").fetchall())
+    assert albums.get('Song (Single)') == 2, albums                             # but the single still gets its plays
+    con.execute("INSERT INTO app_meta (key, value) VALUES ('merge_isrc_versions', '0')")
+    rebuild(con)
+    rows = dict(con.execute("SELECT track_id, COUNT(*) FROM plays_resolved GROUP BY 1").fetchall())
+    assert rows.get('single') == 2 and rows.get('albumcut') == 5, rows          # off: separate again
+
 if __name__ == '__main__':
     tests = [v for k, v in globals().items() if k.startswith('test_')]
     fails = 0

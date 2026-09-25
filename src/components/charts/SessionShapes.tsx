@@ -1,8 +1,9 @@
+import { memo } from 'react';
 import { C } from '@/lib/theme';
 import type { SessionShapeRow } from '@/lib/types';
 import { SHAPE_LABELS } from '@/lib/format';
 
-export function SessionShapes({ data, onPick }: { data: SessionShapeRow[]; onPick?: (shape: string) => void }) {
+function SessionShapesImpl({ data, onPick }: { data: SessionShapeRow[]; onPick?: (shape: string) => void }) {
   const total = data.reduce((s, d) => s + d.count, 0) || 1;
   return (
     <ul className="space-y-2.5">
@@ -23,3 +24,6 @@ export function SessionShapes({ data, onPick }: { data: SessionShapeRow[]; onPic
     </ul>
   );
 }
+
+/** Phase 10c (Kimi T3): redraw only when its props change, not on every parent render. */
+export const SessionShapes = memo(SessionShapesImpl);

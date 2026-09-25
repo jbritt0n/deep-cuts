@@ -6,18 +6,18 @@
 /** Browser mode talks to dev-server.mjs. Same origin when that server also serves the app (Docker); the dev harness on :1420 talks to :4747. */
 const API_BASE: string = typeof location !== 'undefined' && location.protocol.startsWith('http') && location.port !== '1420' ? location.origin : 'http://localhost:4747';
 import { invoke as tauriInvoke } from '@tauri-apps/api/core';
+import { toDeepCutsError } from './errors';
 import { listen as tauriListen, type UnlistenFn } from '@tauri-apps/api/event';
 
 export const inTauri = typeof window !== 'undefined' && '__TAURI_INTERNALS__' in window;
 
+/** Every failure comes out as a DeepCutsError ("[code] detail") — Phase 10b error envelope, see errors.ts. */
 export async function invoke<T>(cmd: string, args: Record<string, unknown> = {}): Promise<T> {
-  if (inTauri) return tauriInvoke<T>(cmd, args);
-  const res = await fetch(`${API_BASE}/${cmd}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify(args),
-  });
-  if (!res.ok) throw new Error(await res.text());
+  if (inTauri) { try { return await tauriInvoke<T>(cmd, args); } catch (e) { throw toDeepCutsError(e); } }
+  let res: Response;
+  try { res = await fetch(`${API_BASE}/${cmd}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(args) }); }
+  catch (e) { throw toDeepCutsError(`network: could not reach the Deep Cuts server (${String((e as Error)?.message ?? e)})`); }
+  if (!res.ok) throw toDeepCutsError(await res.text());
   return (await res.json()) as T;
 }
 

@@ -44,3 +44,46 @@ export async function playlistOverlap(limit = 40): Promise<{ pairs: Overlap[]; s
   const [c] = await query(`SELECT COUNT(DISTINCT playlist_id) AS n FROM playlist_items`);
   return { pairs: [...all].sort((x, y) => y.jaccard - x.jaccard).slice(0, limit), subsets: all.filter((o) => Math.max(o.aInB, o.bInA) >= 0.9).sort((x, y) => y.shared - x.shared).slice(0, 20), playlists: num(c?.n) };
 }
+
+// ============================================================================ Phase 10b — artist family tree
+export type TreeNode = { id: string; name: string; ring: 0 | 1 | 2; via: string | null; relation: string | null; artistId: string | null; hours: number };
+const REL_LABEL: Record<string, string> = { 'member of band': 'band membership', collaboration: 'collaboration', 'supporting musician': 'supporting musician', 'is person': 'alias / real person', subgroup: 'subgroup', 'founder': 'founder', 'vocal supporting musician': 'supporting vocals', 'instrumental supporting musician': 'supporting musician', 'tribute': 'tribute', 'voice actor': 'voice', 'teacher': 'teacher', 'parent': 'family', 'sibling': 'family', 'married': 'family' };
+export const relLabel = (t: string | null) => (t ? REL_LABEL[t] ?? t : '');
+
+/** Artists with MusicBrainz relationships, for the picker (yours first, by hours). */
+export async function treeCandidates(limit = 80): Promise<{ artistId: string; name: string; relations: number; hours: number }[]> {
+  return (await query(`
+    WITH r AS (SELECT artist_mbid AS m, COUNT(*) AS n FROM artist_relations WHERE relation_type NOT IN ('similar', 'release') GROUP BY 1),
+         h AS (SELECT artist_id, SUM(ms_played) / 3600000.0 AS h FROM plays_resolved WHERE attended GROUP BY 1)
+    SELECT a.artist_id, a.name, r.n, COALESCE(h.h, 0) AS h FROM artists a JOIN r ON r.m = a.mbid LEFT JOIN h USING (artist_id) ORDER BY h DESC LIMIT ${Math.round(limit)}`))
+    .map((r) => ({ artistId: String(r.artist_id), name: String(r.name), relations: num(r.n), hours: num(r.h) }));
+}
+
+/** Two rings of MusicBrainz relationships around one artist (both directions), marked with who's in your record. */
+export async function familyTree(artistId: string): Promise<{ centre: TreeNode | null; nodes: TreeNode[]; edges: { a: string; b: string; relation: string }[] }> {
+  const [c] = await query(`SELECT a.mbid, a.name, COALESCE((SELECT SUM(ms_played) FROM plays_resolved p WHERE p.artist_id = a.artist_id), 0) / 3600000.0 AS h FROM artists a WHERE a.artist_id = $1`, [artistId]);
+  if (!c?.mbid) return { centre: null, nodes: [], edges: [] };
+  const rows = await query(`
+    WITH rel AS (SELECT artist_mbid AS a, rtrim(related_mbid, '|') AS b, related_name AS bn, relation_type AS t FROM artist_relations WHERE relation_type NOT IN ('similar', 'release') AND related_mbid IS NOT NULL),
+         names AS (SELECT mbid AS id, name FROM artists WHERE mbid IS NOT NULL UNION ALL SELECT b, bn FROM rel),
+         nm AS (SELECT id, arg_max(name, length(name)) AS name FROM names GROUP BY 1),
+         -- undirected edges
+         e AS (SELECT a AS x, b AS y, t FROM rel UNION SELECT b, a, t FROM rel),
+         r1 AS (SELECT DISTINCT y AS id, t, x AS via FROM e WHERE x = $1 AND y <> $1),
+         r2 AS (SELECT DISTINCT e.y AS id, e.t, e.x AS via FROM e JOIN r1 ON e.x = r1.id WHERE e.y <> $1 AND e.y NOT IN (SELECT id FROM r1))
+    SELECT 1 AS ring, r1.id, nm.name, r1.t, r1.via FROM r1 LEFT JOIN nm USING (id)
+    UNION ALL SELECT 2, r2.id, nm.name, r2.t, r2.via FROM r2 LEFT JOIN nm USING (id)`, [String(c.mbid)]);
+  const mine = new Map((await query(`SELECT a.mbid, a.artist_id, COALESCE(SUM(p.ms_played), 0) / 3600000.0 AS h FROM artists a LEFT JOIN plays_resolved p USING (artist_id) WHERE a.mbid IS NOT NULL GROUP BY 1, 2`)).map((r) => [String(r.mbid), { artistId: String(r.artist_id), hours: num(r.h) }]));
+  const seen = new Set<string>(); const nodes: TreeNode[] = []; const edges: { a: string; b: string; relation: string }[] = [];
+  const centre: TreeNode = { id: String(c.mbid), name: String(c.name), ring: 0, via: null, relation: null, artistId, hours: num(c.h) };
+  // ring 2 is capped so a well-connected session musician doesn't swamp the picture
+  let ring2 = 0;
+  for (const r of rows) {
+    const id = String(r.id); if (seen.has(id)) { edges.push({ a: String(r.via), b: id, relation: String(r.t) }); continue; }
+    if (num(r.ring) === 2 && ++ring2 > 40) continue;
+    seen.add(id); const m = mine.get(id);
+    nodes.push({ id, name: str(r.name) ?? '?', ring: num(r.ring) === 1 ? 1 : 2, via: str(r.via), relation: str(r.t), artistId: m?.artistId ?? null, hours: m?.hours ?? 0 });
+    edges.push({ a: String(r.via), b: id, relation: String(r.t) });
+  }
+  return { centre, nodes, edges };
+}

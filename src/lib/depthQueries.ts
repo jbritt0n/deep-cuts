@@ -16,11 +16,11 @@ export type BubbleYear = { year: number; score: number; effectiveArtists: number
 export async function bubbleScores(): Promise<BubbleYear[]> {
   const P = playsWhere('p');
   const fam = await query(`WITH sc AS (SELECT artist_id, arg_max(scene, weight) AS scene FROM artist_scene GROUP BY 1),
-      x AS (SELECT EXTRACT(year FROM p.played_at)::INT AS y, sc.scene, SUM(p.ms_played) AS ms FROM plays_resolved p JOIN sc USING (artist_id) WHERE p.attended ${P} GROUP BY 1, 2),
+      x AS (SELECT EXTRACT(year FROM p.played_at)::INT AS y, sc.scene, SUM(p.ms_played) AS ms FROM plays_resolved p JOIN sc USING (artist_id) WHERE p.attended ${P} GROUP BY 1, 2 HAVING SUM(p.ms_played) > 0),   -- 10b: LOG2(0) otherwise
       t AS (SELECT y, SUM(ms) AS tot, COUNT(*) AS k FROM x GROUP BY 1)
     SELECT x.y, -SUM((x.ms * 1.0 / t.tot) * LOG2(x.ms * 1.0 / t.tot)) AS h, MAX(t.k) AS k, MAX(t.tot) / 3600000.0 AS hours FROM x JOIN t USING (y) GROUP BY 1 HAVING MAX(t.tot) > 36000000 ORDER BY 1`);
   const [all] = await query(`SELECT COUNT(DISTINCT scene) AS n FROM artist_scene`);
-  const art = await query(`WITH x AS (SELECT EXTRACT(year FROM p.played_at)::INT AS y, p.artist_id, SUM(p.ms_played) AS ms FROM plays_resolved p WHERE p.attended AND p.artist_id IS NOT NULL ${P} GROUP BY 1, 2), t AS (SELECT y, SUM(ms) AS tot FROM x GROUP BY 1)
+  const art = await query(`WITH x AS (SELECT EXTRACT(year FROM p.played_at)::INT AS y, p.artist_id, SUM(p.ms_played) AS ms FROM plays_resolved p WHERE p.attended AND p.artist_id IS NOT NULL ${P} GROUP BY 1, 2 HAVING SUM(p.ms_played) > 0), t AS (SELECT y, SUM(ms) AS tot FROM x GROUP BY 1)
     SELECT x.y, -SUM((x.ms * 1.0 / t.tot) * LOG2(x.ms * 1.0 / t.tot)) AS h FROM x JOIN t USING (y) GROUP BY 1`);
   const maxBits = Math.log2(Math.max(2, num(all?.n)));
   return fam.map((r) => ({ year: num(r.y), score: Math.round((num(r.h) / maxBits) * 100), families: num(r.k), hours: num(r.hours), effectiveArtists: Math.round(2 ** num(art.find((a) => num(a.y) === num(r.y))?.h)) }));

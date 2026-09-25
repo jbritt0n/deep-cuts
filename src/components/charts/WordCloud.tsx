@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useState, memo } from 'react';
 import { C } from '@/lib/theme';
 
 /**
@@ -8,7 +8,7 @@ import { C } from '@/lib/theme';
  */
 export type CloudWord = { text: string; weight: number; note?: string };
 
-export function WordCloud({ words, width = 640, height = 340, onPick, picked }: { words: CloudWord[]; width?: number; height?: number; onPick?: (w: CloudWord) => void; picked?: string | null }) {
+function WordCloudImpl({ words, width = 640, height = 340, onPick, picked }: { words: CloudWord[]; width?: number; height?: number; onPick?: (w: CloudWord) => void; picked?: string | null }) {
   const [hover, setHover] = useState<string | null>(null);
   const placed = useMemo(() => layout(words, width, height), [words, width, height]);
   if (!words.length) return <p className="text-sm text-dust">Nothing to cloud yet.</p>;
@@ -51,3 +51,6 @@ function layout(words: CloudWord[], W: number, H: number): Placed[] {
   }
   return out;
 }
+
+/** Phase 10c (Kimi T3): redraw only when its props change, not on every parent render. */
+export const WordCloud = memo(WordCloudImpl);

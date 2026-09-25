@@ -1,30 +1,35 @@
-# Handoff — current (Phase 10a → 10b)
+# Handoff — current (Phase 10c → 10d)
 
-**Written:** September 25, 2026. This file is replaced each build; past handoffs are in `history/handoffs/`. The plan lives in `ROADMAP.md`.
+## What 10c changed
+UI foundations: command palette (`src/components/CommandPalette.tsx`, `src/lib/fuzzy.ts`), overlays (`src/components/Overlay.tsx`: confirmDialog, toast, OnThisPage), Card anchors (`id="c-<slug>"`), global focus-visible (`src/index.css`), `React.memo` on all chart components, `deepcuts:refresh` re-runs `useAsync`. Data: ISRC version merge in `entity_resolution.sql` (setting `merge_isrc_versions`); `track_lineage` + `enrich_lineage` in `connectors/musicbrainz.rs` (scheduler 8/tick, manual sync 40), `LineageCard` on Track. Tests: `smoke-10c.ts`, fuzzy unit tests, ISRC fixture; smoke-9i made rerunnable.
 
-## What 10a changed
+**Uncompiled Rust to watch in CI:** `musicbrainz::enrich_lineage` (closures `put`/`stop`, `dedup_by`), its calls in `scheduler.rs` and `commands.rs`, and the `merge_isrc_versions` allow-list entry.
+
+---
+# Previous handoff (Phase 10b → 10c)
+
+**Written:** September 25, 2026. Replaced each build; past handoffs are in `history/handoffs/`. The plan lives in `ROADMAP.md`.
+
+## What 10b changed
 | | |
 |---|---|
-| FreqBlog "0 of N have features, 100 not in catalogue, 115 units used" | Billed hits were read as misses: the /bulk reply nests each track's features under a key 9g never saw. `freqblog.rs` now finds the feature object at any depth (`feature_obj`), matches replies by ISRC → names → position, builds "B minor" from `key` + `mode`, and a one-time schema step forgets the false misses so they're looked up again. |
-| Crate shows only artist obscurity | Album listener lookups ran last in a `?`-chained Last.fm tick, so any earlier error skipped them. Each step is now independent (scheduler + Sync now). Services → Last.fm shows the album count. |
-| Obscurity on Artist and Album pages | `ObscurityPanel` (album page shows album + artist + "deep cut in their catalogue"). |
-| Blank followed playlists | Pass 1 keeps a known name when a listing omits it; nameless rows get one `/playlists/{id}` details call; the UI falls back to "Untitled playlist · by owner". |
-| Playlist affinity % | View `playlist_affinity`; items now store artist + title (a one-time re-sync of items rotates within quota). Library rows, detail header, two new sorts. |
-| Atlas city names | Countries named from the ISO code (`countryName`); stale area names cleared. |
-| The Newness | New page (Understand): week / month / season, best finds with keepers, where the new came from, discovery timeline. |
-| Phase 10 | Discovery depth (bubble, blind spots, anti-recommendations on Discover; activity labels on Sessions; song length in Sound), Connections page (co-listening network, playlist overlap), ISRC duplicates report (Hygiene), loading skeletons, docs reorganised (`docs/README.md`). |
+| FreqBlog | The owner's real `/bulk` reply confirmed the 10a diagnosis (features under `result`) and is now `src-tauri/tests/fixtures/freqblog-bulk.json`, parsed by three Rust tests. Key names come from `key_int` + `mode` (`canonical_key`) because the reply spells one key as both `A#-Major` and `Bb-Major`. |
+| Discover | Split: **Discover** (recommendations, release radar, genre browse), **Bubble & blind spots** (`/depth`), **Mixtape** (`/mixtape`: builder, curated, Made by Deep Cuts). Bubble's LOG2(0) fixed (zero-length plays). |
+| Layout | Activity card under the Sessions banner; Best finds and Atlas "By country" no longer stretched with a half-height scroll list. |
+| Error envelope (Kimi T2) | `commands.rs::err` → `{code, message}`; `error_code` + tests; `src/lib/errors.ts` (`classify`, `DeepCutsError`, `describeError`) + tests; bridge converts every failure; ErrorBox shows a plain explanation with details. |
+| CI | `cargo test --lib --locked` on Linux before packaging (with a placeholder `dist/`). |
+| Family tree | Connections → Family tree: two rings of MusicBrainz relationships, yours highlighted, click to re-centre. Demo gains a few real relationships. |
+| Stylus S2 | `stylus_devices.retention_days`; details (player, service, device name) dropped after N days, plays kept; Settings → **Privacy** tab. |
 
 ## Rust (uncompiled) — compile first
-- `connectors/freqblog.rs`: `feature_obj`, new matching block (closures `norm`, `isrc_of`, `names_of`), key/mode join, `found` from features.
-- `scheduler.rs` Last.fm tick: array of `(&str, Result<()>)` built from four calls — each `enrich_*` returns `Result<usize>`, mapped with `.map(|_| ())`.
-- `commands.rs`: Last.fm "Sync now" uses `unwrap_or(0)`; services status adds `albumListeners`.
-- `spotify/sync.rs`: pass-1 upsert gains `owner_name`; nameless-playlist details loop; item insert stores `track_name`, `artist_name` (`t` is the item's track object).
-- `spotify/endpoints.rs`: `playlist_meta`.
+- `commands.rs`: new `err` body + `error_code` + `mod envelope_tests`; `stylus_update_device` gains `retention_days: Option<i64>` and runs `STYLUS_PROCESS_SQL`.
+- `connectors/freqblog.rs`: `canonical_key`, key/mode block, `mod fixture_tests` (uses `include_str!("../../tests/fixtures/freqblog-bulk.json")` — path relative to `src/connectors/`).
+- The first CI run of `cargo test` also compiles the 9h guard tests for the first time.
 
 ## Verify on the owner's machine
-1. Services → FreqBlog: after the next tick, "N of … played tracks have features" rises; please share `~/.local/share/deep-cuts/logs/freqblog-sample.json` so the fixture test (Phase 10.1) uses a real reply.
-2. Services → Last.fm: "albums with listener counts" climbs; The Crate and album pages show album obscurity.
-3. Library → Playlists: no blank rows; affinity % on each readable playlist (followed playlists sharpen as their items re-sync with artist names).
+1. Services → FreqBlog climbs; Insights → Sound and Moods → Tempo dial fill in; the key wheel shows one entry per key.
+2. Act → Bubble & blind spots loads without an error.
+3. Any error now reads as a sentence with "details" underneath.
 
-## Next (10b) — from ROADMAP §2
-Error envelope, connector fixtures (FreqBlog first), `cargo test` in CI, Stylus S2; Discogs connector; MusicBrainz samples/covers card; artist family tree.
+## Next (10c) — ROADMAP §2
+Discogs connector (label / format / pressing); MusicBrainz samples & covers card on song pages; more connector fixtures (Last.fm, MusicBrainz); chart memoisation; merge ISRC versions into one entry.

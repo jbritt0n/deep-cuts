@@ -2,7 +2,7 @@ import { clamp, useViewport } from '@/lib/display';
 import { PALETTES, useEraStyle, type EraStyle } from '@/lib/eraStyle';
 import { useAsync } from '@/lib/hooks';
 import { rangeWeather } from '@/lib/weatherQueries';
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode, memo } from 'react';
 import { C } from '@/lib/theme';
 import type { Era, EraWeek } from '@/lib/insightQueries';
 import type { GenreThread } from '@/lib/threadQueries';
@@ -24,7 +24,7 @@ type Span = { key: string; kind: 'era' | 'thread'; label: string; sub: string; s
 
 const hash = (s: string) => { let h = 0; for (const c of s) h = (h * 31 + c.charCodeAt(0)) >>> 0; return h; };
 
-export function EraChart({ weeks, eras, threads, view, onView, onPick }: { weeks: EraWeek[]; eras: Era[]; threads: GenreThread[]; view: EraView; onView: (v: EraView) => void; onPick?: (s: { kind: 'era' | 'thread'; key: string }) => void }) {
+function EraChartImpl({ weeks, eras, threads, view, onView, onPick }: { weeks: EraWeek[]; eras: Era[]; threads: GenreThread[]; view: EraView; onView: (v: EraView) => void; onPick?: (s: { kind: 'era' | 'thread'; key: string }) => void }) {
   const vp = useViewport();
   const [hover, setHover] = useState<string | null>(null);
   const st = useEraStyle();
@@ -239,3 +239,6 @@ function EraWeather({ from, to }: { from: string; to: string }) {
   if (!w.data) return null;
   return <p className="mt-1 text-xs">{w.data.glyph} listened most on {w.data.label.toLowerCase()} days — {Math.round(w.data.share * 100)}% of its hours vs {Math.round(w.data.baseShare * 100)}% overall</p>;
 }
+
+/** Phase 10c (Kimi T3): redraw only when its props change, not on every parent render. */
+export const EraChart = memo(EraChartImpl);

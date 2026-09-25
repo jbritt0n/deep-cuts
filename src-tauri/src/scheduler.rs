@@ -90,7 +90,7 @@ pub fn start(app: AppHandle) {
                     .ok().and_then(|r| r.first().and_then(|m| m.get("status")).and_then(|v| v.as_str().map(str::to_string)));
                 if connected.as_deref() == Some("connected") { musicbrainz::resolve_batch(&st.real, 30)?; musicbrainz::verify_batch(&st.real, 20)?; let _ = crate::connectors::wikipedia::enrich_batch(&st.real, 8); musicbrainz::enrich_relations(&st.real, 10)?; crate::connectors::coverart::enrich_batch(&st.real, 10)?; crate::connectors::wikidata::enrich_origin(&st.real, 15)?;
                     // Phase 9d: catalogue sizes (1 call/artist) and ISRC credits (1 call/track), both inside the same 1 req/s budget
-                    musicbrainz::enrich_catalogue(&st.real, 8)?; musicbrainz::enrich_credits(&st.real, 12)?; }
+                    musicbrainz::enrich_catalogue(&st.real, 8)?; musicbrainz::enrich_credits(&st.real, 12)?; musicbrainz::enrich_lineage(&st.real, 8)?; }
                 let lb = st.real.query("SELECT status FROM connector_state WHERE service = 'listenbrainz'", &[]).ok().and_then(|r| r.first().and_then(|m| m.get("status")).and_then(|v| v.as_str().map(str::to_string)));
                 if lb.as_deref() == Some("connected") { crate::connectors::listenbrainz::enrich_similar(&st.real, 8)?; }
                 Ok(())

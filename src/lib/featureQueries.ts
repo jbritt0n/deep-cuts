@@ -83,14 +83,14 @@ export type SoundAlike = { trackId: string; track: string; artistId: string | nu
  * neighbours count as close). Other artists first — the same artist's songs are shown after, marked.
  */
 export async function soundAlike(trackId: string, n = 12): Promise<{ seed: { bpm: number | null; key: string | null; camelot: string | null; energy: number | null } | null; tracks: SoundAlike[] }> {
-  const [s] = await query(`SELECT f.bpm, f.key_name, f.camelot, f.energy, f.loudness_db, t.artist_id FROM track_features f JOIN tracks t USING (track_id) WHERE f.track_id = $1 AND f.found`, [trackId]);
+  const [s] = await query(`SELECT f.bpm, f.key_name, f.camelot, f.energy, f.loudness_db, t.artist_id FROM track_features f JOIN tracks t USING (track_id) WHERE f.track_id = $1 AND f.found AND f.bpm > 0`, [trackId]);
   if (!s) return { seed: null, tracks: [] };
   const rows = await query(`
     WITH me AS (SELECT track_id, COUNT(*) AS n, arg_max(track_name, ms_played) AS t, arg_max(artist_id, ms_played) AS aid, arg_max(artist_name, ms_played) AS a FROM plays_resolved p WHERE p.attended AND track_id IS NOT NULL ${playsWhere('p')} GROUP BY 1)
     SELECT f.track_id, me.t, me.aid, me.a, me.n, f.bpm, f.key_name, f.camelot, f.energy,
            LEAST(ABS(LN(f.bpm / $2)), ABS(LN(f.bpm / ($2 * 2))) + 0.1, ABS(LN(f.bpm * 2 / $2)) + 0.1) * 6
            + ABS(COALESCE(f.energy, 0.5) - $3) * 4 + ABS(COALESCE(f.loudness_db, -9) - $4) / 6 AS d0
-    FROM track_features f JOIN me USING (track_id) WHERE f.found AND f.bpm IS NOT NULL AND f.track_id <> $1
+    FROM track_features f JOIN me USING (track_id) WHERE f.found AND f.bpm > 0 AND f.track_id <> $1   -- 10b: LN(0) guard
     ORDER BY d0 LIMIT 80`, [trackId, num(s.bpm) || 120, s.energy == null ? 0.5 : num(s.energy), s.loudness_db == null ? -9 : num(s.loudness_db)]);
   const { keyDistance } = await import('./harmonic');
   const tracks = rows.map((r) => ({ trackId: String(r.track_id), track: String(r.t), artistId: str(r.aid), artist: String(r.a ?? ''), plays: num(r.n), bpm: r.bpm == null ? null : num(r.bpm), key: str(r.key_name), camelot: str(r.camelot), energy: r.energy == null ? null : num(r.energy),

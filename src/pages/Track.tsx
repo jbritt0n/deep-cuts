@@ -1,5 +1,6 @@
 import { C } from '@/lib/theme';
 import { TrackMetadata } from '@/components/MetadataPanel';
+import { LineageCard } from '@/components/LineageCard';
 import { MixInto, SoundsLike } from '@/components/SoundTools';
 import { Link, useParams } from 'react-router-dom';
 import { getTrackDetail } from '@/lib/queries';
@@ -50,6 +51,7 @@ export function TrackPage() {
         </Card>
       </section>
       <div className="mt-6 grid gap-6 lg:grid-cols-[1.3fr_1fr]"><Card title="Recent plays"><PlaysTable data={t.recentPlays} showDate /></Card><TrackMetadata trackId={id} /></div>
+      <LineageCard trackId={id} />
       <div className="mt-6 grid gap-6 lg:grid-cols-2"><SoundsLike trackId={id} track={t.track} /><MixInto trackId={id} /></div>
     </div>
   );

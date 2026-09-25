@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { C } from '@/lib/theme';
 import type { HourSlice } from '@/lib/types';
 // Ported untouched from v1 (spec §0) — the signature visual.
@@ -7,7 +8,7 @@ import type { HourSlice } from '@/lib/types';
  * Midnight at the top. Each hour is a groove-arc whose reach from the
  * label ring toward the spindle encodes hours listened.
  */
-export function ClockFace({ data, size = 380 }: { data: HourSlice[]; size?: number }) {
+function ClockFaceImpl({ data, size = 380 }: { data: HourSlice[]; size?: number }) {
   const c = size / 2;
   const outer = c - 34;
   const inner = 58; // spindle label area
@@ -79,3 +80,6 @@ export function ClockFace({ data, size = 380 }: { data: HourSlice[]; size?: numb
     </svg>
   );
 }
+
+/** Phase 10c (Kimi T3): redraw only when its props change, not on every parent render. */
+export const ClockFace = memo(ClockFaceImpl);

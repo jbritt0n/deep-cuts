@@ -121,13 +121,23 @@ fn feature_obj(v: &Value, depth: u8) -> Option<&Value> {
 
 fn parse_feat(item: &Value) -> Feat {
     let f = feature_obj(item, 4).unwrap_or(item);
-    // "key": "B" + "mode": "minor" → "B minor"
+    // Phase 10b (from the owner's real reply, tests/fixtures/freqblog-bulk.json): keys arrive as "Bb-Major" / "A#-Major"
+    // — the same key spelled two ways — with key_int 0–11 and mode 0/1. One canonical name from key_int + mode, so the
+    // key wheel and harmonic matching never see A# and Bb as different keys; the string is the fallback.
     let mode_word = str_of(&f["mode"]).filter(|m| m.chars().any(|c| c.is_alphabetic()));
-    let key_name = str_of(&f["key_name"]).or_else(|| str_of(&f["key"]).filter(|s| s.chars().any(|c| c.is_alphabetic())).map(|k| {
-        let kl = k.to_lowercase();
-        match &mode_word { Some(m) if !kl.contains("major") && !kl.contains("minor") => format!("{k} {}", m.to_lowercase()), _ => k }
-    }));
-    let mode = i64_of(&f["mode"]).or_else(|| str_of(&f["mode"]).map(|m| if m.to_lowercase().starts_with("maj") { 1 } else { 0 }))
+    let mode_raw = i64_of(&f["mode"]).or_else(|| mode_word.as_ref().map(|m| if m.to_lowercase().starts_with("maj") { 1 } else { 0 }));
+    let key_int_raw = i64_of(&f["key_int"]).filter(|k| (0..12).contains(k));
+    let key_name = match (key_int_raw, mode_raw) {
+        (Some(k), Some(m)) => Some(canonical_key(k, m)),
+        _ => str_of(&f["key_name"]).or_else(|| str_of(&f["key"]).filter(|s| s.chars().any(|c| c.is_alphabetic()))).map(|k| {
+            let k = k.replace(['-', '_'], " ");
+            let kl = k.to_lowercase();
+            let (root, rest) = k.split_once(' ').map(|(a, b)| (a.to_string(), b.to_lowercase())).unwrap_or((k.clone(), String::new()));
+            if kl.contains("major") || kl.contains("minor") { format!("{root} {}", rest.trim()) }
+            else { match &mode_word { Some(m) => format!("{root} {}", m.to_lowercase()), None => root } }
+        }),
+    };
+    let mode = mode_raw
         .or_else(|| key_name.as_ref().map(|k| if k.to_lowercase().contains("minor") || k.ends_with('m') { 0 } else { 1 }));
     Feat {
         isrc: str_of(&item["isrc"]).or_else(|| str_of(&f["isrc"])),
@@ -136,6 +146,12 @@ fn parse_feat(item: &Value) -> Feat {
         energy: f64_of(&f["energy"]), loudness: f64_of(&f["loudness_db"]).or_else(|| f64_of(&f["loudness"])), dance: f64_of(&f["danceability"]), valence: f64_of(&f["valence"]),
         mood: str_of(&f["mood"]), time_sig: i64_of(&f["time_signature"]), acoustic: f64_of(&f["acousticness"]), instrumental: f64_of(&f["instrumentalness"]), live: f64_of(&f["liveness"]), speech: f64_of(&f["speechiness"]), genre: str_of(&f["genre"]),
     }
+}
+
+/// "C major" … "B minor" from a pitch class (0 = C) and mode (1 major, 0 minor), using the usual flat/sharp choices.
+pub fn canonical_key(key_int: i64, mode: i64) -> String {
+    const NAMES: [&str; 12] = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"];
+    format!("{} {}", NAMES[(key_int.rem_euclid(12)) as usize], if mode == 1 { "major" } else { "minor" })
 }
 
 /// A bulk reply may be an array, or an object holding one under results / tracks / items / data.
@@ -228,4 +244,39 @@ pub fn enrich(db: &Db, max_tracks: usize) -> Result<usize> {
     set_state(db, "freqblog", "connected", None, None);
     if done > 0 { db.log_activity("freqblog", "info", &format!("Audio features for {done} tracks ({} of {MONTHLY_CAP} requests used this month)", used_this_month(db)), None); }
     Ok(done)
+}
+
+#[cfg(test)]
+mod fixture_tests {
+    //! Phase 10b (Kimi T5): parse a real /bulk reply the owner's install saved (logs/freqblog-sample.json, 2026-09).
+    use super::*;
+    const BULK: &str = include_str!("../../tests/fixtures/freqblog-bulk.json");
+
+    #[test] fn bulk_reply_items_and_features() {
+        let v: Value = serde_json::from_str(BULK).unwrap();
+        let items = parse_items(&v);
+        assert_eq!(items.len(), 25);
+        let first = parse_feat(&items[0]);               // Mac DeMarco — Salad Days
+        assert_eq!(first.bpm, Some(100.01));
+        assert_eq!(first.camelot.as_deref(), Some("6B"));
+        assert_eq!(first.key_name.as_deref(), Some("Bb major"));
+        assert_eq!(first.mode, Some(1));
+        assert!(first.energy.unwrap() > 0.7);
+        assert_eq!(first.isrc.as_deref(), Some("QMMZN1300560"));
+    }
+    #[test] fn misses_have_no_features_and_hits_do() {
+        let v: Value = serde_json::from_str(BULK).unwrap();
+        let items = parse_items(&v);
+        let hits = items.iter().filter(|it| parse_feat(it).bpm.is_some()).count();
+        assert_eq!(hits as i64, v["found"].as_i64().unwrap());          // 23 found in the reply
+        let miss = items.iter().find(|it| it["track"].as_str() == Some("Eclipse")).unwrap();
+        assert!(parse_feat(miss).bpm.is_none());
+    }
+    #[test] fn one_spelling_per_key() {
+        let v: Value = serde_json::from_str(BULK).unwrap();
+        let names: std::collections::HashSet<String> = parse_items(&v).iter().filter_map(|it| parse_feat(it).key_name).collect();
+        assert!(!names.iter().any(|n| n.starts_with("A#")), "A# folds into Bb: {names:?}");
+        assert!(names.iter().all(|n| n.ends_with(" major") || n.ends_with(" minor")), "{names:?}");
+        assert_eq!(canonical_key(10, 1), "Bb major"); assert_eq!(canonical_key(1, 0), "C# minor");
+    }
 }

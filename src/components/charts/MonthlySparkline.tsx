@@ -1,10 +1,11 @@
+import { memo } from 'react';
 import { C } from '@/lib/theme';
 import { useNavigate } from 'react-router-dom';
 import type { MonthPoint } from '@/lib/types';
 import { monthHref } from '@/lib/format';
 
 /** Area sparkline of hours per month; each point opens its month (v1, extended). */
-export function MonthlySparkline({ data, color = C.amber, linkMonths = true }: { data: MonthPoint[]; color?: string; linkMonths?: boolean }) {
+function MonthlySparklineImpl({ data, color = C.amber, linkMonths = true }: { data: MonthPoint[]; color?: string; linkMonths?: boolean }) {
   const nav = useNavigate();
   if (data.length < 2) return null;
   const w = 560, h = 120, pad = 8;
@@ -30,3 +31,6 @@ export function MonthlySparkline({ data, color = C.amber, linkMonths = true }: {
     </svg>
   );
 }
+
+/** Phase 10c (Kimi T3): redraw only when its props change, not on every parent render. */
+export const MonthlySparkline = memo(MonthlySparklineImpl);

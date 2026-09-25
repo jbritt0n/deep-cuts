@@ -13,8 +13,45 @@ use tauri::{AppHandle, Manager, State};
 
 type CmdResult<T> = Result<T, String>;
 
+/// Phase 10b (Kimi T2): every command error leaves as a JSON envelope {"code", "message"} (src/lib/errors.ts reads it).
+/// `message` is the full anyhow chain; `code` is a stable category the UI turns into a plain explanation.
 fn err<E: std::fmt::Display>(e: E) -> String {
-    format!("{e:#}")
+    let message = format!("{e:#}");
+    serde_json::json!({ "code": error_code(&message), "message": message }).to_string()
+}
+
+/// Same rules as `classify` in src/lib/errors.ts — keep the two in step.
+pub(crate) fn error_code(message: &str) -> &'static str {
+    let m = message.to_lowercase();
+    let has = |xs: &[&str]| xs.iter().any(|x| m.contains(x));
+    if has(&["quota", "rate limit", "rate-limit", " 429", "too many requests"]) { "quota" }
+    else if has(&[" 401", " 403", "unauthorized", "unauthorised", "reconnect", "reauth", "re-auth", "token expired", "token invalid", "token rejected", "invalid key", "invalid api key", "key rejected", "rejected the key", "rejected that key", "sign in again"]) { "auth" }
+    else if has(&["network", "timed out", "timeout", "connection refused", "connection reset", "dns", "could not reach", "unreachable", "offline", "error sending request"]) { "network" }
+    // database before not_found / invalid_input: DuckDB messages say "…not found in FROM clause", "expected …"
+    else if has(&["binder error", "parser error", "catalog error", "conversion error", "out of range error", "duckdb", "sql", "constraint"]) { "database" }
+    else if has(&[" 404", "not found", "no such", "unknown artist", "unknown album", "unknown track", "unknown playlist"]) { "not_found" }
+    else if has(&["must be", "expected", "can't be edited", "doesn't look like", "invalid", "required", "use a year", "give the device a name", "1–60 characters", "two-letter"]) { "invalid_input" }
+    else if has(&["already running", "in progress", "busy", "locked", "lock on file"]) { "busy" }
+    else { "internal" }
+}
+
+#[cfg(test)]
+mod envelope_tests {
+    use super::*;
+    #[test] fn codes() {
+        assert_eq!(error_code("Spotify quota reached for today"), "quota");
+        assert_eq!(error_code("FreqBlog rejected the key"), "auth");
+        assert_eq!(error_code("error sending request: connection refused"), "network");
+        assert_eq!(error_code("Country must be a two-letter code"), "invalid_input");
+        assert_eq!(error_code("An import is already running"), "busy");
+        assert_eq!(error_code("Binder Error: Ambiguous reference"), "database");
+        assert_eq!(error_code("Binder Error: Referenced column \"x\" not found in FROM clause"), "database");
+        assert_eq!(error_code("something odd"), "internal");
+    }
+    #[test] fn envelope_is_json() {
+        let v: serde_json::Value = serde_json::from_str(&err(anyhow::anyhow!("Out of Range Error: log of zero"))).unwrap();
+        assert_eq!(v["code"], "database"); assert!(v["message"].as_str().unwrap().contains("log of zero"));
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -168,6 +205,8 @@ pub fn set_setting(state: State<'_, AppState>, key: String, value: String) -> Cm
         // Phase 9c: Settings → Tuning (see src/lib/settings.ts TUNING for defaults and bounds)
         "short_play_seconds", "shape_loop_repeat", "shape_discovery_novelty", "shape_restless_skip", "shape_wander_entropy",
         "feedback_memory_days", "forgotten_days", "tag_floor", "lyrics_batch", "playlist_default_public", "mixtape_last_mix",
+        // Phase 10c
+        "merge_isrc_versions",
         // Phase 9c: The Crate — per-album skip (90 days) / keep decisions are recommendation_feedback rows; this is the crate's own toggle store
         "crate_show_related",
         // Phase 9e: local LLM
@@ -434,7 +473,7 @@ pub async fn sync_now(state: State<'_, AppState>, app: AppHandle, service: Strin
                 format!("Spotify: +{added} plays, {liked} liked songs, {pls}, {enriched} tracks enriched")
             }
             "lastfm" => { let t = lastfm::enrich_tags(&real, 60).unwrap_or(0); let s = lastfm::enrich_similar(&real, 15).unwrap_or(0); let l = lastfm::enrich_popularity(&real, 30).unwrap_or(0); let al = lastfm::enrich_album_popularity(&real, 60)?; format!("Last.fm: tagged {t} artists, {s} similar-artist seeds, listener counts for {l} artists and {al} albums") }
-            "musicbrainz" => { let n = musicbrainz::resolve_batch(&real, 40)?; let r = musicbrainz::enrich_relations(&real, 15)?; let c = musicbrainz::enrich_catalogue(&real, 15)?; let k = musicbrainz::enrich_credits(&real, 20)?; format!("MusicBrainz: resolved {n} artists, relationships for {r}, catalogue sizes for {c}, credits for {k} tracks") }
+            "musicbrainz" => { let n = musicbrainz::resolve_batch(&real, 40)?; let r = musicbrainz::enrich_relations(&real, 15)?; let c = musicbrainz::enrich_catalogue(&real, 15)?; let k = musicbrainz::enrich_credits(&real, 20)?; let l = musicbrainz::enrich_lineage(&real, 40)?; format!("MusicBrainz: resolved {n} artists, relationships for {r}, catalogue sizes for {c}, credits for {k} tracks, lineage for {l}") }
             "statsfm" => { let n = crate::connectors::statsfm::import(&real, 10)?; format!("stats.fm: +{n} plays") }
             "freqblog" => { let n = crate::connectors::freqblog::enrich(&real, 50)?; format!("FreqBlog: audio features for {n} tracks ({} requests used this month)", crate::connectors::freqblog::used_this_month(&real)) }
             "listenbrainz" => { let n = crate::connectors::listenbrainz::enrich_similar(&real, 20)?; format!("ListenBrainz: similar artists for {n} seeds") }
@@ -548,10 +587,12 @@ pub fn stylus_add_device(state: State<'_, AppState>, name: String) -> CmdResult<
 }
 
 #[tauri::command]
-pub fn stylus_update_device(state: State<'_, AppState>, device_id: String, ts_precision: String, keep_player: bool, keep_service: bool, keep_device: bool, paused: bool) -> CmdResult<()> {
+pub fn stylus_update_device(state: State<'_, AppState>, device_id: String, ts_precision: String, keep_player: bool, keep_service: bool, keep_device: bool, paused: bool, retention_days: Option<i64>) -> CmdResult<()> {
     let p = if ["exact", "minute", "hour"].contains(&ts_precision.as_str()) { ts_precision } else { "exact".into() };
-    state.real.exec("UPDATE stylus_devices SET ts_precision = ?, keep_player = ?, keep_service = ?, keep_device = ?, paused = ? WHERE device_id = ?",
-        &[serde_json::json!(p), serde_json::json!(keep_player), serde_json::json!(keep_service), serde_json::json!(keep_device), serde_json::json!(paused), serde_json::json!(device_id)]).map_err(err)?;
+    let keep = retention_days.filter(|d| *d > 0 && *d <= 3650);   // Phase 10b (S2): None = keep the details forever
+    state.real.exec("UPDATE stylus_devices SET ts_precision = ?, keep_player = ?, keep_service = ?, keep_device = ?, paused = ?, retention_days = ? WHERE device_id = ?",
+        &[serde_json::json!(p), serde_json::json!(keep_player), serde_json::json!(keep_service), serde_json::json!(keep_device), serde_json::json!(paused), serde_json::json!(keep), serde_json::json!(device_id)]).map_err(err)?;
+    state.real.exec_batch(crate::db::STYLUS_PROCESS_SQL).map_err(err)?;   // apply a shorter retention right away
     Ok(())
 }
 

@@ -23,6 +23,7 @@ import { AtlasPage } from './pages/Atlas';
 import { RoastPage } from './pages/Roast';
 import { NewnessPage } from './pages/Newness';
 import { ConnectionsPage } from './pages/Connections';
+import { DepthPage } from './pages/Depth';
 import { InsightsPage } from './pages/Insights';
 import { ActivityPage } from './pages/Activity';
 import { AskPage } from './pages/Ask';
@@ -102,6 +103,8 @@ export function App() {
             <Route path="/forecast" element={<Navigate to="/moods#forecast" replace />} />
             <Route path="/notes" element={<NotesPage />} />
             <Route path="/discover" element={<DiscoveryPage />} />
+            <Route path="/mixtape" element={<DiscoveryPage view="mixtape" />} />
+            <Route path="/depth" element={<DepthPage />} />
             <Route path="/achievements" element={<AchievementsPage />} />
             <Route path="/moods" element={<MoodsForecastPage />} />
             <Route path="/drift" element={<DriftPage />} />

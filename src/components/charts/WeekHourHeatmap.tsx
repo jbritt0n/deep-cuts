@@ -1,10 +1,11 @@
+import { memo } from 'react';
 import { C } from '@/lib/theme';
 import { hourLabel } from '@/lib/format';
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 /** SES-12: weekday × hour grid. Monday first, amber scale. */
-export function WeekHourHeatmap({ data, metric = 'sessions' }: { data: { dow: number; hour: number; sessions: number; minutes: number }[]; metric?: 'sessions' | 'minutes' }) {
+function WeekHourHeatmapImpl({ data, metric = 'sessions' }: { data: { dow: number; hour: number; sessions: number; minutes: number }[]; metric?: 'sessions' | 'minutes' }) {
   const cell = 22, gap = 3, left = 34, top = 16;
   const order = [1, 2, 3, 4, 5, 6, 0];
   const v = (d: { sessions: number; minutes: number }) => (metric === 'sessions' ? d.sessions : d.minutes);
@@ -33,3 +34,6 @@ export function WeekHourHeatmap({ data, metric = 'sessions' }: { data: { dow: nu
     </svg>
   );
 }
+
+/** Phase 10c (Kimi T3): redraw only when its props change, not on every parent render. */
+export const WeekHourHeatmap = memo(WeekHourHeatmapImpl);

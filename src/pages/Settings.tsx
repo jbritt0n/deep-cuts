@@ -13,6 +13,7 @@ import { Card, ErrorBox, Sleeve } from '@/components/Card';
 import { Importer } from '@/components/Importer';
 import { SceneEditor } from '@/components/SceneEditor';
 import { MoveCard } from '@/components/MoveCard';
+import { PrivacyPanel } from '@/components/PrivacyPanel';
 import { WeatherSettingsCard } from '@/components/WeatherCards';
 import { IsrcDuplicatesCard, SourceCoverageCard } from '@/components/SourceCoverageCard';
 import { search } from '@/lib/queries';
@@ -27,13 +28,14 @@ import { fmtDate, fmtPct, trackHref } from '@/lib/format';
 
 type ImportRun = { import_id: string; at: string; files: number; inserted: number; duplicate: number; skipped: number };
 
-type Tab = 'look' | 'record' | 'tuning' | 'connectors' | 'hygiene' | 'notforme';
+type Tab = 'look' | 'record' | 'tuning' | 'connectors' | 'hygiene' | 'notforme' | 'privacy';
 const TABS: { id: Tab; label: string; blurb: string }[] = [
   { id: 'look', label: 'Appearance', blurb: 'Skins.' },
   { id: 'record', label: 'Record', blurb: 'Your history, time zones, data.' },
   { id: 'tuning', label: 'Tuning', blurb: 'Eras, scenes, sessions and discovery thresholds.' },
   { id: 'connectors', label: 'Connectors', blurb: 'Budgets and batch sizes for the background jobs.' },
   { id: 'hygiene', label: 'Hygiene', blurb: 'Outliers, corrected sessions, merged artists.' },
+  { id: 'privacy', label: 'Privacy', blurb: 'What Deep Cuts keeps from each source, and what it never does.' },
   { id: 'notforme', label: 'Not for me', blurb: 'Songs you keep being shown and keep skipping (moved here from the sidebar in 9h).' },
 ];
 
@@ -155,6 +157,7 @@ export function SettingsPage({ status, onChanged }: { status: AppStatus; onChang
       )}
 
       {tab === 'notforme' && <SkipHallPage embedded />}
+      {tab === 'privacy' && <PrivacyPanel />}
       {tab === 'hygiene' && (
         <div className="space-y-6">
           <IsrcDuplicatesCard />

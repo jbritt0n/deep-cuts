@@ -128,3 +128,15 @@ Three errors, all fixed: `Mb::get` visibility; `urlencoding::encode(&format!(..)
 - **The export wins over the poll.** It has the real duration, skip flag, device and country; the poll only knows a track started. Both events stay in the append-only log; resolution picks one.
 - **To revisit lives in Library, not Discover** — Discover is for music new to you; this is housekeeping of music you know.
 - **Stylus speaks ListenBrainz** so existing clients (Pano, Web Scrobbler, multi-scrobbler, Navidrome…) work without a Deep Cuts app per device; the Docker relay is pulled from, so the desktop is never exposed.
+
+## Phase 10b (Sep 25, 2026) — decisions
+- **Errors carry a code, as a message prefix.** Rust emits `{code, message}`; the bridge turns every failure into `[code] detail`, which survives `e.message` and `String(e)` alike, so ~200 existing error call sites needed no change. The same classification rules live in Rust and TypeScript and are tested in both; database errors are matched first because DuckDB's wording ("…not found", "expected …") otherwise reads as a user problem.
+- **Canonical key names from pitch class + mode**, not from FreqBlog's string: the real reply spells one key two ways (A# / Bb).
+- **Retention strips details, never plays.** Deleting old scrobbles would punch holes in your history; after N days a device's scrobbles keep what a play needs and drop player, service and device name.
+- **Discover split by purpose** — finding (Discover), understanding breadth (Bubble & blind spots), making (Mixtape) — all in Act.
+
+## Phase 10c (Sep 25, 2026) — decisions
+- **Command palette over more navigation.** 25 sidebar entries is the ceiling; new pages are reached through Ctrl/⌘+K (and `/`) rather than more groups. The palette reads `PINNED`/`NAV_GROUPS` from the Shell, so it never drifts from the sidebar.
+- **One overlay channel.** `confirmDialog()` and `toast()` (`Overlay.tsx`) replace `window.confirm` (which ignores the skin) and are the target for the 18 ad-hoc banners.
+- **ISRC merge is on by default** and only touches `track_id`: a single and its album cut are one song for counting, but each play keeps the album it came from. Most-played version wins; ties break by id so rebuilds are stable. Owner ISRC overrides count even for songs Spotify never enriched.
+- **Lineage comes from MusicBrainz, not WhoSampled** (no public API; scraping breaks its terms). "The original" = the earliest other-artist recording of the same work, and only when this one is a cover or is later.
