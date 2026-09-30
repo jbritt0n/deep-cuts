@@ -476,6 +476,26 @@ def test_isrc_versions_merge_into_most_played():
     rows = dict(con.execute("SELECT track_id, COUNT(*) FROM plays_resolved GROUP BY 1").fetchall())
     assert rows.get('single') == 2 and rows.get('albumcut') == 5, rows          # off: separate again
 
+def test_schema_upgrade_survives_quit_without_close():
+    """Phase 10d.1: DuckDB 1.5 cannot replay a WAL holding ALTER TABLE ADD COLUMN on a table with a DEFAULT now() column
+    (track_lyric_features.fetched_at). Db::open checkpoints straight after schema.sql, so a launch that adds columns and
+    then ends without closing (tray Quit, a kill) must still reopen. Simulates a future phase adding one more column."""
+    import os, subprocess, tempfile
+    d = tempfile.mkdtemp(); db = os.path.join(d, 'r.duckdb')
+    up = os.path.join(d, 'upgrade.sql')
+    open(up, 'w').write((SQL / 'schema.sql').read_text() + '\nALTER TABLE track_lyric_features ADD COLUMN IF NOT EXISTS zz_future INTEGER;\n')
+    c = duckdb.connect(db); c.execute((SQL / 'schema.sql').read_text()); c.execute('CHECKPOINT'); c.close()
+    kill = "import duckdb,os,sys;c=duckdb.connect(sys.argv[1]);c.execute(open(sys.argv[2]).read());{ck}os._exit(0)"
+    subprocess.run([sys.executable, '-c', kill.format(ck=''), db, up], check=True)
+    try: duckdb.connect(db).close(); unfixed = False
+    except Exception as e: unfixed = 'replaying WAL' in str(e)
+    if unfixed: os.remove(db + '.wal')                     # what lib.rs recovery does (it renames rather than deletes)
+    subprocess.run([sys.executable, '-c', kill.format(ck="c.execute('CHECKPOINT');"), db, up], check=True)
+    c = duckdb.connect(db)
+    assert c.execute("SELECT COUNT(*) FROM information_schema.columns WHERE table_name = 'track_lyric_features' AND column_name = 'zz_future'").fetchone()[0] == 1
+    c.close()
+    print(f"   (DuckDB {duckdb.__version__} WAL-replay bug still present: {unfixed})")
+
 if __name__ == '__main__':
     tests = [v for k, v in globals().items() if k.startswith('test_')]
     fails = 0

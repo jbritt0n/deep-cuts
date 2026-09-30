@@ -82,7 +82,24 @@ fn detect_zone() -> String {
 
 /// Returns (real, demo, zone, rebuild_needed). A needed rebuild runs in the background once the window is up (Phase 9l).
 fn open_databases(paths: &paths::DataPaths) -> anyhow::Result<(Arc<Db>, Arc<Db>, String, bool)> {
-    let real = Db::open(&paths.db_path, &detect_zone())?;
+    let real = match Db::open(&paths.db_path, &detect_zone()) {
+        Ok(d) => d,
+        // Phase 10d.1 — a WAL DuckDB cannot replay would otherwise stop the app for good. The main file is intact up to its
+        // last checkpoint, so set the WAL aside (renamed, never deleted — a later DuckDB may replay it) and open without it.
+        // Only this exact failure is handled; any other open error still stops with the data untouched.
+        Err(e) if format!("{e:#}").contains("Failure while replaying WAL") => {
+            let wal = std::path::PathBuf::from(format!("{}.wal", paths.db_path.display()));
+            let kept = std::path::PathBuf::from(format!("{}.unreplayable-{}", wal.display(), chrono::Local::now().format("%Y%m%d-%H%M%S")));
+            log::error!("the record's write-ahead log could not be replayed ({e:#}); moving it to {} and opening the record at its last checkpoint", kept.display());
+            std::fs::rename(&wal, &kept).with_context(|| format!("could not move {} aside — move it yourself and start again", wal.display()))?;
+            let d = Db::open(&paths.db_path, &detect_zone()).context("opening the record without its write-ahead log")?;
+            d.log_activity("app", "warn", "Recovered from an unreadable write-ahead log: the record opened at its last save point. Changes from the end of the previous session may be missing; recent plays come back with the next sync.",
+                Some(&format!("set aside: {}", kept.display())));
+            let _ = d.exec("INSERT INTO app_meta (key, value) VALUES ('wal_recovered', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value", &[serde_json::json!(kept.display().to_string())]);
+            d
+        }
+        Err(e) => return Err(e),
+    };
     // A zone saved earlier wins over the OS zone.
     let saved = real
         .query("SELECT value FROM app_meta WHERE key = 'timezone'", &[])

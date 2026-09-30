@@ -25,7 +25,13 @@ pub fn setup(app: &AppHandle) -> tauri::Result<()> {
                     }
                 });
             }
-            "quit" => app.exit(0),
+            "quit" => {
+                // Phase 10d.1 — leave nothing in the WAL: Quit ends the process without dropping the connections.
+                let st = app.state::<crate::AppState>();
+                if let Err(e) = st.real.checkpoint() { log::warn!("checkpoint on quit failed: {e:#}"); }
+                let _ = st.demo.checkpoint();
+                app.exit(0)
+            }
             _ => {}
         })
         .on_tray_icon_event(|tray, ev| {

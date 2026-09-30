@@ -48,6 +48,12 @@ impl Db {
         // casts are identity. (Ignored if the setting isn't available.)
         let _ = conn.execute_batch("SET TimeZone='UTC';");
         conn.execute_batch(SCHEMA_SQL).context("applying schema.sql")?;
+        // Phase 10d.1 — fold the schema into the main file at once. DuckDB 1.5 writes `ALTER TABLE … ADD COLUMN` on a
+        // table that has a `DEFAULT now()` column into the WAL in a form it cannot replay ("GetDefaultDatabase with no
+        // default database set"), so if the app then ended without a checkpoint (tray Quit, a kill, a crash) the next
+        // launch could not open the record (owner's 10d crash). No-op ALTERs are harmless; only a launch that really
+        // adds columns is exposed — and after this checkpoint it no longer is.
+        conn.execute_batch("CHECKPOINT;").context("checkpointing after schema.sql")?;
         let db = Db { conn: Mutex::new(conn), zone: zone.to_string() };
         db.load_tz_offsets(zone)?;
         Ok(db)

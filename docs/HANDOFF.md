@@ -1,4 +1,16 @@
-# Handoff — current (Phase 10d → 10e)
+# Handoff — current (Phase 10d.1 → 10e)
+
+## 10d.1 — startup crash fix (owner, Linux MX)
+Symptom: `INTERNAL Error: Failure while replaying WAL … GetDefaultDatabase with no default database set`, app will not start.
+Cause (reproduced, DuckDB 1.5.x bug): `ALTER TABLE … ADD COLUMN` on a table that has a `DEFAULT now()` column is written to the WAL
+in a form DuckDB cannot replay. 10d adds 7 columns to `track_lyric_features` (`fetched_at DEFAULT now()`); tray **Quit** calls
+`app.exit(0)` without closing the connection, so the ALTERs stayed in the WAL and the next open failed. No-op ALTERs are harmless.
+Fix: `Db::open` runs `CHECKPOINT` right after `schema.sql` (db.rs); tray Quit checkpoints both records (tray.rs); `open_databases`
+(lib.rs) recovers the *real* record from exactly this error by renaming the WAL to `…wal.unreplayable-<stamp>` (kept, never deleted),
+opening at the last checkpoint and logging it to Activity + `app_meta.wal_recovered`. Any other open error still stops untouched.
+Regression test: `test_schema_upgrade_survives_quit_without_close` in `scripts/test_sql_fixtures.py` (also reports whether DuckDB still has the bug).
+Rule for future phases: any new column on a table with a function default is safe only because of the post-schema checkpoint — keep it.
+
 
 **Written:** September 30, 2026. Replaced each build; past handoffs are in `history/handoffs/` (10c's is `HANDOFF-PHASE-10C.md`).
 
