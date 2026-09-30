@@ -1,8 +1,8 @@
-# Deep Cuts v3 — Phase 10d.1
+# Deep Cuts v3 — Phase 10d.2
 
 A local-first desktop app that turns years of Spotify listening into an explorable record. Tauri 2 + React + DuckDB. Everything stays on your machine.
 
-**Phase 10d.1 (this drop)** fixes a startup crash after upgrading ("Failure while replaying WAL"): a DuckDB bug with schema changes left unsaved by Quit. The app now saves the schema immediately, saves on Quit, and recovers automatically if it ever meets an unreadable log. See docs/HANDOFF.md.
+**Phase 10d.2 (this drop)** brings Cargo.lock up to date (it had been missing `tiny_http` since 9m, which broke `cargo test --locked` in CI). **Phase 10d.1** fixes a startup crash after upgrading ("Failure while replaying WAL"): a DuckDB bug with schema changes left unsaved by Quit. The app now saves the schema immediately, saves on Quit, and recovers automatically if it ever meets an unreadable log. See docs/HANDOFF.md.
 
 **Phase 10d.** Everything about the local model is now in **Settings → Local model**: timeout (default 15 min — it was a fixed 4), context window, keep-loaded, presets for older PCs, a Test button and a log of how long every job really takes. Lyric tagging is rebuilt for small models: a fixed palette of 38 moods and 57 themes, keywords that must occur in the lyrics, cleaned titles (no more "radio edit"), and its own gentle background queue. **Lyrics** is its own page — a big cloud, a mood map, lyrical weather, themes by year and time of day, and **Lyric hygiene** to see and correct every song's words, themes, mood and language. **Liner Notes** gets a calendar and *Write with your local model*, kept per week; **Roast Me** roasts a year, month or week with 16 new receipts and a full dossier for the model. See **docs/HANDOFF.md**.
 

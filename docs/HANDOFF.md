@@ -1,4 +1,13 @@
-# Handoff — current (Phase 10d.1 → 10e)
+# Handoff — current (Phase 10d.2 → 10e)
+
+## 10d.2 — CI: stale Cargo.lock
+`cargo test --lib --locked` failed ("cannot update the lock file … --locked"). Cause: Phase 9m added `tiny_http = "0.12"` to
+Cargo.toml without regenerating Cargo.lock (local `cargo build` silently updated its own copy; CI's `--locked` refuses).
+Fix: Cargo.lock gains `tiny_http 0.12.0` and its three new deps `ascii 1.1.0`, `chunked_transfer 1.5.0`, `httpdate 1.0.3`
+(checksums from the crates.io index; TLS features are optional and off) plus `"tiny_http"` in the `deep-cuts` package's list.
+Purely additive (31 lines). Checked: every Cargo.toml dependency and every enabled feature resolves inside the lock.
+Rule: after touching Cargo.toml, run `cargo generate-lockfile --offline` or `cargo check` and commit Cargo.lock with it.
+
 
 ## 10d.1 — startup crash fix (owner, Linux MX)
 Symptom: `INTERNAL Error: Failure while replaying WAL … GetDefaultDatabase with no default database set`, app will not start.
