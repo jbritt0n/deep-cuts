@@ -23,3 +23,10 @@ describe('error envelope (Phase 10b, Kimi T2)', () => {
     expect(describeError('[invalid_input] Use a year (1972) or a date (1972-03-01)').hint).toBe('Use a year (1972) or a date (1972-03-01)');
   });
 });
+
+describe('slow local model (Phase 10d)', () => {
+  it('a model timeout is its own code, not a network failure', () => {
+    expect(classify('slow_model: the local model took longer than 900 s to answer')).toBe('slow_model');
+    expect(describeError('[slow_model] took longer').hint).toMatch(/Settings → Local model/);
+  });
+});

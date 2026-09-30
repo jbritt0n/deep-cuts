@@ -1,35 +1,32 @@
-# Handoff — current (Phase 10c → 10d)
+# Handoff — current (Phase 10d → 10e)
 
-## What 10c changed
-UI foundations: command palette (`src/components/CommandPalette.tsx`, `src/lib/fuzzy.ts`), overlays (`src/components/Overlay.tsx`: confirmDialog, toast, OnThisPage), Card anchors (`id="c-<slug>"`), global focus-visible (`src/index.css`), `React.memo` on all chart components, `deepcuts:refresh` re-runs `useAsync`. Data: ISRC version merge in `entity_resolution.sql` (setting `merge_isrc_versions`); `track_lineage` + `enrich_lineage` in `connectors/musicbrainz.rs` (scheduler 8/tick, manual sync 40), `LineageCard` on Track. Tests: `smoke-10c.ts`, fuzzy unit tests, ISRC fixture; smoke-9i made rerunnable.
+**Written:** September 30, 2026. Replaced each build; past handoffs are in `history/handoffs/` (10c's is `HANDOFF-PHASE-10C.md`).
 
-**Uncompiled Rust to watch in CI:** `musicbrainz::enrich_lineage` (closures `put`/`stop`, `dedup_by`), its calls in `scheduler.rs` and `commands.rs`, and the `merge_isrc_versions` allow-list entry.
-
----
-# Previous handoff (Phase 10b → 10c)
-
-**Written:** September 25, 2026. Replaced each build; past handoffs are in `history/handoffs/`. The plan lives in `ROADMAP.md`.
-
-## What 10b changed
+## What 10d changed (owner's 10c feedback)
 | | |
 |---|---|
-| FreqBlog | The owner's real `/bulk` reply confirmed the 10a diagnosis (features under `result`) and is now `src-tauri/tests/fixtures/freqblog-bulk.json`, parsed by three Rust tests. Key names come from `key_int` + `mode` (`canonical_key`) because the reply spells one key as both `A#-Major` and `Bb-Major`. |
-| Discover | Split: **Discover** (recommendations, release radar, genre browse), **Bubble & blind spots** (`/depth`), **Mixtape** (`/mixtape`: builder, curated, Made by Deep Cuts). Bubble's LOG2(0) fixed (zero-length plays). |
-| Layout | Activity card under the Sessions banner; Best finds and Atlas "By country" no longer stretched with a half-height scroll list. |
-| Error envelope (Kimi T2) | `commands.rs::err` → `{code, message}`; `error_code` + tests; `src/lib/errors.ts` (`classify`, `DeepCutsError`, `describeError`) + tests; bridge converts every failure; ErrorBox shows a plain explanation with details. |
-| CI | `cargo test --lib --locked` on Linux before packaging (with a placeholder `dist/`). |
-| Family tree | Connections → Family tree: two rings of MusicBrainz relationships, yours highlighted, click to re-centre. Demo gains a few real relationships. |
-| Stylus S2 | `stylus_devices.retention_days`; details (player, service, device name) dropped after N days, plays kept; Settings → **Privacy** tab. |
+| Local-model controller | `llm.rs`: `LlmConfig` read on every call — `llm_timeout_s` (default 900, was a fixed 240), `llm_num_ctx` (4096, was 8192), `llm_keep_alive_min`, `llm_num_thread`, `llm_num_predict`, `llm_structured`. `chat_ex` / `chat_structured` (JSON-schema `format`, falls back to JSON mode on older Ollama). Every call logged to `llm_calls`. Timeouts → new error code `slow_model` (Rust `error_code` + `errors.ts`). `Foreground` guard: page calls mark themselves busy and background tagging yields. |
+| Settings → Local model | `src/components/LocalModelPanel.tsx`: address, model picker, **Test** (`llm_test`), presets, knobs, background-tagging pace + queue, "how long it really takes" (median / p90 / max per purpose). Old Ollama card on Connectors now links here. |
+| Lyric tagging v2 (`llm_rev` 2) | `connectors/lyrics.rs`: fixed `MOODS` (38) and `THEME_VOCAB` (57, first 35 = the lexicon themes) sent as a schema; `coerce_mood` / `coerce_theme` map legacy/free answers; keywords grounded in the text; `clean_title` strips "(Radio Edit)" etc. (also a second LRCLIB try with the cleaned title); summary kept only if no 5-word run matches the lyrics. **Tagging left the LRCLIB batch** — own queue `llm_batch` in `scheduler.rs` (`llm_lyrics_per_tick`, `llm_lyrics_tick_min`), re-fetches text transiently. Schema cleanup nulls the 9f instruction echoes. Vocab lists mirrored in `src/lib/lyricVocab.ts` (vitest compares them). |
+| Lyric hygiene | Tables `lyric_overrides`, `lyric_term_blocklist`; views `track_lyrics_effective` and a re-created `track_lyric_keywords` honour corrections. Commands `lyrics_override_set` / `_clear`, `lyrics_blocklist`, `lyrics_requeue`, `lyrics_llm_track`, `lyrics_refetch_track` (mirrored in dev-server.mjs except the two network ones). |
+| Lyrics page (`/lyrics`) | `src/pages/Lyrics.tsx` + `src/lib/lyricQueries.ts`: five clouds, mood map, lyrical weather, theme drift × year and × day part, wordiness, valence vs skips, languages, Hygiene (filters incl. *suspicious*), song editor with every term + scores + lyrical neighbours. `/lyrics?song=<id>` opens one song (linked from the song page). Insights card now points here. `WordCloud` is responsive, rank-coloured, up to 180 words. |
+| Liner Notes | Calendar + year strip, `weekExtras` / `notesPrompt` in `notesQueries.ts`, model writing saved to `llm_writings` (`writing_save` / `_delete` / `_pin`); jobs survive leaving the page (`src/lib/llm.ts` `writeWithModel`). |
+| Roast Me | `Period` (all / year / month / week), 16 new receipts (`nicheReceipts`), `roastDossier` + `roastMessages` for the model, routines saved. Fixed: the longest-session receipt used non-existent `started_at/ended_at` and never showed. |
 
 ## Rust (uncompiled) — compile first
-- `commands.rs`: new `err` body + `error_code` + `mod envelope_tests`; `stylus_update_device` gains `retention_days: Option<i64>` and runs `STYLUS_PROCESS_SQL`.
-- `connectors/freqblog.rs`: `canonical_key`, key/mode block, `mod fixture_tests` (uses `include_str!("../../tests/fixtures/freqblog-bulk.json")` — path relative to `src/connectors/`).
-- The first CI run of `cargo test` also compiles the 9h guard tests for the first time.
+- `llm.rs` rewritten (closure with explicit `-> Result<ChatReply>`, `reqwest::Error::is_timeout/is_connect`); its test calls `crate::commands::error_code`.
+- `connectors/lyrics.rs`: v2 block, `fetch_text`, `llm_batch`, `retag_track`, `refetch_track`, `llm_pending`, `mod llm_v2_tests` (4 tests incl. the owner's Radio Edit / "1 to 2 words" / Hypercolour cases). The inline `llm_theme` is gone.
+- `commands.rs`: `llm_chat` gains `purpose`, `num_predict`; new commands listed above; allow-list keys; `writing_pin` uses `UPDATE … FROM` (DuckDB has no row-value subquery compare — caught by smoke-10d).
+- `scheduler.rs`: the `lyrics-llm` loop. `lib.rs`: 10 new commands registered.
 
 ## Verify on the owner's machine
-1. Services → FreqBlog climbs; Insights → Sound and Moods → Tempo dial fill in; the key wheel shows one entry per key.
-2. Act → Bubble & blind spots loads without an error.
-3. Any error now reads as a sentence with "details" underneath.
+1. Settings → Local model → pick qwen2.5:0.5b → **Test**; choose *Old or slow PC*; turn on background tagging.
+2. After a few ticks: Lyrics → Moods shows only palette moods; Hygiene → *Suspicious tags* lists the old 9f tags (Big Bad Wolf's "radio edit" is already cleared); **Ask the model again** on one song.
+3. Liner Notes → pick a week → *Write with your local model*; leave and return — it finishes and the calendar shows ✎.
+4. Roast Me → *A month* → *Roast me*. The call log shows each job's time.
 
-## Next (10c) — ROADMAP §2
-Discogs connector (label / format / pressing); MusicBrainz samples & covers card on song pages; more connector fixtures (Last.fm, MusicBrainz); chart memoisation; merge ISRC versions into one entry.
+## Tests
+`npm test` → 52; `npx tsx scripts/smoke-10d.ts` (dev-server with `OLLAMA_MOCK=1`) → `10d smoke OK`; all earlier smoke scripts and `test_sql_fixtures.py` still pass.
+
+## Next (10e) — ideas from the lyric work
+Mood/theme rules for dynamic playlists; lyric-mood band on Eras; "sounds happy, reads bleak" (lyric valence vs FreqBlog energy); feed lyric themes into Daily Dig; streaming replies for the model on slow machines.

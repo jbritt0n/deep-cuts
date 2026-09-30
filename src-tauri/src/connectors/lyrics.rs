@@ -204,32 +204,288 @@ fn store(db: &Db, id: &str, f: &Features) -> Result<()> {
     Ok(())
 }
 
-/// Optional: ask the local model (Ollama) for themes and a mood from the transient text. Best effort; failures are logged, never fatal.
-fn llm_theme(db: &Db, id: &str, title: &str, artist: &str, text: &str) {
-    let Some(model) = setting(db, "ollama_model").filter(|m| !m.is_empty()) else { return };
-    let excerpt: String = text.chars().take(6000).collect();
-    let prompt = format!(
-        "You are tagging a song's lyrics for a personal music library. Reply with ONLY a JSON object: {{\"themes\": [3 to 5 short lowercase noun phrases naming what the song is actually about — subject matter and emotional stance, not genre, not the title], \"mood\": \"2 to 4 words\"}}.\nSong: \"{title}\" by {artist}\nLyrics:\n{excerpt}");
-    let msgs = vec![crate::llm::ChatMsg { role: "user".into(), content: prompt }];
-    match crate::llm::chat(db, &model, &msgs, true, 0.2) {
-        Ok(reply) => {
-            let clean = reply.trim().trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
-            let v: Value = serde_json::from_str(clean).unwrap_or(Value::Null);
-            let themes: Vec<String> = v["themes"].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty() && s.len() <= 40).take(5).collect()).unwrap_or_default();
-            let mood = v["mood"].as_str().map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty() && s.len() <= 60);
-            if !themes.is_empty() || mood.is_some() {
-                let _ = db.exec("UPDATE track_lyric_features SET llm_themes = CAST(? AS JSON)::VARCHAR[], llm_mood = ?, llm_model = ?, llm_at = now() WHERE track_id = ?", &[arr(&themes), json!(mood), json!(model), json!(id)]);
-            }
+// ---------------------------------------------------------------------------------------------------------------
+// Phase 10d — local-model tagging v2 (llm_rev 2). Owner feedback on qwen2.5:0.5b: moods were generic and redundant
+// ("happy", "happy and joyful", "joy"), two were the prompt echoed back ("1 to 2 words", "1-2 words"), a theme was the
+// title suffix ("radio edit"), and themes were vague ("emotional", "personal"). A half-billion-parameter model can't
+// be talked out of that with wording, so v2 constrains it instead:
+//   * moods come from a fixed palette of 38 distinct moods (each placed on a bright↔bleak × calm↔intense map in
+//     src/lib/lyricVocab.ts), themes from a fixed vocabulary that includes the lexicon's own themes — sent as a JSON
+//     schema so decoding can only produce allowed values (Ollama ≥ 0.5; older servers fall back to JSON mode and the
+//     answers are coerced onto the palette, synonyms first);
+//   * keywords must be words that actually occur in the lyrics — anything else is dropped (grounding);
+//   * the title is cleaned before the model sees it ("Big Bad Wolf (Radio Edit)" → "Big Bad Wolf"), and release
+//     words (edit, remix, remaster, version…) or instruction echoes can never be stored;
+//   * a one-line summary is kept only if it doesn't reproduce the lyrics (no 5-word run in common).
+// Tagging no longer rides inside the LRCLIB batch (a slow CPU turned one 40-song batch into hours): it has its own
+// queue (`llm_batch`) that re-fetches each song's text transiently, a few songs per tick, and yields to the pages.
+// The Rust lists below must match src/lib/lyricVocab.ts — a vitest test compares them.
+pub const LLM_REV: i64 = 2;
+
+pub const MOODS: &[&str] = &["euphoric", "joyful", "celebratory", "triumphant", "empowered", "confident", "playful", "carefree", "smitten", "romantic", "tender", "hopeful",
+    "serene", "dreamy", "sultry", "hypnotic", "wry", "nostalgic", "wistful", "bittersweet", "reflective", "yearning", "vulnerable", "melancholic", "lonely", "heartbroken",
+    "mournful", "resigned", "brooding", "eerie", "anxious", "restless", "gritty", "defiant", "bitter", "angry", "menacing", "desperate"];
+
+pub const THEME_VOCAB: &[&str] = &["rain", "night", "sun & summer", "winter", "ocean & shore", "river & lake", "the city", "the road", "home", "romance", "heartbreak", "longing",
+    "nostalgia & memory", "dancing & party", "dreams & sleep", "fire & smoke", "money & work", "faith & the divine", "youth & growing up", "death & mourning", "war & violence",
+    "time passing", "nature & wild", "defiance & protest", "loneliness & isolation", "drink & intoxication", "anger & revenge", "hope & light", "family", "the body",
+    "machines & static", "space & cosmos", "the troubled mind", "small town & country", "dawn & morning",
+    "new love", "desire & lust", "devotion", "jealousy", "betrayal", "friendship", "self-worth", "ambition & success", "freedom & escape", "identity", "addiction", "grief",
+    "regret", "forgiveness", "moving on", "obsession", "temptation", "survival", "fame", "social commentary", "travel & wanderlust", "nightlife"];
+
+const MOOD_SYNONYMS: &[(&str, &str)] = &[("happy", "joyful"), ("happiness", "joyful"), ("joy", "joyful"), ("upbeat", "joyful"), ("cheerful", "joyful"), ("sad", "melancholic"), ("sadness", "melancholic"),
+    ("melancholy", "melancholic"), ("gloomy", "melancholic"), ("anger", "angry"), ("rage", "angry"), ("furious", "angry"), ("hopelessness", "resigned"), ("hopeless", "resigned"), ("tragic", "mournful"),
+    ("grief", "mournful"), ("sorrowful", "mournful"), ("lighthearted", "carefree"), ("light-hearted", "carefree"), ("relaxed", "carefree"), ("love", "romantic"), ("loving", "tender"), ("gentle", "tender"),
+    ("calm", "serene"), ("peaceful", "serene"), ("chill", "serene"), ("energetic", "euphoric"), ("excited", "euphoric"), ("ecstatic", "euphoric"), ("dark", "brooding"), ("moody", "brooding"),
+    ("fear", "anxious"), ("fearful", "anxious"), ("scared", "anxious"), ("nervous", "anxious"), ("longing", "yearning"), ("sexy", "sultry"), ("seductive", "sultry"), ("empowering", "empowered"),
+    ("proud", "confident"), ("sarcastic", "wry"), ("ironic", "wry"), ("humorous", "playful"), ("funny", "playful"), ("fun", "playful"), ("sentimental", "nostalgic"), ("heartbreak", "heartbroken"),
+    ("frustrated", "bitter"), ("resentful", "bitter"), ("rebellious", "defiant"), ("dreamlike", "dreamy"), ("spooky", "eerie"), ("haunting", "eerie"), ("tense", "anxious"), ("uplifting", "hopeful"),
+    ("inspirational", "hopeful"), ("passionate", "romantic"), ("isolated", "lonely"), ("aggressive", "menacing"), ("threatening", "menacing"), ("contemplative", "reflective"), ("introspective", "reflective")];
+
+/// Words that are never a theme, mood or keyword: release/version suffixes and the prompt's own vocabulary echoed back.
+const JUNK: &[&str] = &["radio edit", "edit", "remix", "remaster", "remastered", "version", "mix", "feat", "featuring", "live", "mono", "stereo", "single", "demo", "extended", "instrumental",
+    "word", "words", "phrase", "phrases", "theme", "themes", "mood", "moods", "lowercase", "noun", "json", "lyrics", "song", "songs", "genre", "title", "none", "n/a", "unknown"];
+
+fn is_junk(s: &str) -> bool {
+    let l = s.trim().to_lowercase();
+    if l.chars().count() < 3 || l.chars().any(|c| c.is_ascii_digit()) { return true; }
+    JUNK.iter().any(|j| l == *j || l.split(|c: char| !c.is_alphanumeric() && c != '\'').any(|w| w == *j && j.len() > 4))
+}
+
+/// "Big Bad Wolf (Radio Edit)" → "Big Bad Wolf"; "Song - Remastered 2011" → "Song"; "Song (feat. X)" → "Song".
+pub fn clean_title(t: &str) -> String {
+    const RELEASE: &[&str] = &["edit", "remix", "mix", "remaster", "remastered", "version", "live", "mono", "stereo", "demo", "feat", "ft", "featuring", "radio", "extended", "acoustic", "deluxe", "bonus", "instrumental", "original", "rework", "dub", "vip", "reprise"];
+    let is_rel = |x: &str| x.to_lowercase().split(|c: char| !c.is_alphanumeric()).any(|w| RELEASE.contains(&w));
+    let mut out = String::new(); let mut depth = 0usize; let mut group = String::new();
+    for c in t.chars() {
+        match c {
+            '(' | '[' => { if depth == 0 { group.clear(); } else { group.push(c); } depth += 1; }
+            ')' | ']' if depth > 0 => { depth -= 1; if depth == 0 { if !is_rel(&group) { out.push('('); out.push_str(&group); out.push(')'); } } else { group.push(c); } }
+            _ => if depth > 0 { group.push(c) } else { out.push(c) },
         }
-        Err(e) => log::warn!("lyrics llm {id}: {e}"),
+    }
+    if let Some(i) = out.find(" - ") { if is_rel(&out[i + 3..]) { out.truncate(i); } }
+    let cleaned = out.split_whitespace().collect::<Vec<_>>().join(" ");
+    if cleaned.is_empty() { t.trim().to_string() } else { cleaned }
+}
+
+pub fn coerce_mood(s: &str) -> Option<String> {
+    let l = s.trim().to_lowercase();
+    if l.is_empty() || is_junk(&l) { return None; }
+    if MOODS.contains(&l.as_str()) { return Some(l); }
+    if let Some((_, m)) = MOOD_SYNONYMS.iter().find(|(k, _)| *k == l) { return Some(m.to_string()); }
+    // "happy and nostalgic" → the most specific palette word it names; synonyms after
+    let words: Vec<&str> = l.split(|c: char| !c.is_alphanumeric() && c != '-').filter(|w| !w.is_empty()).collect();
+    for w in words.iter().rev() { if MOODS.contains(w) { return Some(w.to_string()); } }
+    for w in words.iter().rev() { if let Some((_, m)) = MOOD_SYNONYMS.iter().find(|(k, _)| k == w) { return Some(m.to_string()); } }
+    None
+}
+
+pub fn coerce_theme(s: &str) -> Option<String> {
+    let l = s.trim().to_lowercase().replace(" and ", " & ");
+    if l.is_empty() || is_junk(&l) { return None; }
+    if THEME_VOCAB.contains(&l.as_str()) { return Some(l); }
+    // "heartbreak and loss" → "heartbreak"; "summer" → "sun & summer"; "love" → "romance"
+    const ALIAS: &[(&str, &str)] = &[("love", "romance"), ("romantic love", "romance"), ("relationships", "romance"), ("relationship", "romance"), ("girlfriend", "romance"), ("boyfriend", "romance"),
+        ("loss", "grief"), ("pain", "heartbreak"), ("breakup", "heartbreak"), ("sadness", "heartbreak"), ("loneliness", "loneliness & isolation"), ("summer", "sun & summer"), ("party", "dancing & party"),
+        ("dance", "dancing & party"), ("memories", "nostalgia & memory"), ("nostalgia", "nostalgia & memory"), ("personal growth", "identity"), ("self-discovery", "identity"), ("freedom", "freedom & escape"),
+        ("escape", "freedom & escape"), ("money", "money & work"), ("work", "money & work"), ("god", "faith & the divine"), ("religion", "faith & the divine"), ("faith", "faith & the divine"),
+        ("death", "death & mourning"), ("violence", "war & violence"), ("war", "war & violence"), ("drugs", "drink & intoxication"), ("alcohol", "drink & intoxication"), ("mental health", "the troubled mind"),
+        ("anxiety", "the troubled mind"), ("depression", "the troubled mind"), ("desire", "desire & lust"), ("lust", "desire & lust"), ("sex", "desire & lust"), ("success", "ambition & success"),
+        ("ambition", "ambition & success"), ("travel", "travel & wanderlust"), ("adventure", "travel & wanderlust"), ("journey", "the road"), ("road", "the road"), ("city", "the city"), ("hope", "hope & light"),
+        ("time", "time passing"), ("nature", "nature & wild"), ("society", "social commentary"), ("politics", "social commentary"), ("police", "defiance & protest"), ("protest", "defiance & protest"),
+        ("youth", "youth & growing up"), ("teenage love", "new love"), ("young love", "new love"), ("dreams", "dreams & sleep"), ("anger", "anger & revenge"), ("revenge", "anger & revenge"),
+        ("self-love", "self-worth"), ("confidence", "self-worth"), ("empowerment", "self-worth"), ("fire", "fire & smoke"), ("ocean", "ocean & shore"), ("sea", "ocean & shore"), ("space", "space & cosmos")];
+    if let Some((_, t)) = ALIAS.iter().find(|(k, _)| *k == l) { return Some(t.to_string()); }
+    THEME_VOCAB.iter().find(|t| { let head = t.split(" & ").collect::<Vec<_>>(); head.iter().any(|h| *h == l || l.split_whitespace().any(|w| w == *h && h.len() > 3)) }).map(|t| t.to_string())
+}
+
+fn tokens_of(text: &str) -> HashSet<String> {
+    text.to_lowercase().split(|c: char| !(c.is_alphanumeric() || c == '\'' || c == '’')).map(|w| w.replace('’', "'").trim_matches('\'').to_string()).filter(|w| !w.is_empty()).collect()
+}
+
+/// Keep a summary only if it paraphrases: no run of 5 words in common with the lyrics.
+fn paraphrases(summary: &str, text: &str) -> bool {
+    let norm = |s: &str| s.to_lowercase().split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).map(str::to_string).collect::<Vec<_>>();
+    let (a, b) = (norm(summary), norm(text));
+    if a.len() < 5 { return true; }
+    let hay = format!(" {} ", b.join(" "));
+    !a.windows(5).any(|w| hay.contains(&format!(" {} ", w.join(" "))))
+}
+
+#[derive(serde::Serialize, Default, Debug)]
+pub struct LlmTags { pub themes: Vec<String>, pub mood: Option<String>, pub mood2: Option<String>, pub keywords: Vec<String>, pub summary: Option<String>, pub model: String, pub ms: u64 }
+
+/// Validate whatever the model sent back against the vocabularies and the lyrics themselves.
+pub fn parse_tags(reply: &str, text: &str, title: &str, artist: &str) -> LlmTags {
+    let clean = reply.trim().trim_start_matches("```json").trim_start_matches("```").trim_end_matches("```").trim();
+    let v: Value = serde_json::from_str(clean).unwrap_or(Value::Null);
+    let strs = |k: &str| -> Vec<String> { v[k].as_array().map(|a| a.iter().filter_map(|x| x.as_str()).map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty()).collect()).unwrap_or_default() };
+    let stop: HashSet<&str> = STOP.split_whitespace().collect();
+    let lyric_words = tokens_of(text);
+    let name_words: HashSet<String> = tokens_of(&format!("{} {}", artist, title)).into_iter().filter(|w| !lyric_words.contains(w)).collect();
+    let mut themes: Vec<String> = Vec::new();
+    for t in strs("themes") { if let Some(c) = coerce_theme(&t) { if !themes.contains(&c) { themes.push(c); } } }
+    themes.truncate(4);
+    let mood = v["mood"].as_str().and_then(coerce_mood);
+    let mood2 = v["mood2"].as_str().and_then(coerce_mood).filter(|m| Some(m) != mood.as_ref());
+    let mut keywords: Vec<String> = Vec::new();
+    for k in strs("keywords") {
+        let k = k.trim_matches(|c: char| !c.is_alphanumeric()).to_string();
+        let parts: Vec<&str> = k.split_whitespace().collect();
+        if parts.is_empty() || parts.len() > 2 || is_junk(&k) { continue; }
+        if parts.iter().any(|p| !lyric_words.contains(*p) || name_words.contains(*p)) { continue; }   // grounded in the text, not the title/artist
+        if parts.len() == 1 && (stop.contains(parts[0]) || parts[0].chars().count() < 3) { continue; }
+        if !keywords.contains(&k) { keywords.push(k); }
+    }
+    keywords.truncate(12);
+    let summary = v["summary"].as_str().map(|s| s.trim().trim_matches('"').to_string())
+        .filter(|s| { let l = s.to_lowercase(); s.len() >= 12 && s.chars().count() <= 160 && !l.contains("one sentence") && !l.contains("own words") && !l.contains("quote the lyrics") && paraphrases(s, text) });
+    LlmTags { themes, mood, mood2, keywords, summary, ..Default::default() }
+}
+
+fn tag_schema() -> Value {
+    json!({ "type": "object", "properties": {
+        "summary": { "type": "string" },
+        "themes": { "type": "array", "items": { "type": "string", "enum": THEME_VOCAB }, "minItems": 1, "maxItems": 4 },
+        "mood": { "type": "string", "enum": MOODS },
+        "mood2": { "type": "string", "enum": MOODS },
+        "keywords": { "type": "array", "items": { "type": "string" }, "maxItems": 12 } },
+        "required": ["summary", "themes", "mood", "keywords"] })
+}
+
+fn tag_prompt(title: &str, artist: &str, text: &str) -> String {
+    let excerpt: String = text.chars().take(3500).collect();
+    format!("Read these song lyrics and tag them for a personal music library.\n\
+Answer with JSON only:\n\
+- summary: one sentence in your own words saying what the song is about. Do not quote the lyrics.\n\
+- themes: 1 to 4 subjects the song is really about, chosen from: {}.\n\
+- mood: the single best emotional tone, chosen from: {}.\n\
+- mood2: a second, different tone from the same list.\n\
+- keywords: 6 to 12 vivid words copied exactly from the lyrics (images, places, objects, actions). Skip filler like love, baby, yeah, night, and never use the song title.\n\n\
+Song: \"{}\" by {}\nLyrics:\n{}",
+        THEME_VOCAB.join(", "), MOODS.join(", "), clean_title(title), artist, excerpt)
+}
+
+fn pick_model(db: &Db) -> Option<String> {
+    let st = crate::llm::status(db);
+    if !st.reachable || st.models.is_empty() { return None; }
+    match crate::llm::chosen_model(db) { Some(m) if st.models.contains(&m) => Some(m), _ => st.models.first().cloned() }
+}
+
+/// Ask the model about one song's (transient) text and store the validated tags. The text is not kept.
+pub fn tag_one(db: &Db, id: &str, title: &str, artist: &str, text: &str, model: &str) -> Result<LlmTags> {
+    let msgs = vec![crate::llm::ChatMsg { role: "user".into(), content: tag_prompt(title, artist, text) }];
+    let r = crate::llm::chat_structured(db, model, &msgs, tag_schema(), 0.2, "lyrics", Some(400));
+    let r = match r {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = db.exec("UPDATE track_lyric_features SET llm_attempts = COALESCE(llm_attempts, 0) + 1, llm_error = ? WHERE track_id = ?", &[json!(e.to_string().chars().take(300).collect::<String>()), json!(id)]);
+            return Err(e);
+        }
+    };
+    let mut tags = parse_tags(&r.content, text, title, artist);
+    tags.model = model.to_string(); tags.ms = r.ms;
+    db.exec("UPDATE track_lyric_features SET llm_themes = CAST(? AS JSON)::VARCHAR[], llm_mood = ?, llm_mood2 = ?, llm_keywords = CAST(? AS JSON)::VARCHAR[], llm_summary = ?,
+             llm_model = ?, llm_at = now(), llm_rev = ?, llm_ms = ?, llm_error = NULL, llm_attempts = COALESCE(llm_attempts, 0) + 1 WHERE track_id = ?",
+        &[arr(&tags.themes), json!(tags.mood), json!(tags.mood2), arr(&tags.keywords), json!(tags.summary), json!(model), json!(LLM_REV), json!(r.ms as i64), json!(id)])?;
+    Ok(tags)
+}
+
+/// Fetch one song's plain lyrics from LRCLIB (exact title first, then the cleaned title). Ok(None) = LRCLIB has none.
+pub fn fetch_text(http: &reqwest::blocking::Client, db: &Db, name: &str, artist: &str, album: Option<&str>, dur_ms: Option<i64>) -> Result<Option<String>> {
+    let cleaned = clean_title(name);
+    let mut tries: Vec<Vec<(&str, String)>> = Vec::new();
+    let mut q: Vec<(&str, String)> = vec![("track_name", name.to_string()), ("artist_name", artist.to_string())];
+    if let Some(al) = album { q.push(("album_name", al.to_string())); }
+    if let Some(d) = dur_ms { q.push(("duration", (d / 1000).to_string())); }
+    tries.push(q);
+    if cleaned != name { let mut q2: Vec<(&str, String)> = vec![("track_name", cleaned.clone()), ("artist_name", artist.to_string())]; if let Some(d) = dur_ms { q2.push(("duration", (d / 1000).to_string())); } tries.push(q2); }
+    for q in tries {
+        let resp = http.get(API).query(&q).send();
+        let _ = db.exec("INSERT INTO api_calls (service, endpoint, status) VALUES ('lrclib', 'get', ?)", &[json!(resp.as_ref().map(|r| r.status().as_u16() as i64).unwrap_or(0))]);
+        let res = resp?;
+        let code = res.status().as_u16();
+        if res.status().is_success() {
+            let v: Value = res.json().unwrap_or(Value::Null);
+            let text = v["plainLyrics"].as_str().unwrap_or("").to_string();
+            if !text.trim().is_empty() { return Ok(Some(text)); }
+            return Ok(None);
+        }
+        if code == 429 { return Err(anyhow::anyhow!("LRCLIB rate limit (429)")); }
+        if code != 404 { return Err(anyhow::anyhow!("LRCLIB {code}")); }
+        std::thread::sleep(Duration::from_millis(400));
+    }
+    Ok(None)
+}
+
+fn lrclib_client() -> Result<reqwest::blocking::Client> { Ok(reqwest::blocking::Client::builder().timeout(Duration::from_secs(15)).user_agent(UA).build()?) }
+
+/// Background queue: songs whose model tags are missing or older than LLM_REV, most-played first. Stops at the
+/// deadline, when a page starts its own model call, or on a timeout (no point queueing more behind a slow model).
+pub fn llm_batch(db: &Db, max: usize, deadline: Duration) -> Result<usize> {
+    if setting(db, "lyrics_llm_enabled").as_deref() != Some("true") || max == 0 || crate::llm::foreground_busy() { return Ok(0); }
+    let Some(model) = pick_model(db) else { return Ok(0) };
+    let all_langs = setting(db, "llm_lyrics_all_langs").as_deref() == Some("true");
+    let rows = db.query(&format!(
+        "SELECT f.track_id, t.name, a.name AS artist, al.name AS album, COALESCE(t.duration_ms, t.duration_ms_est) AS dur
+         FROM track_lyric_features f JOIN tracks t USING (track_id) LEFT JOIN artists a ON a.artist_id = t.artist_id LEFT JOIN albums al ON al.album_id = t.album_id
+         LEFT JOIN lyric_overrides o ON o.track_id = f.track_id
+         LEFT JOIN (SELECT track_id, COUNT(*) c FROM plays_resolved WHERE attended GROUP BY 1) p ON p.track_id = f.track_id
+         WHERE f.found AND COALESCE(f.features_rev, 1) >= {FEATURES_REV} AND COALESCE(f.llm_rev, 0) < {LLM_REV} AND COALESCE(f.llm_attempts, 0) < 3
+           AND NOT COALESCE(o.locked, FALSE) AND NOT COALESCE(o.hidden, FALSE) AND t.name IS NOT NULL AND a.name IS NOT NULL
+           {}
+         ORDER BY COALESCE(p.c, 0) DESC LIMIT {max}", if all_langs { "" } else { "AND COALESCE(NULLIF(o.lang, ''), f.lang) = 'en'" }), &[])?;
+    if rows.is_empty() { return Ok(0); }
+    let http = lrclib_client()?;
+    let started = std::time::Instant::now();
+    let (mut done, mut gone) = (0usize, 0usize);
+    for r in rows {
+        if crate::llm::foreground_busy() || started.elapsed() > deadline { break; }
+        let g = |k: &str| r.get(k).and_then(|v| v.as_str()).map(str::to_string);
+        let (Some(id), Some(name), Some(artist)) = (g("track_id"), g("name"), g("artist")) else { continue };
+        match fetch_text(&http, db, &name, &artist, g("album").as_deref(), r.get("dur").and_then(|v| v.as_i64())) {
+            Ok(Some(text)) => match tag_one(db, &id, &name, &artist, &text, &model) {
+                Ok(_) => done += 1,
+                Err(e) => { log::warn!("lyrics llm {id}: {e}"); if e.to_string().contains("slow_model") { db.log_activity("lyrics", "warn", "Local model timed out while tagging lyrics — paused until the next tick", Some(&e.to_string())); break; } }
+            },
+            Ok(None) => { gone += 1; let _ = db.exec("UPDATE track_lyric_features SET llm_attempts = 3, llm_error = 'LRCLIB no longer has these lyrics' WHERE track_id = ?", &[json!(id)]); }
+            Err(e) => { log::warn!("lyrics refetch {id}: {e}"); break; }
+        }
+        std::thread::sleep(Duration::from_millis(300));
+    }
+    if done > 0 || gone > 0 { db.log_activity("lyrics", "info", &format!("Local model ({model}) tagged {done} songs{}", if gone > 0 { format!("; {gone} no longer on LRCLIB") } else { String::new() }), None); }
+    Ok(done)
+}
+
+/// Lyric hygiene → "Ask the model again" for one song, now (foreground; ignores the attempt cap and the lock).
+pub fn retag_track(db: &Db, id: &str) -> Result<LlmTags> {
+    let _fg = crate::llm::Foreground::enter();
+    let model = pick_model(db).ok_or_else(|| anyhow::anyhow!("could not reach Ollama — start it and pick a model in Settings → Local model"))?;
+    let rows = db.query("SELECT t.name, a.name AS artist, al.name AS album, COALESCE(t.duration_ms, t.duration_ms_est) AS dur FROM tracks t LEFT JOIN artists a ON a.artist_id = t.artist_id LEFT JOIN albums al ON al.album_id = t.album_id WHERE t.track_id = ?", &[json!(id)])?;
+    let r = rows.first().ok_or_else(|| anyhow::anyhow!("unknown track {id}"))?;
+    let g = |k: &str| r.get(k).and_then(|v| v.as_str()).map(str::to_string);
+    let (name, artist) = (g("name").unwrap_or_default(), g("artist").unwrap_or_default());
+    let text = fetch_text(&lrclib_client()?, db, &name, &artist, g("album").as_deref(), r.get("dur").and_then(|v| v.as_i64()))?
+        .ok_or_else(|| anyhow::anyhow!("LRCLIB has no lyrics for this song (not found)"))?;
+    tag_one(db, id, &name, &artist, &text, &model)
+}
+
+/// Lyric hygiene → "Re-fetch and re-analyse": new text, new features and terms; model tags are re-queued.
+pub fn refetch_track(db: &Db, id: &str) -> Result<bool> {
+    let rows = db.query("SELECT t.name, a.name AS artist, al.name AS album, COALESCE(t.duration_ms, t.duration_ms_est) AS dur FROM tracks t LEFT JOIN artists a ON a.artist_id = t.artist_id LEFT JOIN albums al ON al.album_id = t.album_id WHERE t.track_id = ?", &[json!(id)])?;
+    let r = rows.first().ok_or_else(|| anyhow::anyhow!("unknown track {id}"))?;
+    let g = |k: &str| r.get(k).and_then(|v| v.as_str()).map(str::to_string);
+    match fetch_text(&lrclib_client()?, db, &g("name").unwrap_or_default(), &g("artist").unwrap_or_default(), g("album").as_deref(), r.get("dur").and_then(|v| v.as_i64()))? {
+        Some(text) => { store(db, id, &extract(&text))?; Ok(true) }
+        None => { db.exec("INSERT OR REPLACE INTO track_lyric_features (track_id, source, found, features_rev) VALUES (?, 'lrclib', FALSE, ?)", &[json!(id), json!(FEATURES_REV)])?; Ok(false) }
     }
 }
 
 /// Fetch and featurise: first tracks never looked up (most-played first), then rows written under
-/// older rules (features_rev < current) to re-featurise. LLM theming rides along when enabled.
+/// older rules (features_rev < current) to re-featurise. Model tagging has its own queue (`llm_batch`).
 pub fn enrich_batch(db: &Db, max_tracks: usize) -> Result<usize> {
-    let http = reqwest::blocking::Client::builder().timeout(Duration::from_secs(15)).user_agent(UA).build()?;
-    let llm_on = setting(db, "lyrics_llm_enabled").as_deref() == Some("true") && crate::llm::status(db).reachable;
+    let http = lrclib_client()?;
     let rows = db.query(&format!(
         "SELECT t.track_id, t.name, a.name AS artist, al.name AS album, COALESCE(t.duration_ms, t.duration_ms_est) AS dur,
                 f.track_id IS NOT NULL AS refresh
@@ -239,44 +495,59 @@ pub fn enrich_batch(db: &Db, max_tracks: usize) -> Result<usize> {
          WHERE t.name IS NOT NULL AND a.name IS NOT NULL
            AND (f.track_id IS NULL OR (f.found AND COALESCE(f.features_rev, 1) < {FEATURES_REV}))
          ORDER BY (f.track_id IS NULL) DESC, p.c DESC LIMIT {max_tracks}"), &[])?;
-    let mut n = 0; let mut refreshed = 0; let mut themed = 0;
+    let mut n = 0; let mut refreshed = 0;
     for r in rows {
         let g = |k: &str| r.get(k).and_then(|v| v.as_str()).map(str::to_string);
         let (Some(id), Some(name), Some(artist)) = (g("track_id"), g("name"), g("artist")) else { continue };
         let refresh = r.get("refresh").and_then(|v| v.as_bool()).unwrap_or(false);
-        let mut q: Vec<(&str, String)> = vec![("track_name", name.clone()), ("artist_name", artist.clone())];
-        if let Some(al) = g("album") { q.push(("album_name", al)); }
-        if let Some(d) = r.get("dur").and_then(|v| v.as_i64()) { q.push(("duration", (d / 1000).to_string())); }
-        let resp = http.get(API).query(&q).send();
-        let _ = db.exec("INSERT INTO api_calls (service, endpoint, status) VALUES ('lrclib', 'get', ?)", &[json!(resp.as_ref().map(|r| r.status().as_u16() as i64).unwrap_or(0))]);
-        match resp {
-            Ok(res) if res.status().is_success() => {
-                let v: Value = res.json().unwrap_or(Value::Null);
-                let text = v["plainLyrics"].as_str().unwrap_or("").to_string();
-                if text.trim().is_empty() {
-                    db.exec("INSERT OR REPLACE INTO track_lyric_features (track_id, source, found, features_rev) VALUES (?, 'lrclib', FALSE, ?)", &[json!(id), json!(FEATURES_REV)])?;
-                } else {
-                    let f = extract(&text);
-                    store(db, &id, &f)?;
-                    if llm_on && f.lang == "en" { llm_theme(db, &id, &name, &artist, &text); themed += 1; }
-                }
-                // `text` drops here; nothing of it persists
-                n += 1; if refresh { refreshed += 1; }
-            }
-            Ok(res) if res.status().as_u16() == 404 => {
-                db.exec("INSERT OR REPLACE INTO track_lyric_features (track_id, source, found, features_rev) VALUES (?, 'lrclib', FALSE, ?)", &[json!(id), json!(FEATURES_REV)])?;
-                n += 1;
-            }
-            Ok(res) if res.status().as_u16() == 429 => { std::thread::sleep(Duration::from_secs(30)); break; }
-            Ok(_) | Err(_) => break,
+        match fetch_text(&http, db, &name, &artist, g("album").as_deref(), r.get("dur").and_then(|v| v.as_i64())) {
+            Ok(Some(text)) => { store(db, &id, &extract(&text))?; n += 1; if refresh { refreshed += 1; } }   // `text` drops here; nothing of it persists
+            Ok(None) => { db.exec("INSERT OR REPLACE INTO track_lyric_features (track_id, source, found, features_rev) VALUES (?, 'lrclib', FALSE, ?)", &[json!(id), json!(FEATURES_REV)])?; n += 1; }
+            Err(e) => { if e.to_string().contains("429") { std::thread::sleep(Duration::from_secs(30)); } break; }
         }
         std::thread::sleep(Duration::from_millis(600));
     }
-    if n > 0 {
-        let extra = if themed > 0 { format!(", {themed} themed by the local model") } else { String::new() };
-        db.log_activity("lyrics", "info", &format!("Lyric features for {n} tracks ({refreshed} re-analysed under the v{FEATURES_REV} rules{extra})"), None);
-    }
+    if n > 0 { db.log_activity("lyrics", "info", &format!("Lyric features for {n} tracks ({refreshed} re-analysed under the v{FEATURES_REV} rules)"), None); }
     Ok(n)
+}
+
+/// Settings → Local model: how the tagging queue stands.
+pub fn llm_pending(db: &Db) -> (i64, i64, i64) {
+    let done = db.scalar_i64(&format!("SELECT COUNT(*) FROM track_lyric_features WHERE found AND COALESCE(llm_rev, 0) >= {LLM_REV}")).unwrap_or(0);
+    let queued = db.scalar_i64(&format!("SELECT COUNT(*) FROM track_lyric_features f LEFT JOIN lyric_overrides o USING (track_id) WHERE f.found AND COALESCE(f.features_rev, 1) >= {FEATURES_REV} AND COALESCE(f.llm_rev, 0) < {LLM_REV} AND COALESCE(f.llm_attempts, 0) < 3 AND NOT COALESCE(o.locked, FALSE) AND NOT COALESCE(o.hidden, FALSE)")).unwrap_or(0);
+    let failed = db.scalar_i64(&format!("SELECT COUNT(*) FROM track_lyric_features WHERE found AND COALESCE(llm_rev, 0) < {LLM_REV} AND COALESCE(llm_attempts, 0) >= 3")).unwrap_or(0);
+    (done, queued, failed)
+}
+
+#[cfg(test)]
+mod llm_v2_tests {
+    use super::*;
+    #[test] fn titles_lose_release_suffixes() {
+        assert_eq!(clean_title("Big Bad Wolf (Radio Edit)"), "Big Bad Wolf");
+        assert_eq!(clean_title("Hypercolour - Original Mix"), "Hypercolour");
+        assert_eq!(clean_title("Song (feat. Someone) - Remastered 2011"), "Song");
+        assert_eq!(clean_title("(Don't Fear) The Reaper"), "(Don't Fear) The Reaper");
+    }
+    #[test] fn moods_land_on_the_palette() {
+        assert_eq!(coerce_mood("happy").as_deref(), Some("joyful"));
+        assert_eq!(coerce_mood("happy and nostalgic").as_deref(), Some("nostalgic"));
+        assert_eq!(coerce_mood("anger, sadness, hopelessness").as_deref(), Some("resigned"));
+        assert_eq!(coerce_mood("1 to 2 words"), None);
+        assert_eq!(coerce_mood("1-2 words"), None);
+    }
+    #[test] fn junk_themes_and_ungrounded_keywords_are_dropped() {
+        let text = "Driving down the road in the blue summer cold, the neon hums, I'm chasing the hypercolour";
+        let reply = r#"{"summary":"A late drive that feels endless.","themes":["radio edit","the road","emotional","summer"],"mood":"1 to 2 words","keywords":["road","neon","wolf","radio edit","the","hypercolour"]}"#;
+        let t = parse_tags(reply, text, "Hypercolour (Radio Edit)", "CamelPhat");
+        assert_eq!(t.themes, vec!["the road".to_string(), "sun & summer".to_string()]);
+        assert_eq!(t.mood, None);
+        assert_eq!(t.keywords, vec!["road".to_string(), "neon".to_string(), "hypercolour".to_string()]);
+        assert!(t.summary.is_some());
+    }
+    #[test] fn summaries_that_quote_are_dropped() {
+        assert!(!paraphrases("chasing the hypercolour down the road", "down the road i'm chasing the hypercolour down the road tonight"));
+        assert!(paraphrases("A song about a long drive at night.", "driving down the road"));
+    }
 }
 
 /// For the Settings card: (rows still on old rules, rows on current rules, played tracks never looked up).

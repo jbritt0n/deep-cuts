@@ -115,6 +115,24 @@ pub fn start(app: AppHandle) {
         }
     });
 
+    // Phase 10d — local-model lyric tagging, its own queue: a few songs per tick (Settings → Local model), each re-fetched
+    // from LRCLIB transiently. Stops early when a page asks the model something, and uses at most ~80 % of the tick.
+    let a = app.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(240)).await;
+        loop {
+            let read = |st: &AppState, k: &str, def: u64, lo: u64, hi: u64| st.real.query("SELECT value FROM app_meta WHERE key = ?", &[serde_json::json!(k)]).ok()
+                .and_then(|r| r.first().and_then(|m| m.get("value")).and_then(|v| v.as_str()).and_then(|v| v.trim().parse::<f64>().ok())).map(|v| (v.max(0.0).round() as u64).clamp(lo, hi)).unwrap_or(def);
+            let (tick_min, per_tick) = { let st = a.state::<AppState>(); (read(&*st, "llm_lyrics_tick_min", 10, 2, 240), read(&*st, "llm_lyrics_per_tick", 4, 0, 50) as usize) };
+            run_blocking(&a, "lyrics-llm", move |st| {
+                let on = st.real.query("SELECT value FROM app_meta WHERE key = 'lyrics_enabled'", &[]).ok().and_then(|r| r.first().and_then(|m| m.get("value")).and_then(|v| v.as_str().map(|s| s == "true"))).unwrap_or(false);
+                if on { crate::connectors::lyrics::llm_batch(&st.real, per_tick, Duration::from_secs(tick_min * 48))?; }
+                Ok(())
+            }).await;
+            tokio::time::sleep(Duration::from_secs(tick_min * 60)).await;
+        }
+    });
+
     // Nightly (03:30 local): full rebuild (DM-02), milestones, Parquet backup (NFR-03), keep 14 backups.
     let a = app.clone();
     tauri::async_runtime::spawn(async move {

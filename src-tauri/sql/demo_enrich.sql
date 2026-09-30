@@ -76,6 +76,15 @@ FROM (SELECT t.track_id, ROW_NUMBER() OVER (ORDER BY t.track_id) AS k FROM track
 ON CONFLICT DO NOTHING;
 INSERT INTO track_lyric_terms (track_id, term, tf)
 SELECT f.track_id, f.keywords[n], 6 - n FROM track_lyric_features f, range(1, 4) r(n) WHERE f.lang = 'tr' AND n <= len(f.keywords) ON CONFLICT DO NOTHING;
+-- Phase 10d: most model-tagged demo songs carry v2 tags (palette moods, vocabulary themes, grounded keywords, a summary);
+-- every eighth keeps its 9f free-form tags so the re-tag queue and Lyrics → Hygiene have something to show
+UPDATE track_lyric_features f SET llm_rev = 2,
+       llm_mood = ['wistful', 'restless', 'bittersweet', 'euphoric', 'yearning', 'melancholic', 'defiant', 'serene', 'nostalgic', 'lonely', 'playful', 'brooding'][t.i % 12 + 1],
+       llm_mood2 = ['hopeful', 'anxious', 'tender', 'joyful', 'reflective', 'resigned'][t.i % 6 + 1],
+       llm_themes = [['the road', 'freedom & escape', 'nightlife', 'heartbreak', 'the city', 'nostalgia & memory', 'moving on', 'new love'][t.i % 8 + 1], ['loneliness & isolation', 'romance', 'dancing & party', 'time passing'][t.i % 4 + 1]],
+       llm_keywords = f.keywords, llm_summary = ['A late drive away from something unfinished.', 'Someone waiting out a long night in a new city.', 'An old love remembered without much regret.', 'Dancing to forget the week.'][t.i % 4 + 1],
+       llm_model = 'demo-model', llm_at = now(), llm_ms = 41000 + t.i * 900
+FROM _top t WHERE t.track_id = f.track_id AND f.llm_mood IS NOT NULL AND t.i % 8 <> 0;
 DROP TABLE _w;
 
 -- audio features for the 160 most-played tracks (every ninth one "not in the catalogue")

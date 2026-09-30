@@ -4,11 +4,12 @@
  * whose message starts with "[code] ", so it survives both `e.message` and `String(e)` on its way to ErrorBox,
  * which reads the code back to show a plain explanation with the technical text under "details".
  */
-export type ErrorCode = 'quota' | 'auth' | 'network' | 'not_found' | 'invalid_input' | 'database' | 'busy' | 'internal';
+export type ErrorCode = 'slow_model' | 'quota' | 'auth' | 'network' | 'not_found' | 'invalid_input' | 'database' | 'busy' | 'internal';
 
 /** Same rules as Rust's `error_code` (commands.rs) — keep them in step. */
 export function classify(message: string): ErrorCode {
   const m = message.toLowerCase();
+  if (/slow_model|local model took longer/.test(m)) return 'slow_model';   // Phase 10d
   if (/quota|rate.?limit|\b429\b|too many requests/.test(m)) return 'quota';
   if (/\b401\b|\b403\b|unauthori[sz]ed|reconnect|re-?auth|token (expired|invalid|rejected)|invalid (api )?key|key rejected|rejected (the|that|your) (api )?key|sign in again/.test(m)) return 'auth';
   if (/network|timed? ?out|timeout|connection (refused|reset)|dns|could not reach|unreachable|offline|fetch failed|econnrefused/.test(m)) return 'network';
@@ -21,6 +22,7 @@ export function classify(message: string): ErrorCode {
 }
 
 export const HINT: Record<ErrorCode, string> = {
+  slow_model: 'Your local model didn\u2019t finish within the timeout. Raise it in Settings \u2192 Local model (or shrink the context window) and try again \u2014 nothing was lost, and a second try is usually faster once the model is loaded.',
   quota: "A service's usage limit was reached. Deep Cuts pauses that service and carries on; it resumes by itself (Spotify after midnight).",
   auth: 'A connected service no longer accepts Deep Cuts\u2019 sign-in. Reconnect it on Services.',
   network: "Couldn't reach the service — check the connection. Nothing was lost; it retries on the next tick.",

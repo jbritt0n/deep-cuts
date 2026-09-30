@@ -8,6 +8,7 @@ import { query, num, str } from './db';
 import { playsWhere, sessionsWhere } from './filter';
 import { SHAPE_LABELS, fmtHours, fmtInt, fmtPct } from './format';
 import { localToday } from './queries';
+import { MOOD_IDS } from './lyricVocab';
 
 export type WeekFacts = {
   weekStart: string; weekEnd: string; label: string;
@@ -95,4 +96,61 @@ export function composeNotes(f: WeekFacts): string[] {
   if (f.loudestDay) out.push(`Loudest day: ${new Date(f.loudestDay.day + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long' })}, ${fmtInt(f.loudestDay.minutes)} minutes.`);
   if (f.milestones.length) out.push(`Milestones: ${f.milestones.slice(0, 4).map((m) => m.description).join('; ')}.`);
   return out;
+}
+
+// ---------------------------------------------------------------------------------------------------------------- Phase 10d
+/** Minutes per day between two dates (the Liner Notes calendar). */
+export async function dailyMinutes(from: string, to: string): Promise<Record<string, number>> {
+  const rows = await query(`SELECT CAST(CAST(played_at AS DATE) AS VARCHAR) AS d, SUM(ms_played)/60000.0 AS m FROM plays_resolved WHERE played_at >= DATE '${from}' AND played_at < DATE '${to}' ${playsWhere()} GROUP BY 1`);
+  return Object.fromEntries(rows.map((r) => [String(r.d), num(r.m)]));
+}
+/** Hours per ISO week (Monday key) across one year — the strip above the calendar. */
+export async function weeklyHours(year: number): Promise<Record<string, number>> {
+  const rows = await query(`SELECT CAST(CAST(date_trunc('week', played_at) AS DATE) AS VARCHAR) AS w, SUM(ms_played)/3600000.0 AS h FROM plays_resolved WHERE played_at >= DATE '${year}-01-01' - INTERVAL 6 DAY AND played_at < DATE '${year + 1}-01-01' ${playsWhere()} GROUP BY 1`);
+  return Object.fromEntries(rows.map((r) => [String(r.w), num(r.h)]));
+}
+
+/** Extra colour for the model: the week's songs, sounds, words and weather. Everything here is a number or a name from the record. */
+export async function weekExtras(ws: string) {
+  const we = addDays(ws, 7), PW = playsWhere('p');
+  const R = `p.played_at >= DATE '${ws}' AND p.played_at < DATE '${we}'`;
+  const safe = <T,>(q: Promise<T[]>) => q.catch(() => [] as T[]);
+  const tracks = await query(`SELECT arg_max(track_name, ms_played) AS t, arg_max(artist_name, ms_played) AS a, COUNT(*) AS n FROM plays_resolved p WHERE ${R} AND track_id IS NOT NULL ${PW} GROUP BY track_id ORDER BY n DESC LIMIT 6`);
+  const albums = await query(`SELECT arg_max(album_name, ms_played) AS al, arg_max(artist_name, ms_played) AS a, COUNT(DISTINCT track_id) AS tr FROM plays_resolved p WHERE ${R} AND album_id IS NOT NULL ${PW} GROUP BY album_id HAVING COUNT(DISTINCT track_id) >= 4 ORDER BY tr DESC LIMIT 3`);
+  const hours = await query(`SELECT CASE WHEN h >= 5 AND h < 12 THEN 'morning' WHEN h < 17 AND h >= 12 THEN 'afternoon' WHEN h >= 17 AND h < 23 THEN 'evening' ELSE 'late night' END AS part, SUM(ms_played)/3600000.0 AS hrs
+    FROM (SELECT EXTRACT(hour FROM played_at) AS h, * FROM plays_resolved) p WHERE ${R} ${PW} GROUP BY 1 ORDER BY hrs DESC`);
+  const moods = await safe(query(`SELECT e.llm_mood AS m, COUNT(*) AS n FROM plays_resolved p JOIN track_lyrics_effective e USING (track_id) WHERE ${R} AND e.llm_mood IN (${MOOD_IDS.map((m) => `'${m}'`).join(', ')}) ${PW} GROUP BY 1 ORDER BY n DESC LIMIT 3`));
+  const themes = await safe(query(`SELECT t AS theme, COUNT(*) AS n FROM plays_resolved p JOIN (SELECT track_id, unnest(COALESCE(llm_themes, themes)) AS t FROM track_lyrics_effective) e USING (track_id) WHERE ${R} ${PW} GROUP BY 1 ORDER BY n DESC LIMIT 4`));
+  const scenes = await safe(query(`WITH s AS (SELECT artist_id, arg_max(scene, weight) AS scene FROM artist_scene GROUP BY 1) SELECT f.label, SUM(p.ms_played)/3600000.0 AS h FROM plays_resolved p JOIN s USING (artist_id) JOIN scene_families f USING (scene) WHERE ${R} ${PW} GROUP BY 1 ORDER BY h DESC LIMIT 3`));
+  const [snd] = await safe(query(`SELECT AVG(f.bpm) AS bpm, AVG(f.energy) AS energy, COUNT(*) AS n FROM plays_resolved p JOIN track_features f USING (track_id) WHERE f.found AND ${R} ${PW}`));
+  const weather = await safe(query(`SELECT bucket, COUNT(*) AS days FROM weather_daily WHERE date >= DATE '${ws}' AND date < DATE '${we}' GROUP BY 1 ORDER BY days DESC`));
+  return {
+    topTracks: tracks.map((r) => `${str(r.t)} — ${str(r.a)} (${num(r.n)}×)`),
+    albumsDeep: albums.map((r) => `${str(r.al)} — ${str(r.a)} (${num(r.tr)} tracks)`),
+    hoursByPartOfDay: Object.fromEntries(hours.map((r) => [String(r.part), Math.round(num(r.hrs) * 10) / 10])),
+    lyricMoods: moods.map((r) => String(r.m)), lyricThemes: themes.map((r) => String(r.theme)),
+    scenes: scenes.map((r) => `${str(r.label)} ${Math.round(num(r.h) * 10) / 10} h`),
+    sound: snd && num(snd.n) >= 10 ? { avgBpm: Math.round(num(snd.bpm)), avgEnergy: Math.round(num(snd.energy) * 100) / 100 } : null,
+    weather: weather.map((r) => `${num(r.days)} ${str(r.bucket)} day${num(r.days) === 1 ? '' : 's'}`),
+  };
+}
+
+export type NoteLength = 'short' | 'standard' | 'long';
+/** What the local model is shown and asked. Facts only; it rephrases, it never invents. */
+export function notesPrompt(f: WeekFacts, extras: Awaited<ReturnType<typeof weekExtras>>, length: NoteLength) {
+  const words = length === 'short' ? '90–130' : length === 'long' ? '260–340' : '160–220';
+  const facts = {
+    week: f.label, hours: Math.round(f.hours * 10) / 10, hoursLastWeek: Math.round(f.prevHours * 10) / 10, plays: f.plays, daysListened: f.days, artists: f.artists, newArtists: f.newArtists, newSongs: f.newTracks,
+    skipRate: Math.round(f.skipRate * 100) + '%', skipRateLastWeek: Math.round(f.prevSkipRate * 100) + '%', afterElevenPm: Math.round(f.lateShare * 100) + '%',
+    topArtists: f.topArtists.map((a) => `${a.artist} ${Math.round(a.hours * 10) / 10} h${a.prevRank ? ` (was #${a.prevRank})` : ' (new to the top)'}`),
+    obsession: f.obsession ? `${f.obsession.artist}: ${f.obsession.plays} plays vs a usual ${f.obsession.usual.toFixed(0)}/week` : null,
+    comebacks: f.comebacks.map((c) => `${c.artist} after ${c.daysSilent} days`), firstTimers: f.firstTimers.map((x) => `${x.artist} (${x.plays} plays)`),
+    loudestDay: f.loudestDay ? `${new Date(f.loudestDay.day + 'T00:00:00').toLocaleDateString('en-US', { weekday: 'long' })}, ${Math.round(f.loudestDay.minutes)} minutes` : null,
+    sessionsLeaned: f.topShape, milestones: f.milestones.map((m) => m.description), ...extras,
+  };
+  const messages = [
+    { role: 'system' as const, content: `You write "Liner Notes": a short, warm, specific weekly column about ONE person's music listening, like the notes inside a record sleeve. Write in the second person ("you"). Use ONLY the facts given — never invent songs, artists, numbers, places or feelings the facts don't support. Quote numbers exactly as given. ${words} words, 2–4 short paragraphs, plain prose, no headings, no lists, no emoji. Open with the shape of the week, not a greeting. A little wry is good; gushing is not.` },
+    { role: 'user' as const, content: `This week's facts (JSON):\n${JSON.stringify(facts)}\n\nWrite this week's liner notes.` },
+  ];
+  return { messages, facts, numPredict: length === 'short' ? 260 : length === 'long' ? 640 : 440 };
 }

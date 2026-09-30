@@ -27,6 +27,7 @@ export const NAV_GROUPS: NavGroup[] = [
     { to: '/moods', label: 'Moods & Forecast', match: ['/moods', '/forecast'] },
     { to: '/newness', label: 'The Newness' },
     { to: '/insights', label: 'Insights' },
+    { to: '/lyrics', label: 'Lyrics' },
     { to: '/atlas', label: 'Atlas' },
     { to: '/connections', label: 'Connections' },
     { to: '/drift', label: 'Taste drift' },

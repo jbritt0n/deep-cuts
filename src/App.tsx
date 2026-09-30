@@ -25,6 +25,7 @@ import { NewnessPage } from './pages/Newness';
 import { ConnectionsPage } from './pages/Connections';
 import { DepthPage } from './pages/Depth';
 import { InsightsPage } from './pages/Insights';
+import { LyricsPage } from './pages/Lyrics';
 import { ActivityPage } from './pages/Activity';
 import { AskPage } from './pages/Ask';
 import { ReviewPage } from './pages/Review';
@@ -98,6 +99,7 @@ export function App() {
             <Route path="/newness" element={<NewnessPage />} />
             <Route path="/connections" element={<ConnectionsPage />} />
             <Route path="/insights" element={<InsightsPage />} />
+            <Route path="/lyrics" element={<LyricsPage />} />
             <Route path="/activity" element={<ActivityPage />} />
             <Route path="/notforme" element={<Navigate to="/settings?tab=notforme" replace />} />
             <Route path="/forecast" element={<Navigate to="/moods#forecast" replace />} />

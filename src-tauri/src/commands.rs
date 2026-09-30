@@ -24,7 +24,9 @@ fn err<E: std::fmt::Display>(e: E) -> String {
 pub(crate) fn error_code(message: &str) -> &'static str {
     let m = message.to_lowercase();
     let has = |xs: &[&str]| xs.iter().any(|x| m.contains(x));
-    if has(&["quota", "rate limit", "rate-limit", " 429", "too many requests"]) { "quota" }
+    // Phase 10d: a local model that ran past the owner's timeout is not a network problem — it has its own fix
+    if has(&["slow_model", "local model took longer"]) { "slow_model" }
+    else if has(&["quota", "rate limit", "rate-limit", " 429", "too many requests"]) { "quota" }
     else if has(&[" 401", " 403", "unauthorized", "unauthorised", "reconnect", "reauth", "re-auth", "token expired", "token invalid", "token rejected", "invalid key", "invalid api key", "key rejected", "rejected the key", "rejected that key", "sign in again"]) { "auth" }
     else if has(&["network", "timed out", "timeout", "connection refused", "connection reset", "dns", "could not reach", "unreachable", "offline", "error sending request"]) { "network" }
     // database before not_found / invalid_input: DuckDB messages say "…not found in FROM clause", "expected …"
@@ -47,6 +49,7 @@ mod envelope_tests {
         assert_eq!(error_code("Binder Error: Ambiguous reference"), "database");
         assert_eq!(error_code("Binder Error: Referenced column \"x\" not found in FROM clause"), "database");
         assert_eq!(error_code("something odd"), "internal");
+        assert_eq!(error_code("slow_model: the local model took longer than 900 s"), "slow_model");
     }
     #[test] fn envelope_is_json() {
         let v: serde_json::Value = serde_json::from_str(&err(anyhow::anyhow!("Out of Range Error: log of zero"))).unwrap();
@@ -216,7 +219,10 @@ pub fn set_setting(state: State<'_, AppState>, key: String, value: String) -> Cm
         // Phase 9g: Settings → Tuning → threads / Not for me
         "dynamic_playlists", "wiki_lang", "weather_lat", "weather_lon", "weather_place", "thread_min_weeks", "thread_share_floor", "thread_max", "thread_per_year", "thread_max_scene", "thread_max_decade", "thread_max_coverage", "thread_scenes", "skiphall_min_shown", "skiphall_min_rate",
         // Phase 9h: Atlas → Listening abroad
-        "home_country"];
+        "home_country",
+        // Phase 10d: Settings → Local model (llm::LlmConfig) and the lyric-tagging queue
+        "llm_timeout_s", "llm_num_ctx", "llm_keep_alive_min", "llm_num_thread", "llm_num_predict", "llm_structured",
+        "llm_lyrics_per_tick", "llm_lyrics_tick_min", "llm_lyrics_all_langs", "llm_notes_words", "lyrics_cloud_per_song"];
     if !ALLOWED.contains(&key.as_str()) {
         return Err(format!("Unknown setting: {key}"));
     }
@@ -619,10 +625,134 @@ pub async fn llm_status(state: State<'_, AppState>) -> CmdResult<crate::llm::Llm
 }
 
 /// Phase 9e: one chat completion against the local model. The frontend owns the prompts; SQL the model writes goes back through `query`.
+/// Phase 10d: the owner's timeout / context / keep-alive apply (llm::LlmConfig); `purpose` labels the call log; while it runs,
+/// background lyric tagging stands aside.
 #[tauri::command]
-pub async fn llm_chat(state: State<'_, AppState>, model: String, messages: Vec<crate::llm::ChatMsg>, json_mode: Option<bool>, temperature: Option<f32>) -> CmdResult<String> {
+pub async fn llm_chat(state: State<'_, AppState>, model: String, messages: Vec<crate::llm::ChatMsg>, json_mode: Option<bool>, temperature: Option<f32>, purpose: Option<String>, num_predict: Option<i64>) -> CmdResult<String> {
     let real = state.real.clone();
-    tauri::async_runtime::spawn_blocking(move || crate::llm::chat(&real, &model, &messages, json_mode.unwrap_or(false), temperature.unwrap_or(0.2))).await.map_err(err)?.map_err(err)
+    tauri::async_runtime::spawn_blocking(move || {
+        let _fg = crate::llm::Foreground::enter();
+        let fmt = if json_mode.unwrap_or(false) { crate::llm::Format::Json } else { crate::llm::Format::Text };
+        let purpose = purpose.unwrap_or_else(|| "chat".into());
+        crate::llm::chat_ex(&real, &model, &messages, &fmt, temperature.unwrap_or(0.2), &purpose, num_predict).map(|r| r.content)
+    }).await.map_err(err)?.map_err(err)
+}
+
+/// Phase 10d: Settings → Local model → Test — a tiny timed prompt (load time, tokens per second).
+#[tauri::command]
+pub async fn llm_test(state: State<'_, AppState>, model: String) -> CmdResult<crate::llm::ChatReply> {
+    let real = state.real.clone();
+    tauri::async_runtime::spawn_blocking(move || { let _fg = crate::llm::Foreground::enter(); crate::llm::test(&real, &model) }).await.map_err(err)?.map_err(err)
+}
+
+// ---- Phase 10d: lyric hygiene (mirrors dev-server.mjs)
+fn clean_list(v: &serde_json::Value, max_items: usize) -> Result<Option<Vec<String>>, String> {
+    if v.is_null() { return Ok(None); }
+    let a = v.as_array().ok_or("expected a list of words")?;
+    let mut out: Vec<String> = Vec::new();
+    for x in a.iter().filter_map(|x| x.as_str()) {
+        let w = x.trim().to_lowercase();
+        if w.is_empty() { continue; }
+        if w.chars().count() > 40 { return Err(format!("\"{w}\" must be 40 characters or fewer")); }
+        if !out.contains(&w) { out.push(w); }
+    }
+    if out.len() > max_items { return Err(format!("at most {max_items} entries")); }
+    Ok(Some(out))
+}
+
+/// Set any of a song's lyric corrections. Keys present in `patch` are written (null clears that correction); others are kept.
+#[tauri::command]
+pub fn lyrics_override_set(state: State<'_, AppState>, track_id: String, patch: serde_json::Value) -> CmdResult<()> {
+    use serde_json::json;
+    let db = &state.real;
+    let p = patch.as_object().ok_or("patch must be an object")?;
+    db.exec("INSERT INTO lyric_overrides (track_id) VALUES (?) ON CONFLICT DO NOTHING", &[json!(track_id)]).map_err(err)?;
+    for (k, v) in p {
+        match k.as_str() {
+            "lang" => {
+                let l = v.as_str().map(|s| s.trim().to_lowercase()).filter(|s| !s.is_empty());
+                if let Some(l) = &l { if l.len() > 8 || !l.chars().all(|c| c.is_ascii_lowercase() || c == '-') { return Err("language must be a code like en, tr or pt-br".into()); } }
+                db.exec("UPDATE lyric_overrides SET lang = ?, updated_at = now() WHERE track_id = ?", &[json!(l), json!(track_id)]).map_err(err)?;
+            }
+            "themes" | "llm_themes" | "keywords_add" | "keywords_hide" => {
+                let list = clean_list(v, 30)?;
+                db.exec(&format!("UPDATE lyric_overrides SET {k} = CAST(? AS JSON)::VARCHAR[], updated_at = now() WHERE track_id = ?"),
+                    &[json!(list.map(|l| serde_json::to_string(&l).unwrap_or_else(|_| "[]".into()))), json!(track_id)]).map_err(err)?;
+            }
+            "mood" | "note" => {
+                let t = v.as_str().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+                if t.as_deref().map(|s| s.chars().count() > if k == "mood" { 40 } else { 400 }).unwrap_or(false) { return Err(format!("{k} is too long")); }
+                let t = if k == "mood" { t.map(|s| s.to_lowercase()) } else { t };
+                db.exec(&format!("UPDATE lyric_overrides SET {k} = ?, updated_at = now() WHERE track_id = ?"), &[json!(t), json!(track_id)]).map_err(err)?;
+            }
+            "locked" | "hidden" => {
+                db.exec(&format!("UPDATE lyric_overrides SET {k} = ?, updated_at = now() WHERE track_id = ?"), &[json!(v.as_bool().unwrap_or(false)), json!(track_id)]).map_err(err)?;
+            }
+            other => return Err(format!("unknown lyric correction: {other}")),
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn lyrics_override_clear(state: State<'_, AppState>, track_id: String) -> CmdResult<()> {
+    state.real.exec("DELETE FROM lyric_overrides WHERE track_id = ?", &[serde_json::json!(track_id)]).map(|_| ()).map_err(err)
+}
+
+/// A word that is never anyone's keyword (add = false takes it off the list).
+#[tauri::command]
+pub fn lyrics_blocklist(state: State<'_, AppState>, term: String, add: bool) -> CmdResult<()> {
+    let t = term.trim().to_lowercase();
+    if t.is_empty() || t.chars().count() > 40 { return Err("the word must be 1–40 characters".into()); }
+    let sql = if add { "INSERT INTO lyric_term_blocklist (term) VALUES (?) ON CONFLICT DO NOTHING" } else { "DELETE FROM lyric_term_blocklist WHERE term = ?" };
+    state.real.exec(sql, &[serde_json::json!(t)]).map(|_| ()).map_err(err)
+}
+
+/// Put songs back in the model's queue: one song, or every song not locked (e.g. after changing model).
+#[tauri::command]
+pub fn lyrics_requeue(state: State<'_, AppState>, track_id: Option<String>) -> CmdResult<i64> {
+    let db = &state.real;
+    let n = match track_id {
+        Some(id) => db.exec("UPDATE track_lyric_features SET llm_rev = NULL, llm_attempts = 0, llm_error = NULL WHERE track_id = ?", &[serde_json::json!(id)]).map_err(err)?,
+        None => db.exec("UPDATE track_lyric_features SET llm_rev = NULL, llm_attempts = 0, llm_error = NULL WHERE found AND track_id NOT IN (SELECT track_id FROM lyric_overrides WHERE locked)", &[]).map_err(err)?,
+    };
+    Ok(n as i64)
+}
+
+/// Ask the local model about one song again, now.
+#[tauri::command]
+pub async fn lyrics_llm_track(state: State<'_, AppState>, track_id: String) -> CmdResult<crate::connectors::lyrics::LlmTags> {
+    let real = state.real.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::connectors::lyrics::retag_track(&real, &track_id)).await.map_err(err)?.map_err(err)
+}
+
+/// Fetch one song's lyrics again from LRCLIB and re-featurise it (true = lyrics found).
+#[tauri::command]
+pub async fn lyrics_refetch_track(state: State<'_, AppState>, track_id: String) -> CmdResult<bool> {
+    let real = state.real.clone();
+    tauri::async_runtime::spawn_blocking(move || crate::connectors::lyrics::refetch_track(&real, &track_id)).await.map_err(err)?.map_err(err)
+}
+
+// ---- Phase 10d: Liner Notes / Roast Me written by the local model, kept (llm_writings)
+#[tauri::command]
+pub fn writing_save(state: State<'_, AppState>, kind: String, period_key: String, model: String, text: String, facts: serde_json::Value, ms: Option<i64>) -> CmdResult<String> {
+    if kind != "notes" && kind != "roast" { return Err("kind must be notes or roast".into()); }
+    if period_key.is_empty() || period_key.len() > 40 { return Err("period must be 1–40 characters".into()); }
+    if text.trim().is_empty() { return Err("the model returned nothing to keep (text required)".into()); }
+    let id = format!("{kind}-{}-{:08x}", chrono::Utc::now().timestamp_millis(), rand::random::<u32>());
+    state.real.exec("INSERT INTO llm_writings (id, kind, period_key, model, text, facts, ms) VALUES (?, ?, ?, ?, ?, CAST(? AS JSON), ?)",
+        &[serde_json::json!(id), serde_json::json!(kind), serde_json::json!(period_key), serde_json::json!(model), serde_json::json!(text.trim()), serde_json::json!(facts.to_string()), serde_json::json!(ms)]).map_err(err)?;
+    Ok(id)
+}
+#[tauri::command]
+pub fn writing_delete(state: State<'_, AppState>, id: String) -> CmdResult<()> {
+    state.real.exec("DELETE FROM llm_writings WHERE id = ?", &[serde_json::json!(id)]).map(|_| ()).map_err(err)
+}
+#[tauri::command]
+pub fn writing_pin(state: State<'_, AppState>, id: String, pinned: bool) -> CmdResult<()> {
+    let db = &state.real;
+    if pinned { db.exec("UPDATE llm_writings w SET pinned = FALSE FROM llm_writings x WHERE x.id = ? AND w.kind = x.kind AND w.period_key = x.period_key", &[serde_json::json!(id)]).map_err(err)?; }
+    db.exec("UPDATE llm_writings SET pinned = ? WHERE id = ?", &[serde_json::json!(pinned), serde_json::json!(id)]).map(|_| ()).map_err(err)
 }
 
 /// Phase 9e: file an artist under a scene family for The Crate / Scenes (NULL = unsorted). Applied now and kept across rebuilds via scene_overrides.
@@ -773,7 +903,8 @@ pub fn forecast_log_write(state: State<'_, AppState>, date: String, weekday: i64
 pub fn lyrics_status(state: State<'_, AppState>) -> CmdResult<serde_json::Value> {
     let (old, current, never) = crate::connectors::lyrics::pending(&state.real);
     let llm = state.real.query("SELECT value FROM app_meta WHERE key = 'lyrics_llm_enabled'", &[]).ok().and_then(|r| r.first().and_then(|m| m.get("value")).and_then(|v| v.as_str().map(|s| s == "true"))).unwrap_or(false);
-    Ok(serde_json::json!({ "oldRules": old, "current": current, "never": never, "llmEnabled": llm }))
+    let (llm_done, llm_queued, llm_failed) = crate::connectors::lyrics::llm_pending(&state.real);
+    Ok(serde_json::json!({ "oldRules": old, "current": current, "never": never, "llmEnabled": llm, "llmDone": llm_done, "llmQueued": llm_queued, "llmFailed": llm_failed, "llmBusy": crate::llm::foreground_busy() }))
 }
 
 // ---- Phase 9f: the scene vocabulary as data (mirrors dev-server.mjs). See src/lib/sceneQueries.ts.

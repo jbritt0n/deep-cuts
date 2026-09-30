@@ -63,7 +63,7 @@ export function isSafeSelect(sql: string): string | null {
 }
 export const ensureLimit = (sql: string) => (/\blimit\s+\d+/i.test(sql) ? sql : `${sql.trim().replace(/;+\s*$/, '')} LIMIT 200`);
 
-const chat = (model: string, messages: ChatMsg[], jsonMode: boolean, temperature = 0.1) => invoke<string>('llm_chat', { model, messages, jsonMode, temperature });
+const chat = (model: string, messages: ChatMsg[], jsonMode: boolean, temperature = 0.1) => invoke<string>('llm_chat', { model, messages, jsonMode, temperature, purpose: 'ask' });
 const parseJson = (s: string): Record<string, unknown> | null => { try { return JSON.parse(s.replace(/```json|```/g, '').trim()); } catch { const m = s.match(/\{[\s\S]*\}/); if (m) { try { return JSON.parse(m[0]); } catch { return null; } } return null; } };
 
 /** Ask one question. `history` gives the model the last few turns so "and in 2024?" works. */

@@ -71,7 +71,7 @@ export async function interpretWithModel(text: string, fallback: Spec): Promise<
 {"scenes": [from this list only: ${scenes.join(', ')}], "tags": [genre tags, lowercase], "themes": [from: ${LYRIC_THEMES.join(', ')}], "bpm": [min,max] or null, "energy": [0..1 min, max] or null,
  "mood": "bright"|"dark"|null, "weather": "sunny"|"cloudy"|"fog"|"rain"|"snow"|"storm"|null, "hours": [startHour,endHour] or null (22,4 = late night), "weekend": true|false|null,
  "years": [from,to] release years or null, "freshness": "familiar"|"forgotten"|"any", "obscure": true|false, "size": number}. Use null / [] when the request doesn't say.` }, { role: 'user', content: text }];
-  const raw = await invoke<string>('llm_chat', { model, messages: msgs, jsonMode: true, temperature: 0.1 });
+  const raw = await invoke<string>('llm_chat', { model, messages: msgs, jsonMode: true, temperature: 0.1, purpose: 'words' });
   let j: Partial<Spec> = {}; try { j = JSON.parse(raw.replace(/```json|```/g, '').trim()); } catch { return { spec: fallback, model }; }
   const tagOk = new Set((await query(`SELECT DISTINCT lower(tag) AS t FROM artist_tags`)).map((r) => String(r.t)));
   const rng = (v: unknown, lo: number, hi: number): [number, number] | null => (Array.isArray(v) && v.length === 2 && v.every((x) => typeof x === 'number') ? [Math.max(lo, Math.min(hi, v[0])), Math.max(lo, Math.min(hi, v[1]))] : null);

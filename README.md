@@ -1,8 +1,10 @@
-# Deep Cuts v3 — Phase 10c
+# Deep Cuts v3 — Phase 10d
 
 A local-first desktop app that turns years of Spotify listening into an explorable record. Tauri 2 + React + DuckDB. Everything stays on your machine.
 
-**Phase 10c (this drop).** Press Ctrl/⌘+K (or `/`) anywhere to jump to any page or find any artist, album or song. Confirmations and notices are themed, long pages get an "On this page" menu, keyboard focus is visible, and charts only redraw when their data changes. Versions of one recording (same ISRC) now count as one song — switch in Settings → Tuning — and song pages show their lineage: samples, remixes and covers, from MusicBrainz.
+**Phase 10d (this drop).** Everything about the local model is now in **Settings → Local model**: timeout (default 15 min — it was a fixed 4), context window, keep-loaded, presets for older PCs, a Test button and a log of how long every job really takes. Lyric tagging is rebuilt for small models: a fixed palette of 38 moods and 57 themes, keywords that must occur in the lyrics, cleaned titles (no more "radio edit"), and its own gentle background queue. **Lyrics** is its own page — a big cloud, a mood map, lyrical weather, themes by year and time of day, and **Lyric hygiene** to see and correct every song's words, themes, mood and language. **Liner Notes** gets a calendar and *Write with your local model*, kept per week; **Roast Me** roasts a year, month or week with 16 new receipts and a full dossier for the model. See **docs/HANDOFF.md**.
+
+**Phase 10c.** Press Ctrl/⌘+K (or `/`) anywhere to jump to any page or find any artist, album or song. Confirmations and notices are themed, long pages get an "On this page" menu, keyboard focus is visible, and charts only redraw when their data changes. Versions of one recording (same ISRC) now count as one song — switch in Settings → Tuning — and song pages show their lineage: samples, remixes and covers, from MusicBrainz.
 
 **Phase 10b.** FreqBlog's real reply is now a test fixture, and key names are canonical (one spelling per key). Discover is split into **Discover**, **Bubble & blind spots** and **Mixtape** (all under Act); the bubble no longer errors; layout fixes on Sessions, The Newness and Atlas. Stabilise: every error now carries a code and a plain explanation (the `{code, message}` envelope), and CI runs the Rust unit tests before packaging. **Family tree** on Connections. **Stylus S2**: per-device retention and a Settings → **Privacy** tab listing what Deep Cuts keeps from every source.
 

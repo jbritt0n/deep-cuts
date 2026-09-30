@@ -300,6 +300,17 @@ pub fn run() {
             commands::export_move_bundle,
             commands::inspect_move_bundle,
             commands::restore_move_bundle,
+            // Phase 10d
+            commands::llm_test,
+            commands::lyrics_override_set,
+            commands::lyrics_override_clear,
+            commands::lyrics_blocklist,
+            commands::lyrics_requeue,
+            commands::lyrics_llm_track,
+            commands::lyrics_refetch_track,
+            commands::writing_save,
+            commands::writing_delete,
+            commands::writing_pin,
         ])
         .on_window_event(|window, event| {
             // Close hides to the tray so the poller keeps running (ING-05). Quit from the tray menu.

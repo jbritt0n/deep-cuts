@@ -13,6 +13,7 @@ import { Card, ErrorBox, Sleeve } from '@/components/Card';
 import { Importer } from '@/components/Importer';
 import { SceneEditor } from '@/components/SceneEditor';
 import { MoveCard } from '@/components/MoveCard';
+import { LocalModelPanel } from '@/components/LocalModelPanel';
 import { PrivacyPanel } from '@/components/PrivacyPanel';
 import { WeatherSettingsCard } from '@/components/WeatherCards';
 import { IsrcDuplicatesCard, SourceCoverageCard } from '@/components/SourceCoverageCard';
@@ -28,12 +29,13 @@ import { fmtDate, fmtPct, trackHref } from '@/lib/format';
 
 type ImportRun = { import_id: string; at: string; files: number; inserted: number; duplicate: number; skipped: number };
 
-type Tab = 'look' | 'record' | 'tuning' | 'connectors' | 'hygiene' | 'notforme' | 'privacy';
+type Tab = 'look' | 'record' | 'tuning' | 'connectors' | 'model' | 'hygiene' | 'notforme' | 'privacy';
 const TABS: { id: Tab; label: string; blurb: string }[] = [
   { id: 'look', label: 'Appearance', blurb: 'Skins.' },
   { id: 'record', label: 'Record', blurb: 'Your history, time zones, data.' },
   { id: 'tuning', label: 'Tuning', blurb: 'Eras, scenes, sessions and discovery thresholds.' },
   { id: 'connectors', label: 'Connectors', blurb: 'Budgets and batch sizes for the background jobs.' },
+  { id: 'model', label: 'Local model', blurb: 'Ollama: model, timeout, context window, background tagging, and how long each job takes.' },
   { id: 'hygiene', label: 'Hygiene', blurb: 'Outliers, corrected sessions, merged artists.' },
   { id: 'privacy', label: 'Privacy', blurb: 'What Deep Cuts keeps from each source, and what it never does.' },
   { id: 'notforme', label: 'Not for me', blurb: 'Songs you keep being shown and keep skipping (moved here from the sidebar in 9h).' },
@@ -151,11 +153,12 @@ export function SettingsPage({ status, onChanged }: { status: AppStatus; onChang
             <button disabled={!!busy || !lyrics} onClick={() => run('lyricsnow', () => invoke<string>('lyrics_enrich_now').then((m) => setMsg(m)), 'Done.')} className="mt-3 rounded-full border border-line px-4 py-2 text-sm text-dust hover:text-cream disabled:opacity-40">Fetch a batch now</button>
           </Card>
           <TuningGroup group="connectors" title="Batch sizes" subtitle="Speed against politeness for the background connectors." busy={busy} run={run} />
-          <OllamaCard busy={busy} run={run} />
+          <Card title="Local model (Ollama)" subtitle="Model, timeout, context window and background tagging moved to their own tab."><button onClick={() => setTab('model')} className="text-sm text-amber hover:underline">Open Settings → Local model →</button></Card>
           <Card title="Services" subtitle="Keys, connections and sync live on their own page."><Link to="/services" className="text-sm text-amber hover:underline">Open Services →</Link></Card>
         </div>
       )}
 
+      {tab === 'model' && <LocalModelPanel />}
       {tab === 'notforme' && <SkipHallPage embedded />}
       {tab === 'privacy' && <PrivacyPanel />}
       {tab === 'hygiene' && (
@@ -430,22 +433,6 @@ function StorageCard() {
   );
 }
 
-/** Phase 9e: where the local model lives. Default is Ollama's own port on this machine; a Docker deployment points it at the host. */
-function OllamaCard({ busy, run }: { busy: string | null; run: (l: string, fn: () => Promise<unknown>, ok: string) => Promise<void> }) {
-  const settings = useSettings();
-  const stored = settings.data?.find((r) => r.key === 'ollama_url')?.value ?? '';
-  const [v, setV] = useState<string | null>(null);
-  const val = v ?? stored;
-  const st = useAsync(() => invoke<{ reachable: boolean; url: string; models: string[]; error: string | null }>('llm_status'), [stored]);
-  return (
-    <Card title="Local model (Ollama)" subtitle="Ask the archive talks to Ollama over HTTP. Nothing leaves this machine unless you point this at another one.">
-      <div className="flex items-center gap-2"><input value={val} onChange={(e) => setV(e.target.value)} placeholder="http://127.0.0.1:11434" className="num flex-1 rounded-lg border border-line bg-ink px-3 py-2 text-sm" aria-label="Ollama URL" /><button disabled={!!busy || val === stored} onClick={() => run('ollama', async () => { await invoke('set_setting', { key: 'ollama_url', value: val.trim() }); settings.reload(); }, 'Ollama URL saved.')} className="rounded-full bg-amber px-4 py-2 text-sm font-medium text-ink disabled:opacity-40">Save</button></div>
-      <p className={`mt-2 text-xs ${st.data?.reachable ? 'text-moss' : 'text-dust'}`}>{!st.data ? 'checking…' : st.data.reachable ? `Reachable · ${st.data.models.length} model${st.data.models.length === 1 ? '' : 's'}: ${st.data.models.join(', ') || 'none pulled yet'}` : `Not reachable at ${st.data.url}${st.data.error ? ` — ${st.data.error.slice(0, 100)}` : ''}`}</p>
-      <p className="mt-2 text-[11px] text-dust/70">In Docker, set <span className="num">OLLAMA_URL=http://host.docker.internal:11434</span> (or the host's LAN address) — the container proxies to it.</p>
-    </Card>
-  );
-}
-
 /** Phase 9f: lyric features v2 — progress of the re-analysis and the optional local-model theming. */
 function LyricsV2({ enabled, busy, run }: { enabled: boolean; busy: string | null; run: (l: string, fn: () => Promise<unknown>, ok: string) => Promise<void> }) {
   const st = useAsync(() => invoke<{ oldRules: number; current: number; never: number; llmEnabled: boolean }>('lyrics_status'), [busy]);
@@ -456,9 +443,9 @@ function LyricsV2({ enabled, busy, run }: { enabled: boolean; busy: string | nul
       <p>New in this build: keywords are scored against your whole lyric corpus (so “love” and “night” stop being everyone's keyword), themes need several cues before they fire, and each song gets a valence, a repetition score and a language. {d.oldRules > 0 ? <>{fmtInt(d.oldRules)} songs still carry the old features and are re-fetched a batch at a time; {fmtInt(d.current)} are done.</> : <>{fmtInt(d.current)} songs analysed under the new rules.</>}{d.never > 0 && <> {fmtInt(d.never)} played tracks not looked up yet.</>}</p>
       <label className="flex items-center gap-3 text-sm text-cream">
         <input type="checkbox" checked={d.llmEnabled} disabled={!enabled || !!busy} onChange={(e) => void run('lyricsllm', () => invoke('set_setting', { key: 'lyrics_llm_enabled', value: String(e.target.checked) }), e.target.checked ? 'The local model will name themes and a mood for each English song as it is fetched.' : 'Local-model theming off.')} />
-        Let the local model (Ollama) name themes and a mood too
+        Let the local model (Ollama) tag mood, themes and keywords too
       </label>
-      <p>The text is shown to the model on this machine and discarded — only its 3–5 theme phrases and one mood line are kept. Needs a model picked in the Ollama card. Slower: a few seconds per song.</p>
+      <p>The text is shown to the model on this machine and discarded — only its tags and a one-line summary are kept. Runs in its own background queue at the pace set in <Link to="/settings?tab=model" className="underline hover:text-cream">Settings → Local model</Link>; review and correct tags on <Link to="/lyrics" className="underline hover:text-cream">Lyrics</Link>.</p>
     </div>
   );
 }

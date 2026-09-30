@@ -111,6 +111,27 @@ async function ollamaUrl() {
   return 'http://127.0.0.1:11434';
 }
 
+// Phase 10d — the same knobs as llm::LlmConfig (Settings → Local model), read on every call
+async function llmConfig() {
+  const rows = await rowsOf("SELECT key, value FROM app_meta WHERE key LIKE 'llm_%'").catch(() => []);
+  const m = Object.fromEntries(rows.map((r) => [r.key, r.value]));
+  const n = (k, d, lo, hi) => { const v = Number(m[k]); return Number.isFinite(v) && m[k] !== '' && m[k] != null ? Math.min(hi, Math.max(lo, Math.round(v))) : d; };
+  return { timeoutS: n('llm_timeout_s', 900, 60, 7200), numCtx: n('llm_num_ctx', 4096, 1024, 32768), keepAliveMin: n('llm_keep_alive_min', 30, -1, 1440), numThread: n('llm_num_thread', 0, 0, 64), numPredict: n('llm_num_predict', 700, -1, 8192), structured: m.llm_structured !== 'false' };
+}
+async function ollamaChat({ model, messages, format, temperature, purpose = 'chat', numPredict }) {
+  const cfg = await llmConfig(); const url = await ollamaUrl(); const t0 = Date.now();
+  const options = { temperature: temperature ?? 0.2, num_ctx: cfg.numCtx }; const np = numPredict ?? cfg.numPredict; if (np) options.num_predict = np; if (cfg.numThread > 0) options.num_thread = cfg.numThread;
+  const body = { model, messages, stream: false, options, keep_alive: cfg.keepAliveMin < 0 ? -1 : `${cfg.keepAliveMin}m` }; if (format) body.format = format;
+  const log = (ok, v, err) => con.run(`INSERT INTO llm_calls (model, purpose, ms, load_ms, prompt_tokens, eval_tokens, ok, error) VALUES (${q(model)}, ${q(purpose)}, ${Date.now() - t0}, ${Math.round((v?.load_duration ?? 0) / 1e6)}, ${v?.prompt_eval_count ?? 0}, ${v?.eval_count ?? 0}, ${ok}, ${err ? q(String(err).slice(0, 300)) : 'NULL'})`).catch(() => {});
+  let r;
+  try { r = await fetch(`${url}/api/chat`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(cfg.timeoutS * 1000) }); }
+  catch (e) { const msg = /timeout|abort/i.test(String(e?.name) + String(e?.message)) ? `slow_model: the local model took longer than ${cfg.timeoutS} s to answer — raise the timeout in Settings → Local model, lower the context window, or try again` : `could not reach Ollama at ${url} (${e?.message ?? e})`; await log(false, null, msg); throw new Error(msg); }
+  const text = await r.text(); if (!r.ok) { await log(false, null, `Ollama ${r.status}`); throw new Error(`Ollama ${r.status}: ${text.slice(0, 300)}`); }
+  const v = JSON.parse(text); await log(true, v, null);
+  const evalS = (v.eval_duration ?? 0) / 1e9;
+  return { content: v.message?.content ?? '', ms: Date.now() - t0, load_ms: Math.round((v.load_duration ?? 0) / 1e6), prompt_tokens: v.prompt_eval_count ?? 0, eval_tokens: v.eval_count ?? 0, tokens_per_s: evalS ? Math.round((v.eval_count / evalS) * 10) / 10 : 0, model };
+}
+
 const commands = {
   async get_status() {
     const n = +(await scalar('SELECT COUNT(*) FROM plays_resolved'));
@@ -185,18 +206,57 @@ const commands = {
     try { const r = await fetch(`${url}/api/tags`, { signal: AbortSignal.timeout(4000) }); if (!r.ok) throw new Error(`HTTP ${r.status}`); const v = await r.json(); return { reachable: true, url, models: (v.models ?? []).map((m) => m.name), error: null }; }
     catch (e) { return { reachable: false, url, models: [], error: String(e.message ?? e) }; }
   },
-  async llm_chat({ model, messages, jsonMode, temperature }) {
+  async llm_chat({ model, messages, jsonMode, temperature, purpose, numPredict }) {
     // OLLAMA_MOCK=1: a canned "model" for the smoke tests and screenshots — writes one fixed query, narrates one sentence.
     if (process.env.OLLAMA_MOCK) {
       const last = messages[messages.length - 1]?.content ?? '';
+      await con.run(`INSERT INTO llm_calls (model, purpose, ms, load_ms, prompt_tokens, eval_tokens, ok) VALUES (${q(model)}, ${q(purpose ?? 'chat')}, 5, 0, ${Math.round(last.length / 4)}, 40, TRUE)`).catch(() => {});
       if (jsonMode) return JSON.stringify(/fix it/i.test(last) ? { sql: 'SELECT artist_name, COUNT(*) AS plays FROM plays_resolved WHERE attended GROUP BY 1 ORDER BY 2 DESC LIMIT 5', explanation: 'repaired', answerable: true } : /lyrics/i.test(last) ? { sql: 'SELECT track_id, track_name, artist_name, COUNT(*) AS plays FROM plays_resolved WHERE attended GROUP BY 1, 2, 3 ORDER BY 4 DESC LIMIT 8', explanation: 'top tracks', answerable: true } : /weather|rain/i.test(last) ? { answerable: false, why_not: 'Weather is not in the record.' } : { sql: 'SELECT artist_name, COUNT(*) AS plays, ROUND(SUM(ms_played)/3600000.0, 1) AS hours FROM plays_resolved WHERE attended GROUP BY 1 ORDER BY 2 DESC LIMIT 5', explanation: 'top artists by plays', answerable: true });
       return `(mock narration for ${model}) The rows say what they say: five names, a few thousand plays between them, and one of them well ahead of the rest.`;
     }
-    const url = await ollamaUrl();
-    const body = { model, messages, stream: false, options: { temperature: temperature ?? 0.2, num_ctx: 8192 } }; if (jsonMode) body.format = 'json';
-    const r = await fetch(`${url}/api/chat`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(240000) });
-    const text = await r.text(); if (!r.ok) throw new Error(`Ollama ${r.status}: ${text.slice(0, 300)}`);
-    return JSON.parse(text).message?.content ?? '';
+    return (await ollamaChat({ model, messages, format: jsonMode ? 'json' : undefined, temperature, purpose, numPredict })).content;
+  },
+  // Phase 10d — mirror of llm::test / the lyric hygiene and saved-writing commands in commands.rs
+  async llm_test({ model }) {
+    if (process.env.OLLAMA_MOCK) return { content: 'ready', ms: 850, load_ms: 400, prompt_tokens: 12, eval_tokens: 2, tokens_per_s: 9.5, model };
+    return ollamaChat({ model, messages: [{ role: 'user', content: 'Reply with exactly one word: ready' }], temperature: 0, purpose: 'test', numPredict: 8 });
+  },
+  async lyrics_override_set({ trackId, patch }) {
+    if (!patch || typeof patch !== 'object') throw new Error('patch must be an object');
+    await con.run(`INSERT INTO lyric_overrides (track_id) VALUES (${q(trackId)}) ON CONFLICT DO NOTHING`);
+    const list = (v) => { if (v == null) return 'NULL'; if (!Array.isArray(v)) throw new Error('expected a list of words'); const out = [...new Set(v.map((x) => String(x).trim().toLowerCase()).filter(Boolean))]; if (out.some((w) => w.length > 40)) throw new Error('words must be 40 characters or fewer'); if (out.length > 30) throw new Error('at most 30 entries'); return `CAST(${q(JSON.stringify(out))} AS JSON)::VARCHAR[]`; };
+    for (const [k, v] of Object.entries(patch)) {
+      let val;
+      if (k === 'lang') { const l = v == null ? '' : String(v).trim().toLowerCase(); if (l && !/^[a-z-]{1,8}$/.test(l)) throw new Error('language must be a code like en, tr or pt-br'); val = l ? q(l) : 'NULL'; }
+      else if (['themes', 'llm_themes', 'keywords_add', 'keywords_hide'].includes(k)) val = list(v);
+      else if (k === 'mood' || k === 'note') { const t = v == null ? '' : String(v).trim(); if (t.length > (k === 'mood' ? 40 : 400)) throw new Error(`${k} is too long`); val = t ? q(k === 'mood' ? t.toLowerCase() : t) : 'NULL'; }
+      else if (k === 'locked' || k === 'hidden') val = v ? 'TRUE' : 'FALSE';
+      else throw new Error(`unknown lyric correction: ${k}`);
+      await con.run(`UPDATE lyric_overrides SET ${k} = ${val}, updated_at = now() WHERE track_id = ${q(trackId)}`);
+    }
+    return null;
+  },
+  async lyrics_override_clear({ trackId }) { await con.run(`DELETE FROM lyric_overrides WHERE track_id = ${q(trackId)}`); return null; },
+  async lyrics_blocklist({ term, add }) { const t = String(term ?? '').trim().toLowerCase(); if (!t || t.length > 40) throw new Error('the word must be 1–40 characters'); await con.run(add ? `INSERT INTO lyric_term_blocklist (term) VALUES (${q(t)}) ON CONFLICT DO NOTHING` : `DELETE FROM lyric_term_blocklist WHERE term = ${q(t)}`); return null; },
+  async lyrics_requeue({ trackId }) {
+    const where = trackId ? `track_id = ${q(trackId)}` : 'found AND track_id NOT IN (SELECT track_id FROM lyric_overrides WHERE locked)';
+    const n = Number(await scalar(`SELECT COUNT(*) FROM track_lyric_features WHERE ${where}`));
+    await con.run(`UPDATE track_lyric_features SET llm_rev = NULL, llm_attempts = 0, llm_error = NULL WHERE ${where}`); return n;
+  },
+  async lyrics_llm_track() { throw new Error('Asking the model about one song needs the desktop app (it re-fetches the lyrics from LRCLIB).'); },
+  async lyrics_refetch_track() { throw new Error('Lyric fetching needs the desktop app.'); },
+  async writing_save({ kind, periodKey, model, text, facts, ms }) {
+    if (kind !== 'notes' && kind !== 'roast') throw new Error('kind must be notes or roast');
+    if (!periodKey || String(periodKey).length > 40) throw new Error('period must be 1–40 characters');
+    if (!String(text ?? '').trim()) throw new Error('the model returned nothing to keep (text required)');
+    const id = `${kind}-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+    await con.run(`INSERT INTO llm_writings (id, kind, period_key, model, text, facts, ms) VALUES (${q(id)}, ${q(kind)}, ${q(periodKey)}, ${q(model ?? '')}, ${q(String(text).trim())}, CAST(${q(JSON.stringify(facts ?? {}))} AS JSON), ${ms == null ? 'NULL' : Number(ms)})`);
+    return id;
+  },
+  async writing_delete({ id }) { await con.run(`DELETE FROM llm_writings WHERE id = ${q(id)}`); return null; },
+  async writing_pin({ id, pinned }) {
+    if (pinned) await con.run(`UPDATE llm_writings w SET pinned = FALSE FROM llm_writings x WHERE x.id = ${q(id)} AND w.kind = x.kind AND w.period_key = x.period_key`);
+    await con.run(`UPDATE llm_writings SET pinned = ${pinned ? 'TRUE' : 'FALSE'} WHERE id = ${q(id)}`); return null;
   },
   // Phase 9f — scene vocabulary edits (mirror of commands.rs)
   async scene_family_upsert({ scene, label, kind, blurb, hidden }) {
@@ -371,7 +431,7 @@ const commands = {
     return Number(await scalar('SELECT COUNT(*) FROM forecast_log')) > before;
   },
   async lyrics_enrich_now() { throw new Error('Lyric fetching needs the desktop app.'); },
-  async lyrics_status() { const [r] = await rowsOf("SELECT COUNT(*) FILTER (WHERE found AND COALESCE(features_rev, 1) < 2) AS old_rules, COUNT(*) FILTER (WHERE found AND COALESCE(features_rev, 1) >= 2) AS current FROM track_lyric_features"); const never = await scalar('SELECT COUNT(*) FROM (SELECT DISTINCT track_id FROM plays_resolved WHERE attended AND track_id IS NOT NULL) p WHERE NOT EXISTS (SELECT 1 FROM track_lyric_features f WHERE f.track_id = p.track_id)'); let llm = false; try { llm = String(await scalar("SELECT value FROM app_meta WHERE key = 'lyrics_llm_enabled'")) === 'true'; } catch { /* unset */ } return { oldRules: Number(r.old_rules), current: Number(r.current), never: Number(never), llmEnabled: llm }; },
+  async lyrics_status() { const [r] = await rowsOf("SELECT COUNT(*) FILTER (WHERE found AND COALESCE(features_rev, 1) < 2) AS old_rules, COUNT(*) FILTER (WHERE found AND COALESCE(features_rev, 1) >= 2) AS current FROM track_lyric_features"); const never = await scalar('SELECT COUNT(*) FROM (SELECT DISTINCT track_id FROM plays_resolved WHERE attended AND track_id IS NOT NULL) p WHERE NOT EXISTS (SELECT 1 FROM track_lyric_features f WHERE f.track_id = p.track_id)'); let llm = false; try { llm = String(await scalar("SELECT value FROM app_meta WHERE key = 'lyrics_llm_enabled'")) === 'true'; } catch { /* unset */ } const [m] = await rowsOf("SELECT COUNT(*) FILTER (WHERE COALESCE(f.llm_rev, 0) >= 2) AS done, COUNT(*) FILTER (WHERE COALESCE(f.features_rev, 1) >= 2 AND COALESCE(f.llm_rev, 0) < 2 AND COALESCE(f.llm_attempts, 0) < 3 AND NOT COALESCE(o.locked, FALSE) AND NOT COALESCE(o.hidden, FALSE)) AS queued, COUNT(*) FILTER (WHERE COALESCE(f.llm_rev, 0) < 2 AND COALESCE(f.llm_attempts, 0) >= 3) AS failed FROM track_lyric_features f LEFT JOIN lyric_overrides o USING (track_id) WHERE f.found"); return { oldRules: Number(r.old_rules), current: Number(r.current), never: Number(never), llmEnabled: llm, llmDone: Number(m.done), llmQueued: Number(m.queued), llmFailed: Number(m.failed), llmBusy: false }; },
   async save_binary_file() { return null; },
   async lastfm_wild_connect() { throw new Error('Connectors need the desktop app.'); }, async lastfm_wild_disconnect() { return null; }, async lastfm_wild_reset() { throw new Error('Connectors need the desktop app.'); },
   async statsfm_connect() { throw new Error('Connectors need the desktop app.'); }, async statsfm_disconnect() { return null; }, async musicbrainz_connect() { throw new Error('Connectors need the desktop app.'); }, async musicbrainz_disconnect() { return null; },
@@ -379,7 +439,7 @@ const commands = {
 
 const STATIC = process.env.DEEPCUTS_STATIC ? path.resolve(process.env.DEEPCUTS_STATIC) : (fs.existsSync(path.join(here, 'dist', 'index.html')) && process.env.DEEPCUTS_SERVE_DIST ? path.join(here, 'dist') : null);
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.png': 'image/png', '.woff2': 'font/woff2', '.woff': 'font/woff', '.json': 'application/json', '.ico': 'image/x-icon', '.webmanifest': 'application/manifest+json' };
-const WRITE_CMDS = new Set(['set_setting', 'set_timezone', 'rebuild', 'rec_feedback', 'set_artist_scene', 'scene_family_upsert', 'scene_family_delete', 'scene_tag_set', 'scene_origin_set', 'recompute_scenes', 'restore_move_bundle', 'forecast_log_write', 'meta_set', 'artist_set_origin', 'artist_set_mbid', 'artist_tag_edit', 'artist_scene_auto', 'weather_store', 'stylus_configure', 'stylus_add_device', 'stylus_update_device', 'stylus_remove_device', 'set_session_attention', 'merge_artists', 'import_files', 'start_import', 'set_tz_override', 'delete_tz_override']);
+const WRITE_CMDS = new Set(['lyrics_override_set', 'lyrics_override_clear', 'lyrics_blocklist', 'lyrics_requeue', 'writing_save', 'writing_delete', 'writing_pin', 'set_setting', 'set_timezone', 'rebuild', 'rec_feedback', 'set_artist_scene', 'scene_family_upsert', 'scene_family_delete', 'scene_tag_set', 'scene_origin_set', 'recompute_scenes', 'restore_move_bundle', 'forecast_log_write', 'meta_set', 'artist_set_origin', 'artist_set_mbid', 'artist_tag_edit', 'artist_scene_auto', 'weather_store', 'stylus_configure', 'stylus_add_device', 'stylus_update_device', 'stylus_remove_device', 'set_session_attention', 'merge_artists', 'import_files', 'start_import', 'set_tz_override', 'delete_tz_override']);
 function serveStatic(url, res) {
   if (!STATIC) return false;
   let rel = decodeURIComponent(url.pathname); if (rel === '/' || rel === '') rel = '/index.html';

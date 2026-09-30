@@ -9,7 +9,7 @@ import { search } from '@/lib/queries';
 
 type Item = { id: string; kind: 'page' | 'setting' | 'action' | 'artist' | 'album' | 'track'; label: string; hint?: string; run: () => void };
 const KIND_LABEL: Record<Item['kind'], string> = { page: 'Page', setting: 'Settings', action: 'Action', artist: 'Artist', album: 'Album', track: 'Song' };
-const SETTINGS_TABS: [string, string][] = [['look', 'Appearance'], ['record', 'Record'], ['tuning', 'Tuning'], ['connectors', 'Connectors'], ['hygiene', 'Hygiene'], ['privacy', 'Privacy'], ['notforme', 'Not for me']];
+const SETTINGS_TABS: [string, string][] = [['model', 'Local model'], ['look', 'Appearance'], ['record', 'Record'], ['tuning', 'Tuning'], ['connectors', 'Connectors'], ['hygiene', 'Hygiene'], ['privacy', 'Privacy'], ['notforme', 'Not for me']];
 
 /**
  * Phase 10c (Kimi R2) — Ctrl/⌘+K (or "/" when not typing): jump to any page or Settings tab, find any artist, album or

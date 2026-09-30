@@ -1161,3 +1161,93 @@ CREATE TABLE IF NOT EXISTS track_lineage (
     fetched_at    TIMESTAMPTZ DEFAULT now(),
     PRIMARY KEY (track_id, kind, other_mbid)
 );
+
+-- ------------------------------------------------------------
+-- Phase 10d — the local-model controller, lyric tagging v2, lyric hygiene, saved model writing.
+-- ------------------------------------------------------------
+-- every call to the local model: what it was for, how long it took (Settings → Local model shows the recent ones)
+CREATE TABLE IF NOT EXISTS llm_calls (
+    called_at      TIMESTAMPTZ DEFAULT now(),
+    model          VARCHAR,
+    purpose        VARCHAR,       -- lyrics | ask | roast | notes | words | test | chat
+    ms             BIGINT,
+    load_ms        BIGINT,        -- time Ollama spent loading the model into memory
+    prompt_tokens  INTEGER,
+    eval_tokens    INTEGER,
+    ok             BOOLEAN,
+    error          VARCHAR
+);
+
+-- tagging v2 (llm_rev 2): fixed mood palette, fixed theme vocabulary, keywords grounded in the text, one-line summary
+ALTER TABLE track_lyric_features ADD COLUMN IF NOT EXISTS llm_rev INTEGER;         -- NULL/1 = the 9f free-form prompt; 2 = constrained v2
+ALTER TABLE track_lyric_features ADD COLUMN IF NOT EXISTS llm_mood2 VARCHAR;       -- a second, different mood from the palette
+ALTER TABLE track_lyric_features ADD COLUMN IF NOT EXISTS llm_keywords VARCHAR[];  -- words the model picked that occur in the lyrics
+ALTER TABLE track_lyric_features ADD COLUMN IF NOT EXISTS llm_summary VARCHAR;     -- one sentence in the model's words (never a quote: rejected if it shares 5 words in a row with the text)
+ALTER TABLE track_lyric_features ADD COLUMN IF NOT EXISTS llm_ms BIGINT;
+ALTER TABLE track_lyric_features ADD COLUMN IF NOT EXISTS llm_attempts INTEGER;
+ALTER TABLE track_lyric_features ADD COLUMN IF NOT EXISTS llm_error VARCHAR;
+-- the 9f prompt's broken outputs (owner report): instruction echoes as moods, release suffixes as themes. Idempotent.
+UPDATE track_lyric_features SET llm_mood = NULL
+ WHERE COALESCE(llm_rev, 1) < 2 AND llm_mood IS NOT NULL AND (regexp_matches(llm_mood, '[0-9]') OR regexp_matches(lower(llm_mood), '\bwords?\b|\bphrase'));
+UPDATE track_lyric_features SET llm_themes = list_filter(llm_themes, x -> NOT regexp_matches(lower(x), '\b(radio edit|edit|remix|remaster(ed)?|version|mix|feat|words?|phrase|lowercase)\b'))
+ WHERE COALESCE(llm_rev, 1) < 2 AND llm_themes IS NOT NULL;
+
+-- the owner's corrections, per song. NULL in a column = keep what was computed. Survive every re-fetch and re-tag.
+CREATE TABLE IF NOT EXISTS lyric_overrides (
+    track_id       VARCHAR PRIMARY KEY,
+    lang           VARCHAR,       -- language code ('en', 'tr', …) — re-scores the song's keywords against that language
+    themes         VARCHAR[],     -- replaces the lexicon themes
+    llm_themes     VARCHAR[],     -- replaces the model's themes
+    mood           VARCHAR,       -- replaces the model's mood
+    keywords_add   VARCHAR[],     -- always a keyword of this song
+    keywords_hide  VARCHAR[],     -- never a keyword of this song
+    locked         BOOLEAN DEFAULT FALSE,   -- the model never re-tags this song
+    hidden         BOOLEAN DEFAULT FALSE,   -- wrong lyrics / instrumental: left out of every lyric view
+    note           VARCHAR,
+    updated_at     TIMESTAMPTZ DEFAULT now()
+);
+-- words that are never anyone's keyword (a name, a chant, a word the corpus over-counts)
+CREATE TABLE IF NOT EXISTS lyric_term_blocklist (term VARCHAR PRIMARY KEY, added_at TIMESTAMPTZ DEFAULT now());
+
+-- what every lyric view reads: computed features with the owner's corrections applied
+CREATE OR REPLACE VIEW track_lyrics_effective AS
+SELECT f.track_id, f.found, f.word_count, f.features_rev, f.valence, f.repetition, f.vocab, f.colours,
+       COALESCE(NULLIF(o.lang, ''), NULLIF(f.lang, ''), 'und') AS lang, f.lang AS lang_detected,
+       COALESCE(o.themes, f.themes) AS themes,
+       CASE WHEN o.themes IS NULL THEN f.theme_scores
+            ELSE CAST(to_json(map_from_entries(list_transform(o.themes, t -> struct_pack(k := t, v := COALESCE(TRY_CAST(json_extract_string(f.theme_scores, '$."' || replace(t, '"', '') || '"') AS DOUBLE), 2.0))))) AS JSON) END AS theme_scores,
+       COALESCE(o.llm_themes, f.llm_themes) AS llm_themes, COALESCE(o.mood, f.llm_mood) AS llm_mood, f.llm_mood2, f.llm_keywords, f.llm_summary,
+       f.llm_model, f.llm_at, f.llm_rev, f.llm_error, f.llm_attempts,
+       o.track_id IS NOT NULL AS edited, COALESCE(o.locked, FALSE) AS locked
+FROM track_lyric_features f LEFT JOIN lyric_overrides o USING (track_id)
+WHERE f.found AND NOT COALESCE(o.hidden, FALSE);
+
+-- keywords again, now honouring the owner's language fixes, hidden songs, added / hidden words and the blocklist
+CREATE OR REPLACE VIEW track_lyric_keywords AS
+WITH f AS (SELECT l.track_id, COALESCE(NULLIF(o.lang, ''), NULLIF(l.lang, ''), 'und') AS lang FROM track_lyric_features l LEFT JOIN lyric_overrides o USING (track_id)
+           WHERE l.found AND COALESCE(l.features_rev, 1) >= 2 AND NOT COALESCE(o.hidden, FALSE)),
+     terms AS (SELECT t.* FROM track_lyric_terms t LEFT JOIN lyric_overrides o USING (track_id)
+               WHERE NOT EXISTS (SELECT 1 FROM lyric_term_blocklist b WHERE b.term = t.term) AND NOT list_contains(COALESCE(o.keywords_hide, []::VARCHAR[]), t.term)),
+     n AS (SELECT lang, COUNT(*) AS n FROM f GROUP BY 1),
+     df AS (SELECT f.lang, t.term, COUNT(*) AS df FROM terms t JOIN f USING (track_id) GROUP BY 1, 2),
+     scored AS (SELECT t.track_id, f.lang, t.term, t.tf, d.df, t.tf * LN(GREATEST(n.n, 2) * 1.0 / d.df) AS score, FALSE AS added
+                FROM terms t JOIN f USING (track_id) JOIN df d ON d.lang = f.lang AND d.term = t.term JOIN n ON n.lang = f.lang
+                WHERE d.df < GREATEST(n.n, 2) * 0.35),
+     added AS (SELECT o.track_id, f.lang, lower(trim(k.term)) AS term, 3 AS tf, 1 AS df, 99.0 AS score, TRUE AS added
+               FROM lyric_overrides o JOIN f USING (track_id), unnest(COALESCE(o.keywords_add, []::VARCHAR[])) AS k(term))
+SELECT track_id, lang, term, tf, df, score, added, ROW_NUMBER() OVER (PARTITION BY track_id ORDER BY score DESC, tf DESC, term) AS rank
+FROM (SELECT * FROM added UNION ALL SELECT * FROM scored WHERE NOT EXISTS (SELECT 1 FROM added a WHERE a.track_id = scored.track_id AND a.term = scored.term))
+QUALIFY rank <= 15;
+
+-- Liner Notes and Roast Me written by the local model, kept so a week (or a roast) never has to be generated twice
+CREATE TABLE IF NOT EXISTS llm_writings (
+    id          VARCHAR PRIMARY KEY,
+    kind        VARCHAR,          -- notes | roast
+    period_key  VARCHAR,          -- notes: the week's Monday (2026-09-21); roast: all | 2026 | 2026-09 | w2026-09-21, plus ':' heat
+    model       VARCHAR,
+    text        VARCHAR,
+    facts       JSON,             -- exactly what the model was shown
+    ms          BIGINT,
+    pinned      BOOLEAN DEFAULT FALSE,
+    created_at  TIMESTAMPTZ DEFAULT now()
+);
